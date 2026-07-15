@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output (produced by `npm run build`, published by semantic-release)
+dist/
+
+# Test coverage
+coverage/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# semantic-release / npm
+.npmrc
+*.tgz

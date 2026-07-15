@@ -1,0 +1,51 @@
+// lib/markdown.js is a classic (non-module) script that attaches its API to
+// `window.TabAgentMarkdown` via an IIFE rather than using `export` — see the
+// "Module system is intentionally mixed" note in CLAUDE.md. Under the jsdom
+// test environment `window` is already global, so requiring the file for its
+// side effect is enough to pick up the API it attaches.
+require("../lib/markdown.js");
+const { renderMarkdown, escapeHtml } = window.TabAgentMarkdown;
+
+describe("escapeHtml", () => {
+  test("escapes the five HTML-significant characters", () => {
+    expect(escapeHtml(`<script>&"'</script>`)).toBe("&lt;script&gt;&amp;&quot;'&lt;/script&gt;");
+  });
+});
+
+describe("renderMarkdown", () => {
+  test("returns an empty string for falsy input", () => {
+    expect(renderMarkdown("")).toBe("");
+    expect(renderMarkdown(null)).toBe("");
+    expect(renderMarkdown(undefined)).toBe("");
+  });
+
+  test("escapes raw HTML/script tags instead of letting them through", () => {
+    const out = renderMarkdown("<script>alert(1)</script>");
+    expect(out).not.toContain("<script>alert(1)</script>");
+    expect(out).toContain("&lt;script&gt;");
+  });
+
+  test("renders bold, italic, and inline code", () => {
+    expect(renderMarkdown("**bold**")).toContain("<strong>bold</strong>");
+    expect(renderMarkdown("*italic*")).toContain("<em>italic</em>");
+    expect(renderMarkdown("`code`")).toContain("<code>code</code>");
+  });
+
+  test("renders a bracketed markdown link with target=_blank and rel=noopener", () => {
+    const out = renderMarkdown("[Anthropic](https://anthropic.com)");
+    expect(out).toContain('href="https://anthropic.com"');
+    expect(out).toContain('target="_blank"');
+    expect(out).toContain('rel="noopener noreferrer"');
+    expect(out).toContain(">Anthropic</a>");
+  });
+
+  test("autolinks a bare URL", () => {
+    const out = renderMarkdown("See https://example.com/path for details.");
+    expect(out).toContain('<a href="https://example.com/path"');
+  });
+
+  test("does not double-wrap a bracketed link's own URL text", () => {
+    const out = renderMarkdown("[https://example.com](https://example.com)");
+    expect(out.match(/<a /g).length).toBe(1);
+  });
+});

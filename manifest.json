@@ -1,0 +1,64 @@
+{
+  "manifest_version": 3,
+  "name": "Tab Agent — Agentic AI for your Browser",
+  "version": "1.0.0",
+  "description": "An AI agent that reads, clicks, types, and navigates your open tabs for you. Bring your own Anthropic or OpenAI-compatible API key.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsTNP5iy60P0htkHCjfj4vYMG2qZwrP+TrwO2vUz0mbcKBgSYqDwb8YjdVJce7dZyXtNeEXlOJntICXYRmi2kovwbisAhOxuDVUHlpBVvLES1R+5arw/W4wqiMN5RyIDFDwgRXQysOngeMZWWhC9pT/9rQgrvvY4oFhbR4RDQoKkMtQeOno7TitmhOkH1rfbSmbfz9C29XO7qRNFbxuEV5T3KHvq/bTNINhj90BYu6ludNmYzAew0iUAKqzoIteC1kUqTbXkvr8ryejOB3cEvQYDRS58P1cc5cey7CSnFquEnzNvUOnKD4FQ7jKtxqc7LCEemuUmwLhhRMcBkgEg1rwIDAQAB",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs",
+    "sidePanel",
+    "unlimitedStorage",
+    "alarms",
+    "notifications"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "commands": {
+    "open-panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y",
+        "mac": "Command+Shift+Y"
+      },
+      "description": "Open Tab Agent"
+    },
+    "new-chat": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Open Tab Agent and start a new chat"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Open Tab Agent"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

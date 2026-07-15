@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Tab Agent — Settings</title>
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>Tab Agent Settings</h1>
+
+    <div class="tabs" role="tablist">
+      <button id="tabbtn-providers" class="tab-btn active" type="button" data-tab="providers" role="tab" aria-selected="true" aria-controls="tab-providers" tabindex="0">Providers</button>
+      <button id="tabbtn-agents" class="tab-btn" type="button" data-tab="agents" role="tab" aria-selected="false" aria-controls="tab-agents" tabindex="-1">Agents</button>
+      <button id="tabbtn-automation" class="tab-btn" type="button" data-tab="automation" role="tab" aria-selected="false" aria-controls="tab-automation" tabindex="-1">Automation</button>
+      <button id="tabbtn-limits" class="tab-btn" type="button" data-tab="limits" role="tab" aria-selected="false" aria-controls="tab-limits" tabindex="-1">Limits</button>
+      <button id="tabbtn-privacy" class="tab-btn" type="button" data-tab="privacy" role="tab" aria-selected="false" aria-controls="tab-privacy" tabindex="-1">Privacy</button>
+      <button id="tabbtn-about" class="tab-btn" type="button" data-tab="about" role="tab" aria-selected="false" aria-controls="tab-about" tabindex="-1">Backup &amp; About</button>
+    </div>
+
+    <section id="tab-providers" class="tab-panel active" role="tabpanel" aria-labelledby="tabbtn-providers" tabindex="0">
+      <h2>
+        LLM Providers
+        <button type="button" class="info-icon" data-tooltip="Each key is stored locally in your browser only — calls go directly from your browser to that provider, never through any third-party server. Pick the &quot;Default&quot; one to use in the side panel, or switch between them there. Tab Agent has three independent model pickers: this Default (for tasks you run manually), the Vision model below (only used to describe images for non-vision chat models), and each Scheduled check's own model (Automation tab). Changing one does not affect the others.">ⓘ</button>
+      </h2>
+
+      <div id="providerList" class="provider-list"></div>
+      <button id="addProviderBtn" type="button" class="add-btn">+ Add provider</button>
+
+      <hr />
+      <h2>
+        Vision model
+        <button type="button" class="info-icon" data-tooltip="A standalone model assignment for understanding images — separate from your chat model checklist above, so you can pick any model any provider has fetched, whether or not that model is enabled for chat. When you attach an image and your selected chat model doesn't look like it supports vision, Tab Agent hands the image to this model to describe first, then gives your chat model that description instead of the raw image. This is a best-effort guess based on model names — pick &quot;None&quot; to disable it and always send images as-is.">ⓘ</button>
+      </h2>
+      <label>Vision model</label>
+      <select id="visionFallbackSelect"></select>
+    </section>
+
+    <section id="tab-agents" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-agents" tabindex="0">
+      <h2>
+        Agents
+        <button type="button" class="info-icon" data-tooltip="Agents are reusable presets — instructions (and an optional target site) you can invoke from the side panel by typing /agent_slug. They use the same tools as the default assistant.">ⓘ</button>
+      </h2>
+
+      <div id="agentList" class="agent-list"></div>
+      <button id="addAgentBtn" type="button" class="add-btn">+ Add agent</button>
+    </section>
+
+    <section id="tab-automation" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-automation" tabindex="0">
+      <h2>
+        Scheduled checks
+        <button type="button" class="info-icon" data-tooltip="Runs a task automatically on a timer, with no side panel open — Tab Agent opens the target page in a background tab, runs the task, and closes it again. There's no one to answer a question mid-run, so anything needing ask_user (or a one-time adult/financial site confirmation) will pause and report back as unfinished rather than actually asking — confirm those sites manually in the side panel first if a check needs one.">ⓘ</button>
+      </h2>
+      <div id="scheduledList" class="scheduled-list"></div>
+      <button id="addScheduledBtn" type="button" class="add-btn">+ Add scheduled check</button>
+    </section>
+
+    <section id="tab-limits" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-limits" tabindex="0">
+      <h2>
+        Step limits
+        <button type="button" class="info-icon" data-tooltip="How many actions the agent takes before checking in with you. Lower is safer (more chances to notice something's wrong); higher means fewer interruptions on long tasks. There's always some cap — none of these can be set to unlimited.">ⓘ</button>
+      </h2>
+      <p class="hint">These control how much the agent does before pausing to ask whether to keep going.</p>
+
+      <label class="field-row">
+        <span>
+          Main conversation step limit
+          <button type="button" class="info-icon" data-tooltip="How many steps a normal task gets before pausing with a Continue/Stop prompt. This is the everyday budget for ordinary tasks.">ⓘ</button>
+        </span>
+        <input id="limitMainSteps" type="number" min="10" max="100" step="1" />
+      </label>
+
+      <label class="field-row">
+        <span>
+          Batch task step limit
+          <button type="button" class="info-icon" data-tooltip="Separate, larger budget used by run_batch for large repetitive single-tab tasks (e.g. 'process every row'), so those don't eat into or get throttled by the main conversation limit above.">ⓘ</button>
+        </span>
+        <input id="limitBatchSteps" type="number" min="50" max="1000" step="10" />
+      </label>
+
+      <label class="field-row">
+        <span>
+          Max parallel tabs
+          <button type="button" class="info-icon" data-tooltip="How many sources parallel_investigate can check at the same time in one round when comparing across multiple sites/tabs. Higher is faster but means more simultaneous requests to the model API and to the sites themselves.">ⓘ</button>
+        </span>
+        <input id="limitMaxParallelTabs" type="number" min="2" max="8" step="1" />
+      </label>
+
+      <label class="field-row">
+        <span>
+          Max steps per parallel branch
+          <button type="button" class="info-icon" data-tooltip="Separate, smaller budget for each individual source parallel_investigate checks — meant for quick, focused lookups, not the batch task step limit above. This is intentionally its own setting so a large batch limit doesn't get misread as governing branches too.">ⓘ</button>
+        </span>
+        <input id="limitBranchSteps" type="number" min="5" max="60" step="5" />
+      </label>
+
+      <p class="hint" id="limitsSavedHint"></p>
+    </section>
+
+    <section id="tab-privacy" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-privacy" tabindex="0">
+      <h2>
+        Voice input
+        <button type="button" class="info-icon" data-tooltip="The side panel's microphone button uses Chrome's built-in speech recognition, which needs one-time microphone permission for this extension. Chrome doesn't reliably show that permission prompt inside the side panel itself — grant it here instead (a regular tab, where the prompt always works). It carries over to the side panel automatically, since both share the same extension origin.">ⓘ</button>
+      </h2>
+      <div class="mic-actions">
+        <button id="enableMicBtn" type="button" class="add-btn">🎤 Enable microphone access</button>
+        <button id="openMicSettingsBtn" type="button" class="add-btn">Open Chrome mic settings</button>
+      </div>
+      <p id="micStatus" class="hint"></p>
+
+      <hr />
+      <h2>
+        Site access
+        <button type="button" class="info-icon" data-tooltip="Tab Agent pauses to confirm before operating on sites that look like adult content or financial services, then remembers your answer per domain so it only asks once. This list is best-effort detection, not a guarantee — revoke anything below to be asked again next time.">ⓘ</button>
+      </h2>
+      <div id="siteAccessList" class="site-access-list"></div>
+    </section>
+
+    <section id="tab-about" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-about" tabindex="0">
+      <h2>
+        Backup
+        <button type="button" class="info-icon" data-tooltip="Export your providers, agents, vision model setting, scheduled checks, and theme preference as a file you can keep or move to another install. Includes your API keys in plain text — store the file somewhere private, the same way you'd treat the keys themselves.">ⓘ</button>
+      </h2>
+      <div class="backup-actions">
+        <button id="exportSettingsBtn" type="button" class="add-btn">⬇ Export settings</button>
+        <button id="importSettingsBtn" type="button" class="add-btn">⬆ Import settings</button>
+        <input type="file" id="importFileInput" accept="application/json" hidden />
+      </div>
+      <p id="backupStatus" class="hint"></p>
+
+      <hr />
+      <h2>How it works</h2>
+      <p>Tab Agent reads the active tab's content and interactive elements, sends them to the model along with your task, and executes whatever action the model chooses (click, type, scroll, navigate, switch tabs) directly on the browser — no MCP server, no proxy, no extra setup.</p>
+      <p class="hint">Because the agent can click and type on pages on your behalf, review what it's about to do in the side panel log, and use Stop at any time.</p>
+
+      <hr />
+      <p class="hint app-version">Tab Agent <span id="appVersion"></span></p>
+    </section>
+  </div>
+
+  <div id="confirmOverlay" class="confirm-overlay hidden">
+    <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmMessage">
+      <p id="confirmMessage"></p>
+      <div class="confirm-actions">
+        <button id="confirmCancelBtn" type="button" class="confirm-cancel-btn">Cancel</button>
+        <button id="confirmOkBtn" type="button" class="confirm-ok-btn">Remove</button>
+      </div>
+    </div>
+  </div>
+
+  <template id="providerCardTemplate">
+    <div class="provider-card">
+      <div class="card-row">
+        <button type="button" class="expand-toggle" title="Expand/collapse">
+          <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <span class="card-summary"></span>
+        <label class="default-radio"><input type="radio" name="defaultProvider" /> Default</label>
+        <button class="remove-btn" type="button" title="Remove provider">✕</button>
+      </div>
+
+      <div class="card-body">
+        <label class="label-row">Provider name <input class="label-input" type="text" placeholder="Provider name (e.g. Work Anthropic key)" /></label>
+
+        <label>Provider API (OpenAI/ Anthropic)</label>
+        <select class="type-select">
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI-compatible</option>
+        </select>
+
+        <label>API key</label>
+        <div class="apikey-row">
+          <input class="apikey-input" type="password" placeholder="sk-..." autocomplete="off" />
+          <button class="apikey-toggle" type="button" title="Show/hide key">
+            <svg class="eye-open" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-closed hidden" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.6 21.6 0 0 1 5.06-5.94M9.9 4.24A10.6 10.6 0 0 1 12 4c7 0 11 7 11 7a21.6 21.6 0 0 1-2.61 3.65M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>
+          </button>
+        </div>
+
+        <label>Base URL <span class="optional">(optional — for a non-default OpenAI-compatible endpoint)</span></label>
+        <input class="baseurl-input" type="text" placeholder="https://api.openai.com" />
+        <p class="hint">Works with any OpenAI-compatible endpoint — for a local model, try <code>http://localhost:11434/v1</code> (Ollama) or <code>http://localhost:1234/v1</code> (LM Studio). Any text is accepted as the API key if your local server doesn't check one.</p>
+
+        <button class="fetch-models-btn" type="button">Fetch models</button>
+
+        <div class="fetch-spinner hidden"><span class="spinner"></span> Fetching available models…</div>
+
+        <div class="models-section hidden">
+          <div class="models-header">
+            <span class="models-title">Available models</span>
+            <span class="models-header-actions">
+              <button class="select-all-btn" type="button">All</button>
+              <button class="select-none-btn" type="button">None</button>
+            </span>
+          </div>
+          <input type="text" class="model-search-input" placeholder="Search models…" autocomplete="off" />
+          <div class="model-checklist"></div>
+          <p class="model-search-empty hint hidden">No models match your search.</p>
+        </div>
+
+        <p class="model-status"></p>
+      </div>
+    </div>
+  </template>
+
+  <template id="agentCardTemplate">
+    <div class="agent-card">
+      <div class="card-row">
+        <button type="button" class="expand-toggle" title="Expand/collapse">
+          <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <span class="card-summary"></span>
+        <button class="remove-btn" type="button" title="Remove agent">✕</button>
+      </div>
+
+      <div class="card-body">
+        <label>Agent name <input class="agent-name-input" type="text" placeholder="Agent name (e.g. YouTube Agent)" /></label>
+
+        <div class="field-row">
+          <label>Slash command <span class="optional">(letters, numbers, underscores)</span><input class="agent-slug-input" type="text" placeholder="youtube_agent" /></label>
+          <label>Description <span class="optional">(shown when picking)</span><input class="agent-desc-input" type="text" placeholder="Finds videos on YouTube for you" /></label>
+        </div>
+
+        <label>Target site <span class="optional">(optional)</span></label>
+        <input class="agent-url-input" type="text" placeholder="https://www.youtube.com" />
+
+        <label>Instructions</label>
+        <textarea class="agent-instructions-input" rows="4" placeholder="What this agent should do, how it should behave, what to ask the user for if something's missing…"></textarea>
+
+        <p class="agent-status"></p>
+      </div>
+    </div>
+  </template>
+
+  <template id="scheduledCardTemplate">
+    <div class="scheduled-card">
+      <div class="card-row">
+        <button type="button" class="expand-toggle" title="Expand/collapse">
+          <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+        </button>
+        <span class="card-summary"></span>
+        <label class="sched-enabled-label"><input class="sched-enabled-input" type="checkbox" /> Enabled</label>
+        <button class="remove-btn" type="button" title="Remove scheduled check">✕</button>
+      </div>
+
+      <div class="card-body">
+        <label>Check name <input class="sched-name-input" type="text" placeholder="Check name (e.g. Morning inbox summary)" /></label>
+
+        <label>Page to open <span class="optional">(what the task runs against)</span></label>
+        <input class="sched-url-input" type="text" placeholder="https://mail.example.com" />
+
+        <label>Task</label>
+        <textarea class="sched-prompt-input" rows="3" placeholder="What Tab Agent should do on that page every time this runs…"></textarea>
+
+        <div class="field-row">
+          <label>Model <select class="sched-model-select"></select></label>
+          <label class="sched-notify-label"><input class="sched-notify-input" type="checkbox" /> Notify me when it finishes</label>
+        </div>
+
+        <div class="sched-schedule-row">
+          <label>Repeat</label>
+          <select class="sched-kind-select">
+            <option value="interval">Every…</option>
+            <option value="daily">Daily at…</option>
+          </select>
+          <input class="sched-interval-input" type="number" min="5" step="1" placeholder="60" />
+          <span class="sched-interval-unit">minutes</span>
+          <input class="sched-time-input" type="time" />
+        </div>
+
+        <div class="sched-footer">
+          <button class="sched-run-now-btn" type="button">Run now</button>
+          <span class="sched-status"></span>
+        </div>
+      </div>
+    </div>
+  </template>
+
+  <script type="module" src="options.js"></script>
+</body>
+</html>

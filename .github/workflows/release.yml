@@ -1,0 +1,71 @@
+name: Release
+
+# Code quality -> unit tests -> build, gated behind semantic-release: every
+# push to main runs lint and tests first; only if both pass does the build
+# job run `npx semantic-release`, which inspects Conventional Commits since
+# the last tag, decides whether a release is warranted and what version it
+# gets, builds the extension zip (via scripts/build.js, invoked through the
+# @semantic-release/exec plugin — see .releaserc.json), tags the commit,
+# writes CHANGELOG.md, and publishes a GitHub Release with the zip attached.
+# If commits since the last release don't warrant one (e.g. only chore/docs
+# commits), semantic-release no-ops instead of failing.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Code quality (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    name: Unit tests
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --ci --coverage
+
+  release:
+    name: Build & semantic-release
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # scripts/build.js runs as semantic-release's "prepare" step (see
+      # .releaserc.json) once a release is confirmed, so a plain `npm run
+      # build` here isn't needed — semantic-release owns the whole
+      # analyze -> build -> tag -> publish sequence from this point.
+      - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
