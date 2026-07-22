@@ -1,0 +1,39 @@
+Tab Agent Source-Available License
+Copyright (c) 2026 Veera Chandu. All rights reserved.
+
+This repository's source code is published for transparency and review
+purposes (including browser extension store review) and to allow
+contributions. It is NOT open-source software, and no license under
+standard open-source terms (MIT, Apache, GPL, etc.) is granted.
+
+1. Viewing and local use
+   You may view, clone, and run this source code locally for personal,
+   non-commercial evaluation, and for the purpose of preparing a
+   contribution under Section 3 below.
+
+2. No redistribution, no forks, no derivative products
+   Except as permitted in Section 1, you may NOT copy, redistribute,
+   publish, sublicense, sell, host as a service, or create and distribute
+   a modified or derivative version of this software (including via a
+   public fork, a separate repository, a browser extension store listing,
+   or any other distribution channel) without prior written permission
+   from the copyright holder.
+
+3. Contributions
+   Contributions (e.g. pull requests) submitted to this repository are
+   welcome. By submitting a contribution, you grant the copyright holder
+   a perpetual, worldwide, royalty-free license to use, modify, and
+   relicense your contribution as part of this project. You retain
+   copyright in your own contribution, but do not gain any additional
+   rights to the project as a whole beyond what this license already
+   grants everyone.
+
+4. No warranty
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND
+   NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM,
+   DAMAGES, OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
+
+For permissions beyond this license (commercial use, redistribution,
+running a derivative service, etc.), contact: veerachandu1693@gmail.com

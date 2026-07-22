@@ -170,6 +170,50 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 8px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 
+/* --- accessibility: keyboard focus + motion preference --------------
+   Two gaps that don't touch the visual language at all but matter a lot
+   to a subset of users: (1) nothing here showed a focus ring, so keyboard
+   navigation was effectively invisible; (2) every looping animation ran
+   unconditionally, ignoring the OS-level "reduce motion" setting. Both
+   fixed with a small, additive layer rather than changing any existing
+   color/spacing/shape rule. */
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+/* Tighter/inset ring for controls that live inside already-small rows or
+   circular buttons, where a 2px-offset ring would get clipped by a
+   scroll container or collide with a neighboring control. */
+.icon-btn:focus-visible,
+.tab-row:focus-visible,
+.history-row-main:focus-visible,
+.history-row-action:focus-visible,
+.history-row-delete:focus-visible,
+.agent-popover-row:focus-visible,
+.branch-row-view:focus-visible,
+.branch-row-resume:focus-visible,
+.branch-row-expand:focus-visible,
+.sub-card-skip-btn:focus-visible,
+.ask-user-option:focus-visible,
+.ask-user-submit:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 /* --- header ------------------------------------------------------- */
 
 header {
@@ -206,41 +250,6 @@ header {
 .icon-btn:disabled { opacity: 0.4; cursor: default; }
 .icon-btn.hidden { display: none; }
 #themeBtn svg.hidden { display: none; }
-
-.theme-picker { position: relative; }
-
-.theme-menu {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 6px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-md);
-  overflow: hidden;
-  min-width: 120px;
-  z-index: 6;
-}
-.theme-menu.hidden { display: none; }
-
-.theme-menu-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  padding: 8px 12px;
-  font-size: 12.5px;
-  color: var(--text);
-  cursor: pointer;
-}
-.theme-menu-item:hover { background: var(--accent-light); }
-.theme-menu-check { visibility: hidden; color: var(--accent); font-weight: 700; }
-.theme-menu-item.active .theme-menu-check { visibility: visible; }
 
 /* --- top progress bar (visible while the agent is running) -------- */
 
@@ -280,6 +289,39 @@ header {
   flex-shrink: 0;
 }
 .banner.hidden { display: none; }
+
+/* --- privacy/data-use notice ------------------------------------------ */
+
+.privacy-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card);
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  flex-shrink: 0;
+}
+.privacy-notice.hidden { display: none; }
+.privacy-notice p {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text);
+  opacity: 0.8;
+  flex: 1;
+}
+.privacy-notice-dismiss {
+  flex: 0 0 auto;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.privacy-notice-dismiss:hover { opacity: 0.9; }
 
 /* --- history panel --------------------------------------------------- */
 
@@ -461,6 +503,17 @@ main {
   transition: background 0.15s, opacity 0.15s, color 0.15s;
 }
 .copy-msg-btn:hover { opacity: 1; background: var(--card-alt); color: var(--text); }
+
+/* Per-link copy button injected after every rendered link in a markdown
+   body (see addCopyButtonsToLinks in sidepanel.js) — same button, just
+   inline-sized and vertically centered against the surrounding text/code
+   instead of sitting in its own toolbar row. */
+.link-copy-btn {
+  font-size: 9.5px;
+  padding: 1px 4px;
+  margin-left: 3px;
+  vertical-align: middle;
+}
 .copy-msg-btn.copied { opacity: 1; color: var(--success-text); }
 .copy-msg-btn.light {
   background: rgba(255,255,255,0.16);
@@ -535,6 +588,27 @@ main {
 }
 .entry.tool.ok { color: var(--success-text); background: var(--success-bg); }
 .entry.tool.error { color: var(--error-text); background: var(--error-bg); }
+
+/* Inline link for navigate/open_tab steps — same font as the surrounding
+   .tool-text (inherited), just colored and underlined like a link. Focusing/
+   focus-error mirror the feedback states already used by .tab-row/
+   .branch-row-view for the same reopen-a-tab action (see reopenTab in
+   sidepanel.js). */
+.tool-link {
+  font: inherit;
+  color: var(--accent-dark);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
+  word-break: break-all;
+}
+.tool-link:hover { opacity: 0.8; }
+.tool-link.focusing { opacity: 0.6; cursor: default; }
+.tool-link.focus-error { color: var(--error-text); }
 
 .entry.error {
   background: var(--error-bg);
@@ -612,6 +686,31 @@ main {
   white-space: nowrap;
 }
 .entry.assistant .body td code, .entry.final .body td code { word-break: break-all; }
+
+/* A completed run_batch's summary, rendered the same way a final chat
+   response is (see handleBatchDone in sidepanel.js) instead of leaving the
+   user to expand the raw step log to see what it concluded. */
+.batch-card-findings {
+  margin: 2px 0 4px 24px;
+  font-size: 12px;
+  color: var(--text);
+  white-space: normal;
+}
+.batch-card-findings.hidden { display: none; }
+.batch-card-findings p { margin: 0 0 8px; }
+.batch-card-findings p:last-child { margin-bottom: 0; }
+.batch-card-findings ul, .batch-card-findings ol { margin: 0 0 8px; padding-left: 20px; }
+.batch-card-findings li { margin-bottom: 3px; }
+.batch-card-findings code {
+  background: var(--card-alt); border-radius: 4px; padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+}
+.batch-card-findings pre {
+  background: var(--card-alt); border-radius: 6px; padding: 8px 10px; overflow-x: auto; margin: 0 0 8px;
+}
+.batch-card-findings pre code { background: none; padding: 0; }
+.batch-card-findings a { color: var(--accent-dark); }
+.batch-card-findings strong { font-weight: 650; }
 
 .entry .attachment-thumb {
   display: inline-block;
@@ -788,6 +887,19 @@ main {
   z-index: 5;
 }
 .agent-popover.hidden { display: none; }
+
+/* "/" and "@" each open their own single-purpose popover now (commands vs
+   agents) rather than one merged list — this header is a small reminder of
+   which one you're in during the transition away from the old "/ shows
+   both" behavior. */
+.agent-popover-header {
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  padding: 7px 12px 4px;
+}
 
 .agent-popover-row {
   display: flex;
@@ -1058,9 +1170,23 @@ main {
   margin-top: 4px;
   font-size: 11px;
   color: var(--text);
-  white-space: pre-wrap;
+  white-space: normal;
 }
 .branch-row-findings.hidden { display: none; }
+.branch-row-findings p { margin: 0 0 8px; }
+.branch-row-findings p:last-child { margin-bottom: 0; }
+.branch-row-findings ul, .branch-row-findings ol { margin: 0 0 8px; padding-left: 20px; }
+.branch-row-findings li { margin-bottom: 3px; }
+.branch-row-findings code {
+  background: var(--card-alt); border-radius: 4px; padding: 1px 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px;
+}
+.branch-row-findings pre {
+  background: var(--card-alt); border-radius: 6px; padding: 8px 10px; overflow-x: auto; margin: 0 0 8px;
+}
+.branch-row-findings pre code { background: none; padding: 0; }
+.branch-row-findings a { color: var(--accent-dark); }
+.branch-row-findings strong { font-weight: 650; }
 
 /* planned: queued, hasn't started — dimmed and inert */
 .branch-row.planned { opacity: 0.55; }
@@ -1253,6 +1379,23 @@ footer {
   gap: 4px;
 }
 .composer-usage.hidden { display: none; }
+
+/* Persistent (never dismissed) privacy line above the input — see the HTML
+   comment above #composerPrivacyNote for how this differs from the one-time
+   #privacyNotice banner higher up the panel. Kept small/muted so it doesn't
+   compete with the actual composer on every single use. */
+.composer-privacy-note {
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--text-faint);
+  padding: 0 2px 6px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+}
+.composer-privacy-note svg { flex: none; margin-top: 1.5px; opacity: 0.8; }
 
 .composer:focus-within {
   border-color: var(--accent);

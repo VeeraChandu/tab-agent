@@ -12,7 +12,10 @@
     "sidePanel",
     "unlimitedStorage",
     "alarms",
-    "notifications"
+    "notifications",
+    "webRequest",
+    "webNavigation",
+    "power"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -58,7 +61,7 @@
         "content.js"
       ],
       "run_at": "document_idle",
-      "all_frames": false
+      "all_frames": true
     }
   ]
 }

@@ -17,6 +17,8 @@ const historyPanel = document.getElementById("historyPanel");
 const historyList = document.getElementById("historyList");
 const historySearch = document.getElementById("historySearch");
 const warningBanner = document.getElementById("warningBanner");
+const privacyNotice = document.getElementById("privacyNotice");
+const privacyNoticeDismiss = document.getElementById("privacyNoticeDismiss");
 const statusBar = document.getElementById("statusBar");
 const statusText = document.getElementById("statusText");
 const topProgress = document.getElementById("topProgress");
@@ -35,23 +37,17 @@ const themeBtn = document.getElementById("themeBtn");
 const themeIconDark = document.getElementById("themeIconDark");
 const themeIconLight = document.getElementById("themeIconLight");
 const themeIconAuto = document.getElementById("themeIconAuto");
-const themeMenu = document.getElementById("themeMenu");
 
 const { renderMarkdown, escapeHtml } = window.TabAgentMarkdown;
 
 // --- theme (light / dark / system) -----------------------------------
 // "System" (stored as null) tracks prefers-color-scheme via the plain
 // @media block in sidepanel.css; "light"/"dark" pin data-theme regardless of
-// the OS setting. A small menu off the header icon makes all three an
-// explicit, visible choice rather than something you'd only discover by
-// clicking the icon repeatedly and noticing it cycles.
+// the OS setting. One button cycles through all three — click again to
+// advance — with the icon itself showing which mode is active, rather than
+// a dropdown that takes a click to open and a second to actually pick one.
+const THEME_CYCLE = [null, "light", "dark"]; // null = system
 let themePreference = null; // "light" | "dark" | null (system)
-
-function effectiveThemeIsDark() {
-  if (themePreference === "dark") return true;
-  if (themePreference === "light") return false;
-  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
 
 function applyTheme() {
   if (themePreference) {
@@ -66,12 +62,10 @@ function applyTheme() {
   themeIconDark.classList.toggle("hidden", themePreference !== "dark");
   themeIconLight.classList.toggle("hidden", themePreference !== "light");
   themeIconAuto.classList.toggle("hidden", themePreference !== null);
-  themeBtn.title = `Theme: ${themePreference || "system"}`;
 
-  const current = themePreference || "auto";
-  themeMenu.querySelectorAll(".theme-menu-item").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.themeChoice === current);
-  });
+  const current = themePreference || "system";
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(themePreference) + 1) % THEME_CYCLE.length] || "system";
+  themeBtn.title = `Theme: ${current} (click for ${next})`;
 }
 
 async function initTheme() {
@@ -81,32 +75,10 @@ async function initTheme() {
 }
 initTheme();
 
-function hideThemeMenu() {
-  themeMenu.classList.add("hidden");
-}
-
-themeBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  themeMenu.classList.toggle("hidden");
-});
-
-themeMenu.querySelectorAll(".theme-menu-item").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const choice = btn.dataset.themeChoice;
-    themePreference = choice === "auto" ? null : choice;
-    chrome.storage.local.set({ themePreference });
-    applyTheme();
-    hideThemeMenu();
-  });
-});
-
-document.addEventListener("click", (e) => {
-  if (!themeMenu.classList.contains("hidden") && !themeMenu.contains(e.target) && e.target !== themeBtn) {
-    hideThemeMenu();
-  }
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !themeMenu.classList.contains("hidden")) hideThemeMenu();
+themeBtn.addEventListener("click", () => {
+  themePreference = THEME_CYCLE[(THEME_CYCLE.indexOf(themePreference) + 1) % THEME_CYCLE.length];
+  chrome.storage.local.set({ themePreference });
+  applyTheme();
 });
 
 // pdfjsLib is loaded globally via lib/pdf.min.js (see sidepanel.html). It
@@ -120,8 +92,71 @@ if (window.pdfjsLib) {
 const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const MAX_PDF_BYTES = 20 * 1024 * 1024;
-const MAX_PDF_PAGES = 200;
-const MAX_PDF_CHARS = 40000;
+// No page/char cap here anymore — nothing extracted from an attachment is
+// ever trimmed. lib/attachmentCache.js chunks the full text on the
+// background side instead, so a large file just means more chunks, not
+// missing content. MAX_TEXT_ATTACHMENT_BYTES below is a different kind of
+// limit: a sanity ceiling on the RAW FILE at attach time, so a genuinely
+// enormous file can't hang the side panel just reading it into memory —
+// rejecting it outright is not the same thing as trimming what a smaller,
+// accepted file's content would show the model.
+const MAX_TEXT_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+
+// Extension -> a short format tag used for the attachment's chip icon and
+// passed through to the model's document wrapper tag. Anything not listed
+// here still gets treated as text if the browser reports a text-ish MIME
+// type (see textAttachmentFormat below) — this table just gives the common
+// ones a more specific tag than the generic "text" fallback.
+const TEXT_ATTACHMENT_FORMATS = {
+  txt: "text",
+  log: "text",
+  md: "markdown",
+  markdown: "markdown",
+  csv: "csv",
+  tsv: "tsv",
+  json: "json",
+  yaml: "yaml",
+  yml: "yaml",
+  xml: "xml",
+  html: "html",
+  htm: "html",
+  js: "code",
+  ts: "code",
+  py: "code",
+  css: "code",
+  sh: "code",
+  java: "code",
+  c: "code",
+  cpp: "code",
+  go: "code",
+  rb: "code",
+  php: "code",
+  rs: "code",
+};
+
+// Extension-first, same reasoning as the existing PDF check just below
+// (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) — browsers
+// are unreliable about reporting MIME types for plain text files (empty
+// string is common for unrecognized extensions), so the filename is the
+// more trustworthy signal. Falls back to sniffing file.type for anything
+// with an unrecognized extension that's still clearly text-like.
+function textAttachmentFormat(file) {
+  const ext = (file.name.split(".").pop() || "").toLowerCase();
+  if (Object.prototype.hasOwnProperty.call(TEXT_ATTACHMENT_FORMATS, ext)) return TEXT_ATTACHMENT_FORMATS[ext];
+  if (file.type === "text/plain" || file.type === "text/csv" || file.type === "application/json" || file.type.startsWith("text/")) return "text";
+  return null;
+}
+
+// Shared by every place a non-image attachment chip gets rendered (the
+// composer's own attachments row, a sent message's preview chips, and the
+// history replay of both) so the icon-per-format mapping only lives once.
+function docIcon(format) {
+  if (format === "pdf") return "📄";
+  if (format === "csv" || format === "tsv") return "📊";
+  if (format === "json") return "🧾";
+  if (format === "code") return "💻";
+  return "📝";
+}
 
 let running = false;
 let autoScroll = true;
@@ -129,6 +164,14 @@ let attachments = []; // images: { id, name, kind:"image", mediaType, data (base
                        // pdfs:   { id, name, kind:"pdf", text, pageCount, truncated }
 let editingNodeId = null;
 let currentSessionId = null;
+// The node id of the run currently being displayed live. null means "not
+// locked onto a run yet — the next AGENT_EVENT/AGENT_PAUSED/AGENT_DONE we see
+// for the current session is it." Reset to null right before every message
+// that starts or resumes a run (see resetActiveRunTracking below), so a stray
+// broadcast from an abandoned run (e.g. a branch that was edited away from
+// mid-run, or a step-limit pause that later times out on its own) can't get
+// appended into whatever the sidepanel happens to be showing right now.
+let activeRunNodeId = null;
 let agents = [];
 let activeAgent = null;
 let popoverMatches = [];
@@ -139,11 +182,11 @@ let popoverIndex = 0;
 // utility commands, always available, matched by the same "/" picker.
 
 const BUILTIN_COMMANDS = [
-  { slug: "clear", description: "Start a new chat", kind: "command" },
+  { slug: "clear", description: "Reset this chat (wipes its messages, keeps the session)", kind: "command" },
   { slug: "retry", description: "Regenerate the last response", kind: "command" },
   { slug: "compact", description: "Summarize this chat to save tokens", kind: "command" },
   { slug: "stop", description: "Stop the current run", kind: "command" },
-  { slug: "model", description: "Switch model — /model <name>", kind: "command" },
+  { slug: "model", description: "Switch model - /model <name>", kind: "command" },
   { slug: "help", description: "List available commands and agents", kind: "command" },
 ];
 
@@ -177,7 +220,12 @@ function hidePopover() {
   popoverMatches = [];
 }
 
-function renderPopover(matches) {
+// headerLabel + a fixed trigger char (not per-item) because / and @ now open
+// two entirely separate, single-purpose pickers — see checkForSlashCommand
+// below. The header is mostly a reminder during the transition away from the
+// old merged "/ shows both" behavior; the trigger char itself already
+// disambiguates which list you're looking at.
+function renderPopover(matches, headerLabel, triggerChar) {
   popoverMatches = matches;
   popoverIndex = 0;
   agentPopover.innerHTML = "";
@@ -187,11 +235,18 @@ function renderPopover(matches) {
     return;
   }
 
+  if (headerLabel) {
+    const header = document.createElement("div");
+    header.className = "agent-popover-header";
+    header.textContent = headerLabel;
+    agentPopover.appendChild(header);
+  }
+
   matches.forEach((item, i) => {
     const row = document.createElement("button");
     row.type = "button";
     row.className = "agent-popover-row" + (i === 0 ? " highlighted" : "") + (item.kind === "command" ? " builtin" : "");
-    row.innerHTML = `<span class="agent-popover-slug">/${escapeHtml(item.slug)}</span><span class="agent-popover-desc">${escapeHtml(item.description || "")}</span>`;
+    row.innerHTML = `<span class="agent-popover-slug">${triggerChar}${escapeHtml(item.slug)}</span><span class="agent-popover-desc">${escapeHtml(item.description || "")}</span>`;
     row.addEventListener("mousedown", (e) => {
       e.preventDefault(); // keep textarea focus
       pickPopoverItem(item);
@@ -205,6 +260,12 @@ function renderPopover(matches) {
 function updatePopoverHighlight() {
   const rows = agentPopover.querySelectorAll(".agent-popover-row");
   rows.forEach((r, i) => r.classList.toggle("highlighted", i === popoverIndex));
+  // The popover scrolls (max-height + overflow-y in sidepanel.css) once the
+  // list is taller than it, so arrow-key navigation needs to actively keep
+  // the highlighted row in view — "nearest" only scrolls the minimum amount
+  // needed (no jump when already visible) and still scrolls fully when the
+  // index wraps from last back to first, or vice versa.
+  rows[popoverIndex]?.scrollIntoView({ block: "nearest" });
 }
 
 function pickPopoverItem(item) {
@@ -229,25 +290,42 @@ function pickPopoverItem(item) {
   taskInput.focus();
 }
 
+// "/" and "@" open two separate, single-purpose pickers rather than one
+// merged list — built-in commands (one-shot actions: reset the chat, switch
+// model, stop a run...) and agents (persistent presets that stay sticky for
+// the rest of the chat once picked) are different enough kinds of things
+// that showing them identically in one list made it easy to mix them up, and
+// let an agent's slug silently collide with a reserved command name. Splitting
+// the trigger char removes that collision entirely: an agent can be named
+// anything, including "clear" or "help", since it's only ever reachable as
+// @clear / @help, never confusable with the built-in /clear or /help.
 function checkForSlashCommand() {
   const value = taskInput.value;
-  const match = value.match(/^\/([a-z0-9_]*)$/i);
-  if (!match) {
-    hidePopover();
+  const commandMatch = value.match(/^\/([a-z0-9_]*)$/i);
+  if (commandMatch) {
+    const query = commandMatch[1].toLowerCase();
+    const commandItems = BUILTIN_COMMANDS.filter((c) => c.slug.includes(query));
+    renderPopover(commandItems, "Commands", "/");
     return;
   }
-  const query = match[1].toLowerCase();
-  const commandItems = BUILTIN_COMMANDS.filter((c) => c.slug.includes(query));
-  const agentItems = agents
-    .filter((a) => a.slug.toLowerCase().includes(query) || (a.name || "").toLowerCase().includes(query))
-    .map((a) => ({ slug: a.slug, description: a.description || a.name || "", kind: "agent", ref: a }));
-  renderPopover([...commandItems, ...agentItems]);
+  const agentMatch = value.match(/^@([a-z0-9_]*)$/i);
+  if (agentMatch) {
+    const query = agentMatch[1].toLowerCase();
+    const agentItems = agents
+      .filter((a) => a.slug.toLowerCase().includes(query) || (a.name || "").toLowerCase().includes(query))
+      .map((a) => ({ slug: a.slug, description: a.description || a.name || "", kind: "agent", ref: a }));
+    renderPopover(agentItems, "Agents", "@");
+    return;
+  }
+  hidePopover();
 }
 
-// Lets users type the whole command directly, e.g. "/youtube_agent find X",
-// without ever touching the popover.
+// Lets users type the whole command directly, e.g. "@research_agent find X",
+// without ever touching the popover. "@" — not "/" — matching the picker
+// split above; there's no /agent_slug fallback, a clean cutover rather than
+// supporting both forms indefinitely.
 function extractDirectAgentCommand(text) {
-  const match = text.match(/^\/([a-z0-9_]+)\s+([\s\S]*)$/i);
+  const match = text.match(/^@([a-z0-9_]+)\s+([\s\S]*)$/i);
   if (!match) return null;
   const agent = agents.find((a) => a.slug.toLowerCase() === match[1].toLowerCase());
   if (!agent) return null;
@@ -262,6 +340,12 @@ async function loadProviders() {
 
   const options = [];
   providers.forEach((p) => {
+    // p.enabled === false is an explicit provider-level opt-out (the
+    // Settings switch that replaced the old "default" radio) — skip its
+    // models entirely rather than just deprioritizing them. Providers saved
+    // before this switch existed have no `enabled` field, so absence still
+    // means enabled (back-compat default).
+    if (p.enabled === false) return;
     // See background.js's getConfig() for why this checks presence, not
     // length — an empty array means "explicitly disabled", not "unset".
     const enabled = p.enabledModelIds ? p.enabledModelIds : (p.models || []).map((m) => m.id);
@@ -305,15 +389,35 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 function checkConfig(providers, options) {
   if (!providers.length) {
-    warningBanner.textContent = "No provider set up yet — click ⚙ to add an Anthropic or OpenAI-compatible API key.";
+    warningBanner.textContent = "No provider set up yet - click ⚙ to add an Anthropic or OpenAI-compatible API key.";
     warningBanner.classList.remove("hidden");
   } else if (!options.length) {
-    warningBanner.textContent = "No models enabled — click ⚙ to confirm a provider and check at least one model.";
+    warningBanner.textContent = "No models enabled - click ⚙ to confirm a provider and check at least one model.";
     warningBanner.classList.remove("hidden");
   } else {
     warningBanner.classList.add("hidden");
   }
 }
+
+// --- data-use disclosure ------------------------------------------------
+// Bump this when what Tab Agent accesses or where it sends data actually
+// changes — a stored ack from an older version won't suppress the notice
+// for a newer one, so a material change gets surfaced again rather than
+// silently inheriting a prior "Got it" click. See PRIVACY_POLICY.md.
+const PRIVACY_NOTICE_VERSION = 1;
+
+async function checkPrivacyNotice() {
+  const { privacyNoticeAckVersion } = await chrome.storage.local.get(["privacyNoticeAckVersion"]);
+  if (privacyNoticeAckVersion === PRIVACY_NOTICE_VERSION) return;
+  privacyNotice.classList.remove("hidden");
+}
+
+privacyNoticeDismiss.addEventListener("click", () => {
+  privacyNotice.classList.add("hidden");
+  chrome.storage.local.set({ privacyNoticeAckVersion: PRIVACY_NOTICE_VERSION });
+});
+
+checkPrivacyNotice();
 
 loadProviders();
 settingsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
@@ -322,6 +426,7 @@ settingsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
 
 function startNewChat() {
   currentSessionId = null;
+  activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
   logEl.innerHTML = "";
@@ -336,16 +441,137 @@ function startNewChat() {
 
 newChatBtn.addEventListener("click", startNewChat);
 
+// /clear — distinct from "+ New chat": this wipes the CURRENT session's
+// messages in place (same session id, same History entry) rather than
+// abandoning it in favor of a brand-new one. Mirrors startNewChat()'s UI
+// reset, but writes an emptied-out version of the existing session back to
+// storage instead of just setting currentSessionId to null.
+async function clearCurrentSession() {
+  if (!currentSessionId) {
+    // Panel is already blank/unsent — nothing to wipe in place.
+    startNewChat();
+    return;
+  }
+  if (running) {
+    addEntry("info", "Info", "Stop the current task before clearing this chat.");
+    return;
+  }
+  const { sessions: current = [] } = await chrome.storage.local.get(["sessions"]);
+  const idx = current.findIndex((s) => s.id === currentSessionId);
+  if (idx === -1) {
+    // Already gone from storage some other way — fall back to a normal new chat.
+    startNewChat();
+    return;
+  }
+  const cleared = {
+    ...current[idx],
+    title: "New chat",
+    agentId: null,
+    updatedAt: Date.now(),
+    nodes: {},
+    rootChildIds: [],
+    rootSelectedChildId: null,
+  };
+  delete cleared.compactedUsage; // lifetime token ledger — nothing left to account for once wiped
+
+  // Re-read storage right before writing instead of reusing `current` from
+  // above — this page and background.js (which can be mid checkpoint-save
+  // for a DIFFERENT session that's still running there, via
+  // persistAgentEvent -> saveSession, since activeRuns allows more than one
+  // concurrent run) are separate processes with no shared lock, so time can
+  // pass between that read and this write. Replacing only the one session
+  // being cleared in a freshly-read copy keeps a concurrent background
+  // write to any other session from being silently reverted.
+  const { sessions: fresh = [] } = await chrome.storage.local.get(["sessions"]);
+  const freshIdx = fresh.findIndex((s) => s.id === currentSessionId);
+  if (freshIdx === -1) {
+    // Deleted from storage between the two reads — nothing left to clear.
+    startNewChat();
+    return;
+  }
+  fresh[freshIdx] = cleared;
+  await chrome.storage.local.set({ sessions: fresh });
+
+  activeRunNodeId = null;
+  editingNodeId = null;
+  editBanner.classList.add("hidden");
+  logEl.innerHTML = "";
+  attachments = [];
+  renderAttachments();
+  setActiveAgent(null);
+  autoScroll = true;
+  showEmptyState();
+  closeHistory();
+  document.getElementById("composerUsage")?.classList.add("hidden");
+}
+
+// Settings' "Run manually" button (for a scheduled check that needs input)
+// opens this panel with the task's prompt+notes pre-filled — reuses the
+// normal composer/send flow so ask_user works exactly like any other run,
+// since a headless scheduled run has nobody to answer it.
+//
+// Two things this guards against: (1) the live PREFILL_SCHEDULED_TASK
+// message and the storage-fallback check below can both fire for the exact
+// same prefill (the fallback exists in case the panel wasn't listening yet)
+// — `ts` uniquely identifies one prefill, so applying it twice is a no-op;
+// (2) unlike startNewChat() elsewhere, this used to blow away the panel
+// unconditionally even if a different run was already in progress here —
+// mirror clearCurrentSession()'s `running` guard instead of silently
+// orphaning that run.
+let lastAppliedPrefillTs = null;
+function applyScheduledTaskPrefill({ prompt, notes, ts }) {
+  if (ts && ts === lastAppliedPrefillTs) return;
+  if (running) {
+    addEntry("info", "Info", 'A task is already running in this chat - stop it first, then use "Run manually" again from Settings.');
+    return;
+  }
+  lastAppliedPrefillTs = ts || Date.now();
+  startNewChat();
+  const combined = notes && notes.trim() ? `${prompt || ""}\n\n${notes.trim()}` : prompt || "";
+  taskInput.value = combined;
+  autoResize();
+  taskInput.focus();
+}
+
+// The prefill message sent the instant the tab/panel opens can arrive before
+// this script has finished loading and registered its listener — fall back
+// to checking storage for anything left within the last 30s (background.js
+// stashes it there right before sending the message, as a just-in-case).
+(async () => {
+  const { pendingScheduledTaskPrefill } = await chrome.storage.local.get(["pendingScheduledTaskPrefill"]);
+  if (pendingScheduledTaskPrefill) {
+    if (Date.now() - pendingScheduledTaskPrefill.ts < 30000) applyScheduledTaskPrefill(pendingScheduledTaskPrefill);
+    chrome.storage.local.remove("pendingScheduledTaskPrefill").catch(() => {});
+  }
+})();
+
 historyBtn.addEventListener("click", async () => {
   historySearch.value = "";
   await renderHistoryList();
   historyPanel.classList.remove("hidden");
+  historyBtn.setAttribute("aria-expanded", "true");
 });
 closeHistoryBtn.addEventListener("click", closeHistory);
 
 function closeHistory() {
   historyPanel.classList.add("hidden");
+  historyBtn.setAttribute("aria-expanded", "false");
 }
+
+// Click-outside-to-close — historyPanel is a positioned popup (absolute,
+// no backdrop element covering the rest of the UI), so nothing was closing
+// it on an outside click before this; only Escape and the panel's own X
+// button did. mousedown (not click) so this fires before any click handler
+// on whatever was clicked underneath, matching normal popup/dropdown
+// behavior. Ignores clicks on historyBtn itself since that already has its
+// own toggle-open handler above — without this guard, a click on the button
+// while the panel is open would close it here and then immediately reopen
+// it via the click handler right after.
+document.addEventListener("mousedown", (e) => {
+  if (historyPanel.classList.contains("hidden")) return;
+  if (historyPanel.contains(e.target) || historyBtn.contains(e.target)) return;
+  closeHistory();
+});
 
 // Global Escape: stop a running task if one is in progress, otherwise close
 // whatever overlay is open (history panel, agent popover). Per-input Escape
@@ -356,7 +582,7 @@ document.addEventListener("keydown", (e) => {
   if (document.activeElement === taskInput && !agentPopover.classList.contains("hidden")) return;
   if (running) {
     showStatus("Stopping…");
-    chrome.runtime.sendMessage({ type: "STOP_TASK" });
+    chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId });
     return;
   }
   if (!historyPanel.classList.contains("hidden")) {
@@ -389,6 +615,7 @@ document.addEventListener("keydown", (e) => {
       historySearch.value = "";
       renderHistoryList();
       historyPanel.classList.remove("hidden");
+      historyBtn.setAttribute("aria-expanded", "true");
     } else {
       closeHistory();
     }
@@ -415,24 +642,38 @@ const HISTORY_MAX_SESSIONS = 30;
 // in a $ cost estimate per node (each node records which model generated
 // its tokens, so a session that switched models mid-conversation via
 // /model still prices each turn at the rate that actually applied).
+// Two different numbers live behind this one label: "total" (everything this
+// chat has ever cost, across every turn and every /compact — monotonic,
+// never goes down) and "active" (the size of the context that would be sent
+// on the NEXT message, which is the number /compact actually shrinks). Until
+// a chat has been compacted at least once, these are the same figure by
+// construction, so showing one merged number is both simpler and accurate.
+// The moment session.compactedUsage exists (set by background.js the first
+// time /compact runs), the two are free to diverge and get their own labels.
 function sessionUsageLabel(session) {
   let input = 0;
   let output = 0;
   let knownCost = 0;
   let hasKnownCost = false;
   let hasUnknownCost = false;
-  for (const node of Object.values(session.nodes || {})) {
-    if (!node.usage) continue;
-    input += node.usage.inputTokens || 0;
-    output += node.usage.outputTokens || 0;
-    const priced = window.TabAgentPricing?.estimateCost(node.usage.model, node.usage.inputTokens, node.usage.outputTokens);
+  const addUsage = (usage) => {
+    if (!usage) return;
+    input += usage.inputTokens || 0;
+    output += usage.outputTokens || 0;
+    const priced = window.TabAgentPricing?.estimateCost(usage.model, usage.inputTokens, usage.outputTokens);
     if (priced) {
       knownCost += priced.cost;
       hasKnownCost = true;
-    } else if (node.usage.inputTokens || node.usage.outputTokens) {
+    } else if (usage.inputTokens || usage.outputTokens) {
       hasUnknownCost = true;
     }
-  }
+  };
+  for (const node of Object.values(session.nodes || {})) addUsage(node.usage);
+  // Tokens a /compact cleared off a node still cost real money — fold them
+  // (and each compaction call's own cost) back in so the lifetime total
+  // never drops just because the context was summarized.
+  addUsage(session.compactedUsage);
+
   const total = input + output;
   if (!total) return "";
   const fmt = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
@@ -441,7 +682,12 @@ function sessionUsageLabel(session) {
     const costLabel = window.TabAgentPricing.formatCost(knownCost);
     costPart = ` · ~${costLabel}${hasUnknownCost ? "+" : ""}`;
   }
-  return ` · ~${fmt(total)} tokens${costPart}`;
+
+  if (!session.compactedUsage) return ` · ~${fmt(total)} tokens${costPart}`;
+
+  const activeNode = computeActivePath(session).at(-1);
+  const active = activeNode?.usage ? (activeNode.usage.inputTokens || 0) + (activeNode.usage.outputTokens || 0) : 0;
+  return ` · ~${fmt(total)} total${costPart} · ~${fmt(active)} active`;
 }
 
 function sessionToTranscript(session) {
@@ -450,7 +696,7 @@ function sessionToTranscript(session) {
   const lines = [`# ${migrated.title || "Tab Agent chat"}`, ""];
   for (const node of path) {
     lines.push(`**You:** ${node.userText || "(attachment only)"}`, "");
-    const docNames = (node.userAttachmentPreviews || []).filter((p) => p && typeof p === "object" && p.kind === "pdf");
+    const docNames = (node.userAttachmentPreviews || []).filter((p) => p && typeof p === "object" && (p.kind === "pdf" || p.kind === "doc"));
     if (docNames.length) lines.push(`_Attached: ${docNames.map((d) => d.name).join(", ")}_`, "");
     for (const event of node.uiEvents || []) {
       if (event.type === "finish") lines.push(event.answer || "", "");
@@ -543,6 +789,13 @@ async function renderHistoryList(filterText = "") {
       e.stopPropagation();
       const { sessions: current = [] } = await chrome.storage.local.get(["sessions"]);
       await chrome.storage.local.set({ sessions: current.filter((s) => s.id !== session.id) });
+      // Clears this chat's page recall cache entries too (see
+      // lib/pageCache.js) so deleting a chat doesn't leave its cached page
+      // content orphaned in storage. Routed through background.js since
+      // this file can't import lib/pageCache.js directly (classic script,
+      // not a module) - fire-and-forget, deletion of the visible chat
+      // itself doesn't need to wait on it.
+      chrome.runtime.sendMessage({ type: "DELETE_SESSION_CACHE", sessionId: session.id }).catch(() => {});
       if (session.id === currentSessionId) startNewChat();
       renderHistoryList(historySearch.value);
     });
@@ -681,11 +934,11 @@ function renderUserNode(session, node) {
   div.appendChild(body);
 
   for (const preview of node.userAttachmentPreviews || []) {
-    if (preview && typeof preview === "object" && preview.kind === "pdf") {
+    if (preview && typeof preview === "object" && (preview.kind === "pdf" || preview.kind === "doc")) {
       const chip = document.createElement("span");
       chip.className = "attachment-doc-thumb";
       chip.title = preview.name;
-      chip.textContent = `📄 ${preview.name}${preview.pageCount ? ` (${preview.pageCount}p)` : ""}`;
+      chip.textContent = `${docIcon(preview.format)} ${preview.name}${preview.pageCount ? ` (${preview.pageCount}p)` : ""}`;
       div.appendChild(chip);
       continue;
     }
@@ -786,6 +1039,7 @@ async function refreshCurrentSessionView() {
 function loadSessionIntoView(rawSession) {
   const session = migrateSessionIfNeeded(rawSession);
   currentSessionId = session.id;
+  activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
   setActiveAgent(session.agentId ? agents.find((a) => a.id === session.agentId) || null : null);
@@ -808,6 +1062,21 @@ function hideEmptyState() {
 // final answer text is stable once rendered, but keeping the same pattern
 // as the edit button's node reference costs nothing and avoids ever copying
 // stale text if this is ever reused somewhere more dynamic).
+// Every link in rendered markdown (bracketed links, bare-URL autolinks, and
+// now URLs inside code blocks — see lib/markdown.js's autolinkCode) already
+// opens in a new tab via target="_blank". This adds the other half: a tiny
+// inline copy button right after each one, so a long/tokenized URL (a
+// captured stream link, say) can be copied exactly without the user having
+// to manually select it or hunt for "copy link address" in a context menu.
+function addCopyButtonsToLinks(body) {
+  body.querySelectorAll("a[href]").forEach((a) => {
+    const btn = createCopyButton(() => a.href, "muted");
+    btn.classList.add("link-copy-btn");
+    btn.title = "Copy link";
+    a.insertAdjacentElement("afterend", btn);
+  });
+}
+
 function createCopyButton(getText, variant = "muted") {
   const btn = document.createElement("button");
   btn.type = "button";
@@ -851,7 +1120,10 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
   const div = document.createElement("div");
   div.className = `entry ${kind}`;
 
-  const copyableKind = kind === "user" || kind === "assistant" || kind === "final";
+  // Copy button only on the user's own message and the actual final answer —
+  // not on intermediate assistant narration bubbles, which are transient
+  // "thinking out loud" text rather than something worth copying on its own.
+  const copyableKind = kind === "user" || kind === "final";
   if (copyableKind) {
     const toolbar = document.createElement("div");
     toolbar.className = kind === "user" ? "user-entry-toolbar" : "entry-toolbar";
@@ -872,17 +1144,18 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
   body.className = "body";
   if (markdown) {
     body.innerHTML = renderMarkdown(text);
+    addCopyButtonsToLinks(body);
   } else {
     body.textContent = text;
   }
   div.appendChild(body);
 
   for (const preview of attachmentPreviews) {
-    if (preview && typeof preview === "object" && preview.kind === "pdf") {
+    if (preview && typeof preview === "object" && (preview.kind === "pdf" || preview.kind === "doc")) {
       const chip = document.createElement("span");
       chip.className = "attachment-doc-thumb";
       chip.title = preview.name;
-      chip.textContent = `📄 ${preview.name}${preview.pageCount ? ` (${preview.pageCount}p)` : ""}`;
+      chip.textContent = `${docIcon(preview.format)} ${preview.name}${preview.pageCount ? ` (${preview.pageCount}p)` : ""}`;
       div.appendChild(chip);
       continue;
     }
@@ -895,6 +1168,52 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
   logEl.appendChild(div);
   scrollToBottomIfNeeded();
   return div;
+}
+
+// navigate/open_tab's whole summary IS the destination URL (see
+// summarizeInput below) — rendered as a real clickable element instead of
+// plain text so a step that went somewhere can be reopened directly rather
+// than the user re-typing/copying it out of the log. Only for genuine
+// http(s) URLs; navigate's "back" pseudo-target and anything else falls
+// through to plain text. Reuses the same REOPEN_TAB plumbing (and focusing/
+// focus-error feedback states) as the "↻ reopen" affordance on a closed
+// parallel_investigate branch row (see reopenTab above).
+const LINKABLE_TOOLS = new Set(["navigate", "open_tab"]);
+
+function isHttpUrl(str) {
+  if (typeof str !== "string" || !str) return false;
+  try {
+    const u = new URL(str);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+// Builds the `.tool-text` span shared by the pending and completed states of
+// a tool card. `suffix` is plain trailing text (e.g. " — running…") appended
+// after the summary/link — never part of the link itself.
+function buildToolTextSpan(name, input, summaryText, suffix = "") {
+  const span = document.createElement("span");
+  span.className = "tool-text";
+
+  if (LINKABLE_TOOLS.has(name) && isHttpUrl(summaryText)) {
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "tool-link";
+    link.title = summaryText;
+    link.textContent = summaryText.length > 70 ? `${summaryText.slice(0, 67)}…` : summaryText;
+    link.addEventListener("click", (e) => {
+      e.stopPropagation();
+      reopenTab(summaryText, link);
+    });
+    span.appendChild(link);
+  } else {
+    span.appendChild(document.createTextNode(summaryText));
+  }
+
+  if (suffix) span.appendChild(document.createTextNode(suffix));
+  return span;
 }
 
 function addPendingTool(id, name, input) {
@@ -911,7 +1230,10 @@ function addPendingTool(id, name, input) {
   const body = document.createElement("div");
   body.className = "tool-body";
   const summary = summarizeInput(name, input);
-  body.innerHTML = `<span class="spinner-inline"></span><span class="tool-text">${escapeHtml(summary)}${summary ? " — " : ""}running…</span>`;
+  const spinner = document.createElement("span");
+  spinner.className = "spinner-inline";
+  body.appendChild(spinner);
+  body.appendChild(buildToolTextSpan(name, input, summary, summary ? " - running…" : "running…"));
   div.appendChild(body);
 
   logEl.appendChild(div);
@@ -992,7 +1314,10 @@ function updateToolEntry(id, name, result, input) {
   div.classList.remove("pending");
   div.classList.add(ok ? "ok" : "error");
   const body = div.querySelector(".tool-body");
-  if (body) body.innerHTML = `<span class="tool-text">${escapeHtml(text)}</span>`;
+  if (body) {
+    body.innerHTML = "";
+    body.appendChild(buildToolTextSpan(name, input, text));
+  }
   scrollToBottomIfNeeded();
 }
 
@@ -1076,7 +1401,7 @@ function renderFilterImagesEntry(div, result) {
   const matches = result.matches || [];
   const nonMatches = result.non_matches || [];
   const uncertain = result.uncertain || [];
-  const summaryText = `${matches.length} of ${matches.length + nonMatches.length + uncertain.length} match${matches.length === 1 ? "es" : ""}${result.criteria ? ` — "${result.criteria}"` : ""}`;
+  const summaryText = `${matches.length} of ${matches.length + nonMatches.length + uncertain.length} match${matches.length === 1 ? "es" : ""}${result.criteria ? ` - "${result.criteria}"` : ""}`;
 
   if (!div) {
     addEntry("tool ok", `${toolIcon("filter_images")} ${toolLabel("filter_images")}`, summaryText);
@@ -1146,7 +1471,7 @@ function reopenTab(url, btnEl) {
 function skipSubtasks(callId, btnEl) {
   btnEl.disabled = true;
   btnEl.textContent = "Skipping…";
-  chrome.runtime.sendMessage({ type: "SKIP_SUBTASKS", callId }, (res) => {
+  chrome.runtime.sendMessage({ type: "SKIP_SUBTASKS", callId, sessionId: currentSessionId }, (res) => {
     if (!res || !res.ok) {
       btnEl.disabled = false;
       btnEl.textContent = "⏹ Skip remaining, continue";
@@ -1167,7 +1492,7 @@ function skipSubtasks(callId, btnEl) {
 // swaps the view button for a reopen button.
 
 function branchLabelText(b) {
-  return b.label + (b.url ? ` — ${hostnameLabel(b.url)}` : "");
+  return b.label + (b.url ? ` - ${hostnameLabel(b.url)}` : "");
 }
 
 function hostnameLabel(url) {
@@ -1335,7 +1660,7 @@ function handleBranchActive(event) {
     if (steps) {
       const li = document.createElement("li");
       li.className = "branch-row-steps-divider";
-      li.textContent = "— resumed —";
+      li.textContent = "· resumed ·";
       steps.appendChild(li);
       steps.scrollTop = steps.scrollHeight;
     }
@@ -1373,9 +1698,29 @@ function handleBranchStep(event) {
   }
 }
 
-function handleBranchDone(event) {
+// Bulk-inserts a run's full set of step captions in one go — used only on
+// replay (see handleBranchDone/handleBatchDone below), since a live run
+// already appends these one at a time as each branch_step/batch_step event
+// arrives. branch_step/batch_step themselves are still broadcast-only (never
+// written to storage, see persistAgentEvent in background.js) — instead the
+// terminal branch_done/batch_done event (which IS persisted) now carries the
+// whole run's captions in a `steps` array, so reloading/switching edit
+// versions/reopening from History can rebuild the list without a storage
+// write per micro-step.
+function appendStepCaptions(stepsEl, captions) {
+  if (!stepsEl || !Array.isArray(captions) || !captions.length) return;
+  for (const caption of captions) {
+    const li = document.createElement("li");
+    li.textContent = caption;
+    stepsEl.appendChild(li);
+  }
+  stepsEl.scrollTop = stepsEl.scrollHeight;
+}
+
+function handleBranchDone(event, isReplay = false) {
   const row = findBranchRow(event.callId, event.label);
   if (!row) return;
+  if (isReplay) appendStepCaptions(row.querySelector(".branch-row-steps"), event.steps);
   row.classList.remove("planned", "active");
   if (event.objective) row.dataset.objective = event.objective;
   if (typeof event.tabId === "number") row.dataset.tabId = String(event.tabId);
@@ -1398,7 +1743,7 @@ function handleBranchDone(event) {
     // specific source back up with a fresh step budget instead of it just
     // being a dead end.
     row.classList.add("done-incomplete");
-    if (caption) caption.textContent = "Ran out of steps — resume?";
+    if (caption) caption.textContent = "Ran out of steps - resume?";
     if (resumeBtn) {
       resumeBtn.classList.remove("hidden");
       resumeBtn.disabled = false;
@@ -1412,7 +1757,12 @@ function handleBranchDone(event) {
   }
 
   if (findings && event.findings) {
-    findings.textContent = event.findings;
+    // Sub-agents write findings the same way the main loop writes a finish
+    // answer — markdown (bold, bullets, etc.) — so render it the same way
+    // instead of dumping it as plain text, which just showed the raw
+    // **asterisks**/- bullets literally instead of formatting them.
+    findings.innerHTML = renderMarkdown(event.findings);
+    addCopyButtonsToLinks(findings);
     findings.classList.remove("hidden");
   }
   const tabId = typeof event.tabId === "number" ? event.tabId : Number(row.dataset.tabId);
@@ -1456,6 +1806,7 @@ function resumeBranchRow(row, callId) {
     resumeBtn.textContent = "Resuming…";
   }
 
+  activeRunNodeId = nodeId;
   const [providerId, modelId] = (modelSelect.value || "").split("::");
   chrome.runtime.sendMessage(
     {
@@ -1477,7 +1828,7 @@ function resumeBranchRow(row, callId) {
           resumeBtn.textContent = "▶ resume";
         }
         const caption = row.querySelector(".branch-row-caption");
-        if (caption) caption.textContent = (res && res.error) || "Couldn't resume — try again.";
+        if (caption) caption.textContent = (res && res.error) || "Couldn't resume - try again.";
       }
       // On success, the branch_active/branch_step/branch_done broadcast
       // events (fired from resumeBranch via the same onEvent callback)
@@ -1541,6 +1892,10 @@ function addBatchCard(callId, maxSteps) {
 
   div.appendChild(main);
 
+  const findings = document.createElement("div");
+  findings.className = "batch-card-findings hidden";
+  div.appendChild(findings);
+
   const detail = document.createElement("div");
   detail.className = "branch-row-detail hidden";
   const steps = document.createElement("ul");
@@ -1574,9 +1929,10 @@ function handleBatchStep(event) {
   }
 }
 
-function handleBatchDone(event) {
+function handleBatchDone(event, isReplay = false) {
   const div = document.getElementById(`batch-${event.callId}`);
   if (!div) return;
+  if (isReplay) appendStepCaptions(div.querySelector(".branch-row-steps"), event.steps);
   div.classList.remove("active");
 
   if (event.skipped) {
@@ -1588,12 +1944,24 @@ function handleBatchDone(event) {
   const caption = div.querySelector(".batch-card-caption");
   if (caption) {
     caption.textContent = event.skipped
-      ? `Stopped after ${event.stepsUsed} steps — skipped by user`
+      ? `Stopped after ${event.stepsUsed} steps - skipped by user`
       : event.incomplete
-      ? `Paused after ${event.stepsUsed} steps — call run_batch again to continue`
+      ? `Paused after ${event.stepsUsed} steps - call run_batch again to continue`
       : event.ok
       ? "Done"
       : "Couldn't complete";
+  }
+
+  // A batch task's terminal state (finished or gave up, not paused/skipped)
+  // is the closest thing it has to a "final answer" — render its summary the
+  // same way a normal chat final response renders (markdown, not a plain-text
+  // dump), instead of leaving the user to expand the raw step-by-step
+  // caption log to find out what it actually concluded.
+  const findings = div.querySelector(".batch-card-findings");
+  if (findings && event.summary && !event.skipped && !event.incomplete) {
+    findings.innerHTML = renderMarkdown(event.summary);
+    addCopyButtonsToLinks(findings);
+    findings.classList.remove("hidden");
   }
 
   const skipBtn = div.querySelector(".sub-card-skip-btn");
@@ -1605,30 +1973,46 @@ function summarizeInput(name, input) {
   if (name === "type_text") return `"${input.text || ""}" → ${input.element_id || ""}`;
   if (name === "click") return input.element_id || "";
   if (name === "navigate") return input.url || "";
+  if (name === "recall_page") return input.url || "";
+  if (name === "read_attachment_chunk") return `chunk ${input.chunk_index} of ${input.attachment_id || "attachment"}`;
   if (name === "scroll") return input.direction || "";
   if (name === "switch_tab") return `tab ${input.tab_id}`;
   if (name === "open_tab") return input.url || "";
   if (name === "read_tabs") return `${(input.tab_ids || []).length} tabs`;
   if (name === "extract_table") return input.table_id || "";
   if (name === "view_image") return input.image_id || "";
-  if (name === "filter_images") return `${(input.image_ids || []).length} image${(input.image_ids || []).length === 1 ? "" : "s"} — "${input.criteria || ""}"`;
+  if (name === "filter_images") return `${(input.image_ids || []).length} image${(input.image_ids || []).length === 1 ? "" : "s"} - "${input.criteria || ""}"`;
   return JSON.stringify(input);
 }
 
 function summarizeResult(name, result, input) {
   if (name === "read_page" && result.interactive_elements) {
     const imgCount = (result.images || []).length;
-    return `Read "${result.title || result.url || "page"}" — ${result.interactive_elements.length} interactive elements${imgCount ? `, ${imgCount} image${imgCount === 1 ? "" : "s"}` : ""} found.`;
+    return `Read "${result.title || result.url || "page"}" - ${result.interactive_elements.length} interactive elements${imgCount ? `, ${imgCount} image${imgCount === 1 ? "" : "s"}` : ""} found.`;
   }
   if (name === "list_tabs" && result.tabs) {
     return `Found ${result.tabs.length} open tab${result.tabs.length === 1 ? "" : "s"}.`;
+  }
+  if (name === "recall_page") {
+    // Distinguishable from a live "Read ..." caption (see read_page above)
+    // so the transcript/usage history makes clear this step didn't re-visit
+    // anything - it still costs tokens (whatever comes back still enters
+    // context), just not a browsing round-trip.
+    return result.ok
+      ? `Recalled cached page "${result.title || result.url || "page"}" (captured ${relativeTime(new Date(result.captured_at).getTime())}) - not a live read.`
+      : `No cached page for this URL - ${result.error || "not available"}`;
+  }
+  if (name === "read_attachment_chunk") {
+    return result.ok
+      ? `Read chunk ${result.chunk_index} of ${result.total_chunks} of "${result.name || "attachment"}"${result.has_more ? "" : " (last chunk)"}.`
+      : `No cached chunk for that attachment - ${result.error || "not available"}`;
   }
   if (name === "read_tabs" && result.tabs) {
     const okCount = result.tabs.filter((t) => t.ok).length;
     return `Read ${okCount} of ${result.tabs.length} tab${result.tabs.length === 1 ? "" : "s"}.`;
   }
   if (name === "extract_table" && result.rows) {
-    return `Extracted ${result.row_count} row${result.row_count === 1 ? "" : "s"}${result.truncated ? ` (of ${result.total_rows} total — truncated)` : ""}.`;
+    return `Extracted ${result.row_count} row${result.row_count === 1 ? "" : "s"}${result.truncated ? ` (of ${result.total_rows} total, truncated)` : ""}.`;
   }
   if ((name === "view_image" || name === "screenshot") && result.description) {
     return result.description;
@@ -1774,10 +2158,10 @@ fileInput.addEventListener("change", async () => {
         attachments.push({
           id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
           name: file.name,
-          kind: "pdf",
+          kind: "doc",
+          format: "pdf",
           text: extracted.text,
           pageCount: extracted.pageCount,
-          truncated: extracted.truncated,
         });
       } catch (err) {
         addEntry("error", "Attachment", `${file.name}: couldn't read this PDF (${err?.message || err}).`);
@@ -1785,8 +2169,29 @@ fileInput.addEventListener("change", async () => {
       continue;
     }
 
+    const textFormat = textAttachmentFormat(file);
+    if (textFormat) {
+      if (file.size > MAX_TEXT_ATTACHMENT_BYTES) {
+        addEntry("error", "Attachment", `${file.name} is too large (max ${MAX_TEXT_ATTACHMENT_BYTES / (1024 * 1024)}MB).`);
+        continue;
+      }
+      try {
+        const text = (await file.text()).replace(/^\uFEFF/, ""); // strip a UTF-8 BOM if present
+        attachments.push({
+          id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          name: file.name,
+          kind: "doc",
+          format: textFormat,
+          text,
+        });
+      } catch (err) {
+        addEntry("error", "Attachment", `${file.name}: couldn't read this file (${err?.message || err}).`);
+      }
+      continue;
+    }
+
     if (!file.type.startsWith("image/")) {
-      addEntry("error", "Attachment", `${file.name}: only image and PDF files are supported.`);
+      addEntry("error", "Attachment", `${file.name}: only images, PDFs, and plain-text files (.txt, .md, .csv, .json, and similar) are supported.`);
       continue;
     }
     if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -1829,23 +2234,20 @@ async function extractPdfText(file) {
   const buf = await file.arrayBuffer();
   const doc = await window.pdfjsLib.getDocument({ data: new Uint8Array(buf) }).promise;
   const pageCount = doc.numPages;
-  const pagesToRead = Math.min(pageCount, MAX_PDF_PAGES);
   let text = "";
-  let truncated = pageCount > pagesToRead;
 
-  for (let i = 1; i <= pagesToRead; i += 1) {
+  // Every page, no cap — background.js's buildDocBlocks chunks whatever
+  // comes back through lib/attachmentCache.js instead of this function
+  // trimming it up front. A very long PDF just means more chunks for the
+  // model to page through via read_attachment_chunk, not missing pages.
+  for (let i = 1; i <= pageCount; i += 1) {
     const page = await doc.getPage(i);
     const content = await page.getTextContent();
     const pageText = content.items.map((it) => it.str || "").join(" ");
     text += (text ? "\n\n" : "") + `[Page ${i}]\n${pageText}`;
-    if (text.length >= MAX_PDF_CHARS) {
-      text = text.slice(0, MAX_PDF_CHARS);
-      truncated = true;
-      break;
-    }
   }
 
-  return { text: text.trim(), pageCount, truncated };
+  return { text: text.trim(), pageCount };
 }
 
 function renderAttachments() {
@@ -1859,11 +2261,11 @@ function renderAttachments() {
     const chip = document.createElement("div");
     chip.className = "attachment-chip";
 
-    if (att.kind === "pdf") {
+    if (att.kind === "pdf" || att.kind === "doc") {
       chip.classList.add("attachment-chip-doc");
       const icon = document.createElement("span");
       icon.className = "attachment-doc-icon";
-      icon.textContent = "📄";
+      icon.textContent = docIcon(att.format);
       chip.appendChild(icon);
       const info = document.createElement("span");
       info.className = "attachment-doc-name";
@@ -1948,8 +2350,8 @@ function startVoiceInput() {
   recognizer.onerror = (event) => {
     const messages = {
       "not-allowed":
-        "Microphone access is blocked — and Chrome often doesn't even show the permission prompt inside this side panel. Open Settings (⚙) → Voice input → \"Enable microphone access\" to grant it from a regular tab instead; it'll carry over here.",
-      "no-speech": "Didn't catch any speech — try again.",
+        "Microphone access is blocked, and Chrome often doesn't even show the permission prompt inside this side panel. Open Settings (⚙) → Voice input → \"Enable microphone access\" to grant it from a regular tab instead; it'll carry over here.",
+      "no-speech": "Didn't catch any speech - try again.",
       "audio-capture": "No microphone found.",
     };
     if (event.error !== "aborted") {
@@ -2075,7 +2477,7 @@ function renderConfirmContinueCard(event, nodeId) {
 
   const q = document.createElement("p");
   q.className = "ask-user-question";
-  q.textContent = `I've used ${event.stepsUsed || "a lot of"} steps on this without finishing — want me to keep going? I'll stop on my own if I don't hear back within 10 minutes.`;
+  q.textContent = `I've used ${event.stepsUsed || "a lot of"} steps on this without finishing - want me to keep going? I'll stop on my own if I don't hear back within 10 minutes.`;
   body.appendChild(q);
 
   const formEl = document.createElement("div");
@@ -2110,7 +2512,7 @@ function markConfirmContinueResolved(nodeId, didContinue, timedOut) {
   if (!div) return;
   const formEl = div.querySelector(".ask-user-form");
   if (!formEl) return;
-  const text = timedOut ? "Stopped automatically — no response within 10 minutes." : didContinue ? "Continuing…" : "Stopped here.";
+  const text = timedOut ? "Stopped automatically - no response within 10 minutes." : didContinue ? "Continuing…" : "Stopped here.";
   formEl.innerHTML = `<div class="ask-user-answered">${escapeHtml(text)}</div>`;
 }
 
@@ -2118,6 +2520,7 @@ async function respondToStepLimit(nodeId, doContinue) {
   markConfirmContinueResolved(nodeId, doContinue, false);
   if (doContinue) {
     autoScroll = true;
+    activeRunNodeId = nodeId;
     setRunning(true);
     showStatus("Thinking", true);
     showTypingBubble();
@@ -2160,8 +2563,8 @@ function renderConfirmSiteCategoryCard(event, nodeId) {
   q.className = "ask-user-question";
   q.textContent =
     event.category === "adult"
-      ? `${event.hostname} looks like an adult-content site. Confirm you're of legal age and want Tab Agent to operate here — this is remembered for this domain, so you won't be asked again.`
-      : `${event.hostname} looks like a financial services site. Confirm you want Tab Agent to operate here — this is remembered for this domain, so you won't be asked again.`;
+      ? `${event.hostname} looks like an adult-content site. Confirm you're of legal age and want Tab Agent to operate here - this is remembered for this domain, so you won't be asked again.`
+      : `${event.hostname} looks like a financial services site. Confirm you want Tab Agent to operate here - this is remembered for this domain, so you won't be asked again.`;
   body.appendChild(q);
 
   const formEl = document.createElement("div");
@@ -2196,13 +2599,14 @@ function markSiteGateResolved(nodeId, approved) {
   if (!div) return;
   const formEl = div.querySelector(".ask-user-form");
   if (!formEl) return;
-  formEl.innerHTML = `<div class="ask-user-answered">${approved ? "Confirmed — continuing…" : "Stopped."}</div>`;
+  formEl.innerHTML = `<div class="ask-user-answered">${approved ? "Confirmed - continuing…" : "Stopped."}</div>`;
 }
 
 async function respondToSiteGate(nodeId, approve) {
   markSiteGateResolved(nodeId, approve);
   if (approve) {
     autoScroll = true;
+    activeRunNodeId = nodeId;
     setRunning(true);
     showStatus("Thinking", true);
     showTypingBubble();
@@ -2224,6 +2628,10 @@ async function respondToSiteGate(nodeId, approve) {
 async function submitAnswer(toolUseId, answer) {
   markAskUserAnswered(toolUseId, answer);
   autoScroll = true;
+  // The node id isn't known client-side here (only the tool_use id it
+  // answers) — null tells the AGENT_EVENT listener to lock onto whichever
+  // node the very next event for this session belongs to.
+  activeRunNodeId = null;
   setRunning(true);
   showStatus("Thinking", true);
   showTypingBubble();
@@ -2253,23 +2661,89 @@ function setRunning(state) {
   runBtn.disabled = state;
   stopBtn.classList.toggle("hidden", !state);
   setProgressActive(state);
-  if (!state) {
+  if (state) {
+    lastRunEventAt = Date.now();
+  } else {
     hideStatus();
     removeTypingBubble();
   }
 }
+
+// Resets the UI back to normal and tells the user their run appears to have
+// died, without requiring them to have clicked anything — shared by
+// stopCurrentRun's orphan-detection fallback below and the watchdog further
+// down, which are two different ways of noticing the same situation: either
+// you clicked Stop and got no reply, or nothing happened for a long time and
+// you never clicked anything at all. nodeId guards against a stray call
+// landing on a DIFFERENT, legitimately-still-running task (e.g. one that
+// started after this check was scheduled).
+function declareRunStalled(nodeId, reason) {
+  if (!running || activeRunNodeId !== nodeId) return;
+  setRunning(false);
+  addEntry(
+    "error",
+    "Error",
+    `This run stopped responding${reason ? ` (${reason})` : ""} and couldn't continue. Nothing is lost - your chat history is saved - but you'll need to send the task again.`
+  );
+}
+
+// Sends STOP_TASK and, if the background reports no matching run, treats
+// that as a possibly orphaned run rather than leaving the UI stuck on
+// "Stopping…" forever. "No matching run" has two very different causes that
+// look identical from here: (1) harmless — the run finished normally in the
+// same instant we clicked, and its own AGENT_DONE/AGENT_PAUSED broadcast is
+// already on its way to reset the UI correctly, or (2) the service worker
+// that was actually driving this run got torn down and restarted (Chrome
+// enforces a hard cap on how long one can run at all, independent of the
+// keep-alive ping/chrome.power that only reduce how often this happens, not
+// eliminate it — see background.js) — which wipes its in-memory activeRuns
+// entry along with everything it was doing, so there's nothing left to
+// receive the stop flag or ever broadcast another event. Waiting a beat lets
+// case (1) resolve itself (a same-machine runtime message arrives near-
+// instantly) before deciding it's actually case (2) and forcing the UI back
+// to normal with an explanation instead of hanging silently.
+function stopCurrentRun() {
+  showStatus("Stopping…");
+  const stoppedNodeId = activeRunNodeId;
+  chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId }, (res) => {
+    if (chrome.runtime.lastError) return; // panel closed/reloaded mid-call — nothing to update
+    if (res && res.stopped) return;
+    setTimeout(() => {
+      declareRunStalled(stoppedNodeId, "the browser likely paused the extension in the background during a long task");
+    }, 1500);
+  });
+}
+
+// Watchdog: catches a stalled run even when nobody clicks Stop at all — the
+// same underlying causes (service worker torn down/throttled, a stream that
+// silently stopped receiving data, the OS deprioritizing background work
+// while the screen was locked/asleep — see background.js and lib/
+// providers.js) can just as easily happen while you've stepped away from a
+// long task as while you're watching it. lastRunEventAt is bumped by
+// setRunning(true) and by every run-related broadcast (see the
+// chrome.runtime.onMessage listener below); if a run is still marked active
+// but nothing has come in for RUN_STALL_THRESHOLD_MS, it's not a fast local
+// message anymore — the run is almost certainly dead. RUN_STALL_THRESHOLD_MS
+// is deliberately generous (well beyond any single legitimate step's normal
+// latency) to avoid a false alarm on a genuinely slow but healthy step.
+let lastRunEventAt = 0;
+const RUN_WATCHDOG_INTERVAL_MS = 15000;
+const RUN_STALL_THRESHOLD_MS = 60000;
+setInterval(() => {
+  if (!running || Date.now() - lastRunEventAt < RUN_STALL_THRESHOLD_MS) return;
+  declareRunStalled(activeRunNodeId, "nothing happened for over a minute - possibly the screen locked/slept, or the browser paused the extension in the background");
+}, RUN_WATCHDOG_INTERVAL_MS);
 
 // --- built-in command execution --------------------------------------
 
 function runBuiltinCommand(slug, arg) {
   switch (slug) {
     case "clear":
-      startNewChat();
+      clearCurrentSession();
       break;
     case "stop":
       if (running) {
-        showStatus("Stopping…");
-        chrome.runtime.sendMessage({ type: "STOP_TASK" });
+        stopCurrentRun();
       } else {
         addEntry("info", "Info", "Nothing is running right now.");
       }
@@ -2357,6 +2831,7 @@ async function compactCurrentSession() {
     return;
   }
   const [providerId, modelId] = (modelSelect.value || "").split("::");
+  showStatus("Compacting…", true);
   chrome.runtime.sendMessage({
     type: "COMPACT_SESSION",
     sessionId: currentSessionId,
@@ -2364,6 +2839,7 @@ async function compactCurrentSession() {
     modelId: modelId || undefined,
   });
   await waitForCompaction(currentSessionId);
+  hideStatus();
 }
 
 // Checked at the top of every send — keeps a long-running chat's per-message
@@ -2381,13 +2857,13 @@ async function maybeAutoCompact() {
     if (node.usage) total += (node.usage.inputTokens || 0) + (node.usage.outputTokens || 0);
   }
   if (total <= AUTO_COMPACT_TOKEN_THRESHOLD) return;
-  addEntry("info", "Info", `This chat has grown large (~${Math.round(total / 1000)}k tokens) — compacting automatically before sending to keep costs down.`);
+  addEntry("info", "Info", `This chat has grown large (~${Math.round(total / 1000)}k tokens) - compacting automatically before sending to keep costs down.`);
   await compactCurrentSession();
 }
 
 function selectModelByName(query) {
   if (!query) {
-    addEntry("info", "Info", "Usage: /model <name> — e.g. /model gpt-4.1 or /model claude");
+    addEntry("info", "Info", "Usage: /model <name> - e.g. /model gpt-4.1 or /model claude");
     return;
   }
   const q = query.toLowerCase();
@@ -2404,18 +2880,18 @@ function selectModelByName(query) {
 }
 
 function showHelp() {
-  const cmdLines = BUILTIN_COMMANDS.map((c) => `- \`/${c.slug}\` — ${c.description}`).join("\n");
+  const cmdLines = BUILTIN_COMMANDS.map((c) => `- \`/${c.slug}\` - ${c.description}`).join("\n");
   const agentLines = agents.length
-    ? agents.map((a) => `- \`/${a.slug}\` — ${a.description || a.name}`).join("\n")
-    : "_No agents configured yet — add some in Settings (⚙)._";
+    ? agents.map((a) => `- \`@${a.slug}\` - ${a.description || a.name}`).join("\n")
+    : "_No agents configured yet - add some in Settings (⚙)._";
   const shortcutLines = [
-    "- `Enter` — send · `Shift+Enter` — new line",
-    "- `Ctrl/Cmd+K` — new chat",
-    "- `Ctrl/Cmd+Shift+H` — toggle history",
-    "- `Ctrl/Cmd+/` — this help",
-    "- `Esc` — stop the current run (or close a panel)",
-    "- `Ctrl/Cmd+Shift+Y` (global) — open Tab Agent from any tab",
-    "- `Ctrl/Cmd+Shift+U` (global) — open Tab Agent and start a new chat",
+    "- `Enter` - send · `Shift+Enter` - new line",
+    "- `Ctrl/Cmd+K` - new chat",
+    "- `Ctrl/Cmd+Shift+H` - toggle history",
+    "- `Ctrl/Cmd+/` - this help",
+    "- `Esc` - stop the current run (or close a panel)",
+    "- `Ctrl/Cmd+Shift+Y` (global) - open Tab Agent from any tab",
+    "- `Ctrl/Cmd+Shift+U` (global) - open Tab Agent and start a new chat",
   ].join("\n");
   const text = `**Commands**\n${cmdLines}\n\n**Agents**\n${agentLines}\n\n**Keyboard shortcuts**\n${shortcutLines}`;
   addEntry("assistant", "Help", text, true);
@@ -2450,7 +2926,7 @@ async function sendTask() {
     return;
   }
 
-  // Typed the whole command directly (e.g. "/youtube_agent find X") without
+  // Typed the whole command directly (e.g. "@research_agent find X") without
   // using the popover — pick it up here and make it sticky going forward.
   if (!activeAgent && task) {
     const direct = extractDirectAgentCommand(task);
@@ -2462,24 +2938,26 @@ async function sendTask() {
 
   await maybeAutoCompact();
 
-  const imageAttachments = attachments.filter((a) => a.kind !== "pdf");
-  const pdfAttachments = attachments.filter((a) => a.kind === "pdf");
+  const imageAttachments = attachments.filter((a) => a.kind !== "pdf" && a.kind !== "doc");
+  const docAttachments = attachments.filter((a) => a.kind === "pdf" || a.kind === "doc");
 
-  // The user's chat bubble stays exactly what they typed — the extracted PDF
-  // text rides separately to the background page, which appends it to what
-  // the MODEL sees (same "shown to user" vs "sent to model" split already
-  // used for the tab-switch note and the vision-fallback image description).
+  // The user's chat bubble stays exactly what they typed — the extracted
+  // text rides separately to the background page, which appends it (chunked,
+  // see lib/attachmentCache.js — nothing is trimmed) to what the MODEL sees
+  // (same "shown to user" vs "sent to model" split already used for the
+  // tab-switch note and the vision-fallback image description).
   const effectiveTask = task || "Describe / act on the attached file(s).";
-  const outgoingPdfAttachments = pdfAttachments.map((a) => ({
+  const outgoingDocAttachments = docAttachments.map((a) => ({
+    id: a.id,
     name: a.name,
+    format: a.format,
     text: a.text,
     pageCount: a.pageCount,
-    truncated: a.truncated,
   }));
 
   const previewUrls = imageAttachments.map((a) => a.previewUrl);
   const outgoingAttachments = imageAttachments.map((a) => ({ mediaType: a.mediaType, data: a.data, name: a.name }));
-  const docPreviews = pdfAttachments.map((a) => ({ kind: "pdf", name: a.name, pageCount: a.pageCount }));
+  const docPreviews = docAttachments.map((a) => ({ kind: a.kind, format: a.format, name: a.name, pageCount: a.pageCount }));
 
   const editNodeId = editingNodeId;
   editingNodeId = null;
@@ -2493,6 +2971,13 @@ async function sendTask() {
   renderAttachments();
 
   autoScroll = true; // resume auto-follow for this new run
+  // The new (or branched-to) node's id is generated server-side and not
+  // known yet here — null tells the AGENT_EVENT listener to lock onto
+  // whichever node the first event for this session belongs to, instead of
+  // still accepting stray events tagged with a PREVIOUS/abandoned node id
+  // (e.g. a sibling branch this edit just replaced, or an earlier run that
+  // hadn't fully finished stopping yet).
+  activeRunNodeId = null;
   setRunning(true);
   showStatus("Thinking", true);
   showTypingBubble();
@@ -2509,16 +2994,13 @@ async function sendTask() {
     modelId: modelId || undefined,
     agentId: activeAgent?.id || undefined,
     attachments: outgoingAttachments,
-    pdfAttachments: outgoingPdfAttachments,
+    docAttachments: outgoingDocAttachments,
   });
 }
 
 runBtn.addEventListener("click", sendTask);
 
-stopBtn.addEventListener("click", () => {
-  showStatus("Stopping…");
-  chrome.runtime.sendMessage({ type: "STOP_TASK" });
-});
+stopBtn.addEventListener("click", stopCurrentRun);
 
 // --- agent events (shared between live updates and history replay) ------
 
@@ -2547,7 +3029,7 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
       // (models often narrate a full summary AND pass a full summary as the
       // finish answer). Skip the intermediate text bubble in that case.
       const callsFinish = (event.toolCalls || []).some((c) => c.name === "finish");
-      if (event.text && !callsFinish) addEntry("assistant", `Step ${event.step}`, event.text, true);
+      if (event.text && !callsFinish) addEntry("assistant", "Tab Agent", event.text, true);
       for (const call of event.toolCalls || []) {
         if (call.name === "finish" || call.name === "ask_user") continue;
         // parallel_investigate/run_batch get their own dedicated live status
@@ -2591,7 +3073,7 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
       break;
 
     case "branch_done":
-      handleBranchDone(event);
+      handleBranchDone(event, isReplay);
       break;
 
     case "branch_closed":
@@ -2607,7 +3089,7 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
       break;
 
     case "batch_done":
-      handleBatchDone(event);
+      handleBatchDone(event, isReplay);
       break;
 
     case "error":
@@ -2675,7 +3157,45 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 }
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.sessionId) currentSessionId = msg.sessionId;
+  const isRunMessage = msg.type === "AGENT_EVENT" || msg.type === "AGENT_PAUSED" || msg.type === "AGENT_DONE";
+
+  if (isRunMessage) {
+    // Ignore broadcasts for a different chat entirely — e.g. a scheduled
+    // check running headlessly in its own tab. Only enforced once a session
+    // is actually loaded; a brand-new, not-yet-saved chat has
+    // currentSessionId === null and accepts its first event to learn its id.
+    if (currentSessionId && msg.sessionId && msg.sessionId !== currentSessionId) return;
+
+    // Lock onto whichever node the current run belongs to (set explicitly
+    // by whichever function just resumed a known node, or null-latched onto
+    // the first event seen after starting/branching a new one — see every
+    // send site above that touches activeRunNodeId) and ignore anything
+    // tagged with a different node id. Without this, a stray broadcast from
+    // an abandoned run — a sibling branch you just edited away from, or a
+    // step-limit pause that times out on its own 10 minutes later — would
+    // get appended into whatever branch is currently on screen, which is
+    // exactly what made an unrelated run's step numbers appear to "carry
+    // over" into a freshly started branch.
+    if (msg.nodeId) {
+      if (activeRunNodeId === null) activeRunNodeId = msg.nodeId;
+      else if (msg.nodeId !== activeRunNodeId) return;
+    }
+
+    // Any message that made it past the filters above is a genuine sign of
+    // life for the run this panel is currently tracking — see the watchdog
+    // near setRunning/stopCurrentRun, which declares a run stalled once too
+    // long passes without this being touched.
+    lastRunEventAt = Date.now();
+
+    // Only a run message gets to ADOPT a new currentSessionId (the "learn
+    // my own id" case for a brand-new chat above). A message type like
+    // SESSION_COMPACTED below carries its own sessionId too, but must never
+    // reach this — otherwise a compact finishing for a chat the user has
+    // since navigated away from would silently overwrite currentSessionId
+    // to match it, which then makes that type's OWN "is this my chat?"
+    // check further down trivially true and yanks the view back to it.
+    if (msg.sessionId) currentSessionId = msg.sessionId;
+  }
 
   if (msg.type === "AGENT_EVENT") {
     applyAgentEvent(msg.event, false, msg.nodeId);
@@ -2704,5 +3224,14 @@ chrome.runtime.onMessage.addListener((msg) => {
   // works even if this was the message that just opened the panel.
   if (msg.type === "NEW_CHAT_SHORTCUT") {
     startNewChat();
+  }
+
+  // Sent by background.js's OPEN_SCHEDULED_TASK_MANUAL handler right after
+  // it opens this panel — see applyScheduledTaskPrefill above. Clear the
+  // storage fallback now that the live message actually landed, so a later
+  // panel reload doesn't re-apply the same stale prefill.
+  if (msg.type === "PREFILL_SCHEDULED_TASK") {
+    applyScheduledTaskPrefill(msg);
+    chrome.storage.local.remove("pendingScheduledTaskPrefill").catch(() => {});
   }
 });

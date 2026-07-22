@@ -25,8 +25,13 @@ const ROOT = path.resolve(__dirname, "..");
 const DIST_DIR = path.join(ROOT, "dist");
 
 // Exactly what a `chrome://extensions` "Load unpacked" needs — nothing from
-// the dev toolchain (tests, configs, node_modules, docs) ships in the zip.
+// the dev toolchain (tests, configs, node_modules, the docs/ landing page)
+// ships in the zip. The one exception is docs/privacy-policy.html: the
+// Options page links to it directly (Privacy tab) so the policy is always
+// reachable from inside the extension, even offline or before GitHub Pages
+// is set up - so that one file rides along despite living under docs/.
 const INCLUDE = ["manifest.json", "background.js", "content.js", "options.html", "options.css", "options.js", "sidepanel.html", "sidepanel.css", "sidepanel.js", "icons", "lib"];
+const INCLUDE_FILES_FROM_EXCLUDED_DIRS = ["docs/privacy-policy.html"];
 
 function toManifestVersion(semver) {
   // Chrome requires 1-4 dot-separated non-negative integers, no -/+ suffix.
@@ -76,6 +81,13 @@ async function zipExtension(zipVersion) {
     } else {
       archive.file(fullPath, { name: entry });
     }
+  }
+  for (const entry of INCLUDE_FILES_FROM_EXCLUDED_DIRS) {
+    const fullPath = path.join(ROOT, entry);
+    if (!fs.existsSync(fullPath)) {
+      throw new Error(`build.js: expected file missing: ${entry}`);
+    }
+    archive.file(fullPath, { name: entry });
   }
   await archive.finalize();
   await done;

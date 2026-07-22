@@ -7,7 +7,19 @@
   window.__tabAgentContentLoaded = true;
 
   const AGENT_ATTR = "data-agent-id";
+  // Deliberately NEVER reset across scans (see scanPage below) — ids climb
+  // monotonically for the lifetime of this content script instance instead
+  // of restarting at e1/img1/tbl1 every time. clearTags() still wipes every
+  // OLD data-agent-id attribute on each scan, so a stale id from an earlier
+  // scan simply stops existing anywhere rather than silently resolving to a
+  // completely different element that happens to get recycled the same id
+  // in a later scan — a real failure mode with per-scan-reset counters,
+  // since click/type_text would then act on the wrong element with no error
+  // at all (recoverStaleElement only catches the "id doesn't exist" case,
+  // not "id now points somewhere else").
   let counter = 0;
+  let imgCounter = 0;
+  let tableCounter = 0;
 
   function isVisible(el) {
     if (!(el instanceof Element)) return false;
@@ -28,6 +40,45 @@
       el.textContent ||
       "";
     return text.replace(/\s+/g, " ").trim().slice(0, 120);
+  }
+
+  // A bare checkbox/radio <input> almost never has its own readable text —
+  // it's a void element (no innerText/textContent), and its `value` is
+  // frequently an internal code ("32gb", "ram-32", "on"), not the label a
+  // person actually reads ("32GB"). The real label almost always lives on a
+  // separate <label> element instead, associated one of three standard ways:
+  // an explicit for="<id>", wrapping the input directly, or aria-labelledby
+  // pointing at another element's id. Checked in that order; first match
+  // wins. Used specifically for filter-panel checkboxes/radios (see
+  // scanPage below) since that's where a missing/wrong label most directly
+  // breaks the agent's ability to pick the right option.
+  function labelForInput(el) {
+    if (el.id) {
+      const explicit = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+      if (explicit) {
+        const t = (explicit.innerText || explicit.textContent || "").replace(/\s+/g, " ").trim();
+        if (t) return t.slice(0, 120);
+      }
+    }
+    const wrapping = el.closest("label");
+    if (wrapping) {
+      const t = (wrapping.innerText || wrapping.textContent || "").replace(/\s+/g, " ").trim();
+      if (t) return t.slice(0, 120);
+    }
+    const labelledBy = el.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const t = labelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id))
+        .filter(Boolean)
+        .map((n) => (n.innerText || n.textContent || "").trim())
+        .filter(Boolean)
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (t) return t.slice(0, 120);
+    }
+    return "";
   }
 
   function isInteractive(el) {
@@ -57,7 +108,6 @@
 
   function scanPage() {
     clearTags();
-    counter = 0;
     const nodes = Array.from(document.querySelectorAll("body, body *"));
     const elements = [];
 
@@ -80,6 +130,24 @@
         entry.value = el.value ? el.value.slice(0, 200) : "";
         if (el.checked !== undefined && (el.type === "checkbox" || el.type === "radio")) {
           entry.checked = el.checked;
+          // Groups related checkboxes/radios together (see
+          // detectFilterControls in lib/agentLoop.js) — a shared `name` is
+          // the standard HTML mechanism a radio group relies on to function
+          // at all, and real-world checkbox filter panels commonly reuse it
+          // too even though it's not strictly required for them.
+          if (el.name) entry.groupName = el.name;
+          // Overrides shortText's guess above with the input's REAL
+          // associated label when one exists — see labelForInput's comment
+          // for why the input's own text is usually empty or unhelpful.
+          const label = labelForInput(el);
+          if (label) entry.text = label;
+          // Real facet panels commonly disable an option that doesn't exist
+          // in combination with whatever else is already selected (e.g. a
+          // 32GB config that isn't offered for a given model/size pair).
+          // Surfacing this means the agent can report "not offered" as a
+          // real finding instead of silently failing to click it, or
+          // concluding — wrongly — that the option simply isn't on the page.
+          if (el.disabled) entry.disabled = true;
         }
       }
       if (tag === "a" && el.href) entry.href = el.href.slice(0, 200);
@@ -89,6 +157,24 @@
           .map((o) => o.textContent.trim().slice(0, 60));
         entry.value = el.value;
       }
+      // Standard ARIA disclosure/accordion pattern: a toggle whose panel is
+      // currently collapsed (aria-expanded="false") but still holds real
+      // filter controls in the DOM, just hidden until expanded (Apple's own
+      // refurb store does exactly this — only "Models" starts expanded;
+      // Sizes/Memory/Capacity/etc. are collapsed by default). Those inputs
+      // fail isVisible() and never reach this loop at all, so without this,
+      // the agent has no way to learn those facets even exist. The toggle
+      // ELEMENT itself is visible (only its content panel isn't), so it's
+      // already being captured above — this just flags it as worth
+      // expanding when it's specifically gating filter controls, not any
+      // other kind of collapsed content (nav menus, FAQ answers, etc.).
+      if (el.getAttribute("aria-expanded") === "false") {
+        const controlsId = el.getAttribute("aria-controls");
+        const target = controlsId ? document.getElementById(controlsId) : null;
+        if (target && target.querySelector('input[type="checkbox"], input[type="radio"], select')) {
+          entry.expandsFilters = true;
+        }
+      }
       elements.push(entry);
       if (elements.length >= 250) break; // safety cap
     }
@@ -97,7 +183,6 @@
     // an image that's ALSO a clickable link (e.g. a product thumbnail inside
     // an <a>) can be tagged both ways — "eN" to click it, "imgN" to view it —
     // without either tagging pass clobbering the other's attribute.
-    let imgCounter = 0;
     const images = [];
     for (const el of document.querySelectorAll("img")) {
       if (!isVisible(el)) continue;
@@ -119,7 +204,6 @@
     // Separate id namespace ("tblN"), same pattern as images — real <table>
     // markup only (thead/tbody/tr/td), since that's the case extract_table
     // can parse reliably. Non-table "card grid" layouts aren't covered.
-    let tableCounter = 0;
     const tables = [];
     for (const el of document.querySelectorAll("table")) {
       if (!isVisible(el)) continue;
@@ -165,6 +249,19 @@
 
   function findByAgentId(id) {
     return document.querySelector(`[${AGENT_ATTR}="${CSS.escape(id)}"]`);
+  }
+
+  // The risky-action confirm gate (agentLoop.js's checkRiskyAction) reads an
+  // element's OWN visible text — fine for a button labeled "Delete", but a
+  // type_text+submit action's risk usually lives on the FORM's submit
+  // button instead (the text field itself rarely says "delete" or "pay
+  // now"). Surfaces that button's text separately so the gate can check
+  // both instead of missing risky form submissions entirely.
+  function getSubmitButtonText(el) {
+    const form = el.closest("form");
+    if (!form) return "";
+    const btn = form.querySelector('button[type="submit"], input[type="submit"], button:not([type])');
+    return btn ? shortText(btn) : "";
   }
 
   // Re-resolves the current src for a set of previously-tagged image ids, at
@@ -365,6 +462,15 @@
             sendResponse({ ok: false, error: `No element with id ${msg.id}. Re-scan the page.` });
           } else {
             sendResponse({ ok: true, data: { text: shortText(el) } });
+          }
+          break;
+        }
+        case "GET_SUBMIT_CONTEXT": {
+          const el = findByAgentId(msg.id);
+          if (!el) {
+            sendResponse({ ok: false, error: `No element with id ${msg.id}. Re-scan the page.` });
+          } else {
+            sendResponse({ ok: true, data: { text: getSubmitButtonText(el) } });
           }
           break;
         }

@@ -12,47 +12,24 @@
 import { runAgentTask, resumeBranch } from "./lib/agentLoop.js";
 import { describeImage, summarizeHistory } from "./lib/providers.js";
 import { looksVisionCapable } from "./lib/vision.js";
+import { startMediaSniffer } from "./lib/mediaSniffer.js";
+import { deleteCacheForSession, DEFAULT_MAX_ENTRIES as PAGE_CACHE_DEFAULT_MAX_ENTRIES } from "./lib/pageCache.js";
+import { recordAttachment, deleteCacheForSession as deleteAttachmentCacheForSession } from "./lib/attachmentCache.js";
+
+// Must run synchronously at service worker load, not inside any later async
+// callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
+// to be registered during the worker's initial evaluation.
+startMediaSniffer();
 
 const MAX_SESSIONS = 30;
 
-const DEFAULT_AGENTS = [
-  {
-    id: "agent_linkedin_default",
-    name: "LinkedIn Job Finder",
-    slug: "linkedin_agent",
-    description: "Finds job listings on LinkedIn for a role you give it.",
-    targetUrl: "https://www.linkedin.com/jobs/",
-    instructions:
-      "You help the user find relevant job listings on LinkedIn for a given role. If the user hasn't specified " +
-      "a role/title (and optionally a location or remote preference), use ask_user (input_type 'text') to ask for " +
-      "it before doing anything else. Navigate to LinkedIn's job search, search for that role, then read the " +
-      "results and summarize the top listings for the user: job title, company, location, and a link for each. " +
-      "If LinkedIn shows a login wall or otherwise blocks access, tell the user clearly and stop rather than " +
-      "guessing at results.",
-  },
-  {
-    id: "agent_youtube_default",
-    name: "YouTube Agent",
-    slug: "youtube_agent",
-    description: "Searches YouTube and summarizes what it finds.",
-    targetUrl: "https://www.youtube.com",
-    instructions:
-      "You help the user find and understand content on YouTube based on their request (e.g. 'find the latest " +
-      "releases of telugu songs'). Navigate to YouTube, use the search box for the user's query, then read the " +
-      "results and summarize the top relevant ones for the user: title, channel, and a link. If the request is " +
-      "ambiguous (unclear genre, language, or time range), use ask_user (input_type 'text') to clarify before " +
-      "searching rather than guessing.",
-  },
-];
-
+// No agents ship pre-installed — Settings → Agents starts empty, and every
+// agent a user sees there is one they created themselves.
 chrome.runtime.onInstalled.addListener(async () => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
   const { agents } = await chrome.storage.local.get(["agents"]);
   if (!agents) {
-    const now = Date.now();
-    await chrome.storage.local.set({
-      agents: DEFAULT_AGENTS.map((a) => ({ ...a, createdAt: now, updatedAt: now })),
-    });
+    await chrome.storage.local.set({ agents: [] });
   }
 });
 
@@ -76,14 +53,76 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-// Simple single-run state (MVP: one task at a time).
+// Per-session run state, keyed by session.id — NOT a single global. Chrome
+// can have this side panel open in more than one window at once (each gets
+// its own sidepanel.js instance talking to this one shared service worker),
+// and RESUME_BRANCH can also run concurrently alongside a fresh chat. A
+// single shared object here would let one window's Stop button abort a
+// different window's run, and would let one run's completion (drive()'s
+// cleanup) wipe out tracking for another run still in progress.
 // skipSubtasks is the scoped "skip remaining sub-tasks, keep the
 // conversation going" flag from the investigate/batch card's own skip
 // button — distinct from stop (which aborts the whole run). It's reset at
 // the start of every parallel_investigate/run_batch call (see
 // lib/agentLoop.js's resetSkipSubtasks) so a stale click can't bleed into
 // a later, unrelated call within the same run.
-let activeRun = null; // { stop: boolean, skipSubtasks: boolean }
+const activeRuns = new Map(); // sessionId -> { stop: boolean, skipSubtasks: boolean }
+
+// MV3 kills this service worker after ~30s with no chrome.* API call — but
+// the agent loop's actual work (an LLM call streamed over plain fetch/SSE,
+// see lib/providers.js) doesn't touch chrome.* APIs at all while it's in
+// flight, so a single slow/complex model turn can silently outlast that
+// window and get the worker torn down mid-request with no error, killing
+// whatever was in flight (including the in-memory Stop-button check). This
+// is a lightweight reference-counted keep-alive: as long as at least one
+// interactive run (drive()/RESUME_BRANCH) or scheduled task run is in
+// progress, a trivial chrome.* call fires every 20s (safely under the 30s
+// threshold, and higher-frequency than chrome.alarms' 30s minimum interval
+// allows) purely to keep resetting Chrome's idle timer — the call itself
+// does nothing. Reference-counted rather than boolean so two runs (e.g. a
+// side panel task and a scheduled check) overlapping doesn't have the first
+// one to finish stop the ping the other one still needs.
+//
+// Same lifetime also covers chrome.power.requestKeepAwake: an OS-level idle
+// timeout locking the screen or sleeping the system mid-run risks the exact
+// same class of problem this ping guards against — a locked/sleeping screen
+// is a strong "inactive" signal Chrome and the OS use to throttle timers and
+// network sockets in the background, which can silently stall the very
+// things (this keep-alive ping, the model's streamed response) that would
+// otherwise keep the run healthy. requestKeepAwake("system") only prevents
+// the AUTOMATIC, idle-driven lock/sleep — it can't and shouldn't override
+// the user deliberately locking their screen themselves, so this reduces how
+// often a long run gets caught out by this, not a guarantee it never does.
+let activeRunRefCount = 0;
+let keepAliveTimer = null;
+function beginKeepAlive() {
+  activeRunRefCount += 1;
+  if (!keepAliveTimer) {
+    keepAliveTimer = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
+    chrome.power.requestKeepAwake("system");
+  }
+}
+function endKeepAlive() {
+  activeRunRefCount = Math.max(0, activeRunRefCount - 1);
+  if (activeRunRefCount === 0 && keepAliveTimer) {
+    clearInterval(keepAliveTimer);
+    keepAliveTimer = null;
+    chrome.power.releaseKeepAwake();
+  }
+}
+
+// STOP_TASK/SKIP_SUBTASKS should target the run the message's own panel is
+// looking at — but a brand-new, not-yet-saved chat's session id is minted
+// inside RUN_TASK below and only reaches sidepanel.js once the first event
+// broadcasts it back, so there's a narrow window where the panel doesn't
+// know its own session id yet and sends the message without one. Falling
+// back to "the only run currently active" (rather than doing nothing)
+// preserves that case working, while still scoping correctly whenever two
+// runs really are active at once.
+function findRunState(sessionId) {
+  if (sessionId) return activeRuns.get(sessionId) || null;
+  return activeRuns.size === 1 ? activeRuns.values().next().value : null;
+}
 
 // --- provider config resolution -----------------------------------------
 
@@ -178,10 +217,22 @@ async function getGrantedDomains() {
 // also falls back to those same defaults for any field this doesn't
 // provide, so a fresh install with nothing saved yet still behaves exactly
 // as before this feature existed.
-const DEFAULT_LIMITS = { mainMaxSteps: 20, batchStepLimit: 150, maxParallelTabs: 5, branchMaxSteps: 20 };
+const DEFAULT_LIMITS = { mainMaxSteps: 20, batchStepLimit: 150, maxParallelTabs: 5, branchMaxSteps: 20, maxSourcesPerTask: 15 };
 async function getLimits() {
   const { limits = {} } = await chrome.storage.local.get(["limits"]);
   return { ...DEFAULT_LIMITS, ...limits };
+}
+
+// --- page recall cache (Settings → Page recall) --------------------------
+// Off by default — this is a genuinely cross-cutting feature (new storage
+// schema, touches branches/run_batch, domain-lock, compaction, export,
+// session deletion), so it ships as an opt-in the user can turn off
+// instantly if something unexpected turns up, rather than an always-on
+// default. See lib/pageCache.js for the actual cache implementation.
+const DEFAULT_PAGE_CACHE = { enabled: false, maxEntries: PAGE_CACHE_DEFAULT_MAX_ENTRIES };
+async function getPageCacheConfig() {
+  const { pageCache = {} } = await chrome.storage.local.get(["pageCache"]);
+  return { ...DEFAULT_PAGE_CACHE, ...pageCache };
 }
 
 // --- vision fallback -----------------------------------------------------
@@ -225,30 +276,52 @@ async function applyVisionFallback(config, task, attachments) {
   return { task: combinedTask, attachments: [], note };
 }
 
-// --- PDF attachments -------------------------------------------------
+// --- document attachments (PDF, and free-tier text formats) -------------
 
-// Text was already extracted client-side in the side panel (via pdf.js) —
-// this just folds it into the task text the MODEL sees, the same "sent to
-// model, not shown in the user's chat bubble" split used for tabSwitchNote
-// above. Wrapped the same way read_page wraps untrusted page content in
-// lib/agentLoop.js, since a PDF's text can carry an injection attempt just
-// as easily as a web page's.
-function buildPdfBlocks(pdfAttachments) {
-  if (!pdfAttachments || !pdfAttachments.length) return { taskAddition: "", note: null };
+// Text was already extracted client-side in the side panel (via pdf.js, or
+// File.text() for plain text/markdown/csv/json/etc.) — this folds it into
+// the task text the MODEL sees, the same "sent to model, not shown in the
+// user's chat bubble" split used for tabSwitchNote above. Wrapped the same
+// way read_page wraps untrusted page content in lib/agentLoop.js, since an
+// attached file's text can carry an injection attempt just as easily as a
+// web page's.
+//
+// Nothing is ever trimmed here. Every attachment's FULL text gets chunked
+// and persisted via lib/attachmentCache.js (keyed by this session + the
+// attachment's own id); only chunk 1 gets folded into this turn's actual
+// task text. If there's more than one chunk, the wrapper says so and gives
+// the model everything it needs to fetch the rest via read_attachment_chunk
+// — see that tool's definition in lib/tools.js and its executeTool case in
+// lib/agentLoop.js. This is what replaced the old flat MAX_PDF_CHARS cap:
+// that cap silently dropped content past 40k characters forever; chunking
+// means nothing is ever lost, it just isn't all paid for up front.
+async function buildDocBlocks(sessionId, docAttachments) {
+  if (!docAttachments || !docAttachments.length) return { taskAddition: "", note: null };
 
-  const blocks = pdfAttachments
-    .map((a) => {
-      const safeName = String(a.name || "document.pdf").replace(/"/g, "'");
-      const body = a.text && a.text.trim() ? a.text : "(no extractable text — likely a scanned/image-only PDF)";
-      return `<document_content_untrusted name="${safeName}">\n${body}\n</document_content_untrusted>`;
-    })
-    .join("\n\n");
+  const blocks = [];
+  const noteParts = [];
+  for (const a of docAttachments) {
+    const safeName = String(a.name || "document").replace(/"/g, "'");
+    const hasText = a.text && a.text.trim();
+    const body = hasText ? a.text : a.format === "pdf" ? "(no extractable text — likely a scanned/image-only PDF)" : "(empty file)";
 
-  const note = `Attached ${pdfAttachments.length} PDF${pdfAttachments.length === 1 ? "" : "s"}: ${pdfAttachments
-    .map((a) => `${a.name}${a.pageCount ? ` (${a.pageCount}p${a.truncated ? ", truncated" : ""})` : ""}`)
-    .join(", ")}`;
+    let totalChunks = 1;
+    let firstChunkText = body;
+    if (hasText) {
+      const recorded = await recordAttachment(sessionId, a.id, { name: a.name, format: a.format, text: a.text }).catch(() => null);
+      if (recorded) {
+        totalChunks = recorded.totalChunks;
+        firstChunkText = recorded.firstChunkText;
+      }
+    }
 
-  return { taskAddition: `\n\n${blocks}`, note };
+    const chunkNote = totalChunks > 1 ? ` (chunk 1 of ${totalChunks} — call read_attachment_chunk with attachment_id "${a.id}" and chunk_index 2, 3, ... for the rest before assuming this is the whole file)` : "";
+    blocks.push(`<document_content_untrusted name="${safeName}" attachment_id="${a.id}">${chunkNote}\n${firstChunkText}\n</document_content_untrusted>`);
+    noteParts.push(`${a.name}${a.pageCount ? ` (${a.pageCount}p)` : ""}${totalChunks > 1 ? `, ${totalChunks} chunks` : ""}`);
+  }
+
+  const note = `Attached ${docAttachments.length} file${docAttachments.length === 1 ? "" : "s"}: ${noteParts.join(", ")}`;
+  return { taskAddition: `\n\n${blocks.join("\n\n")}`, note };
 }
 
 // --- session tree ----------------------------------------------------
@@ -363,6 +436,27 @@ function migrateSessionIfNeeded(session) {
   };
 }
 
+// chrome.storage.local has no atomic read-modify-write — every writer here
+// does a plain get() -> mutate -> set() on the WHOLE array under one key.
+// Two of those interleaving (e.g. persistAgentEvent's frequent checkpoint
+// saves racing a second concurrent run now that activeRuns allows more than
+// one — see drive() above — or two scheduled tasks finishing moments apart,
+// each racing loadScheduledTasks/set in runScheduledTaskById below) can lose
+// whichever write lands first: both read the same pre-write snapshot, so
+// the second set() silently overwrites the first's change with a copy that
+// never saw it. Serializing every read-modify-write on the same storage key
+// through one promise chain closes that window — cheap since these are all
+// same-process awaits, not real lock contention.
+const storageQueues = new Map(); // storage key -> tail promise of the chain
+function withStorageLock(key, fn) {
+  const tail = (storageQueues.get(key) || Promise.resolve()).then(fn, fn);
+  // Swallow rejections here so one failed write doesn't wedge the queue for
+  // everyone after it — the actual error still propagates to whoever awaited
+  // this specific call via the `tail` returned below.
+  storageQueues.set(key, tail.catch(() => {}));
+  return tail;
+}
+
 async function loadSession(sessionId) {
   if (!sessionId) return null;
   const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
@@ -370,13 +464,15 @@ async function loadSession(sessionId) {
   return found ? migrateSessionIfNeeded(found) : null;
 }
 
-async function saveSession(session) {
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const idx = sessions.findIndex((s) => s.id === session.id);
-  if (idx >= 0) sessions[idx] = session;
-  else sessions.push(session);
-  sessions.sort((a, b) => b.updatedAt - a.updatedAt);
-  await chrome.storage.local.set({ sessions: sessions.slice(0, MAX_SESSIONS) });
+function saveSession(session) {
+  return withStorageLock("sessions", async () => {
+    const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+    const idx = sessions.findIndex((s) => s.id === session.id);
+    if (idx >= 0) sessions[idx] = session;
+    else sessions.push(session);
+    sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+    await chrome.storage.local.set({ sessions: sessions.slice(0, MAX_SESSIONS) });
+  });
 }
 
 function broadcast(sessionId, nodeId, event) {
@@ -408,7 +504,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     const resolvedEvent = { type: "continue_resolved", continue: false, timedOut: true };
     node.uiEvents.push(resolvedEvent);
     node.pendingQuestion = null;
-    const finalAnswer = "Ended — no response within 10 minutes of reaching the step limit.";
+    const finalAnswer = "Ended - no response within 10 minutes of reaching the step limit.";
     node.uiEvents.push({ type: "done", success: false, finalAnswer, alreadyShown: false });
     node.updatedAt = Date.now();
     session.updatedAt = Date.now();
@@ -461,17 +557,80 @@ async function persistAgentEvent(session, node, event) {
   }
 }
 
+// Closes a list of tab ids once the whole task has genuinely finished —
+// never the tab the run actually ended on (endedTabId, the one most likely
+// to still be relevant), and never a tab the user is actively looking at
+// right now. Used for openedTabIds — tabs the main loop opened itself via
+// open_tab (see lib/agentLoop.js) — always, once a run is truly over.
+// incompleteBranchTabIds (parallel_investigate branches left open to be
+// resumed) go through closeIncompleteBranchTabs below instead, since closing
+// those also needs to update their status-card row. Mirrors the same "only
+// close what we opened, never yank an active tab" safeguard parallel_investigate
+// branches already use for their own auto-close.
+async function closeLeftoverOpenedTabs(tabIds, endedTabId) {
+  for (const tabId of tabIds || []) {
+    if (tabId === endedTabId) continue;
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab && !tab.active) {
+      await chrome.tabs.remove(tabId).catch(() => {});
+    }
+  }
+}
+
+// Same idea, but for parallel_investigate branches that ran out of steps
+// (see lib/agentLoop.js's incompleteBranchTabIds) — these are left open
+// while the task is still going, so a per-branch "Resume" click can reuse
+// the tab, but once the whole task is genuinely over (finished normally or
+// stopped — see the call site in drive()) there's no more "later" for that
+// button to matter. Unlike closeLeftoverOpenedTabs' plain tab-id list, each
+// entry here also carries callId/label, so closing the tab can also emit a
+// branch_closed event (persisted the same way runOneBranch's own auto-close
+// does) to flip that row to "closed" instead of leaving it stuck showing
+// "▶ resume"/"↗ view" for a tab that's actually already gone.
+async function closeIncompleteBranchTabs(session, node, branches, endedTabId) {
+  for (const branch of branches || []) {
+    const tabId = branch?.tabId;
+    if (!tabId || tabId === endedTabId) continue;
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
+    if (tab && !tab.active) {
+      await chrome.tabs.remove(tabId).catch(() => {});
+      await persistAgentEvent(session, node, { type: "branch_closed", callId: branch.callId, label: branch.label, url: branch.url });
+    }
+  }
+}
+
 // Runs the agent loop (fresh or resumed) for a specific node and handles
 // the two ways it can end: a normal finish/stop/error, or a pause on
 // ask_user.
 async function drive(session, node, runOpts) {
-  activeRun = { stop: false, skipSubtasks: false };
+  // A local object, not a lookup into activeRuns on every call — closing
+  // over this directly means shouldStop/shouldSkipSubtasks below can never
+  // accidentally read a DIFFERENT run's state even if activeRuns.set(id, ...)
+  // gets overwritten by something else for this same session id before this
+  // run finishes.
+  const runState = { stop: false, skipSubtasks: false };
+  activeRuns.set(session.id, runState);
+  beginKeepAlive();
   try {
     const result = await runAgentTask({
       ...runOpts,
-      shouldStop: () => activeRun?.stop === true,
-      shouldSkipSubtasks: () => activeRun?.skipSubtasks === true,
-      resetSkipSubtasks: () => { if (activeRun) activeRun.skipSubtasks = false; },
+      // Scopes the page recall cache (see lib/pageCache.js) to this exact
+      // chat — every drive() call already has session available, so this is
+      // set here once rather than requiring every call site below to pass
+      // it redundantly. Never leaks across sessions/windows this way.
+      sessionId: session.id,
+      shouldStop: () => runState.stop === true,
+      shouldSkipSubtasks: () => runState.skipSubtasks === true,
+      resetSkipSubtasks: () => { runState.skipSubtasks = false; },
+      // Seeds runAgentTask's own tracking with whatever survived a PRIOR
+      // pause on this same node (ask_user, a site-category gate, or the
+      // step limit) — see the `if (result.paused)` branch below, which is
+      // where these get saved in the first place. Without this, a task that
+      // spans a pause-and-continue would start each leg with empty tracking
+      // and forget about tabs opened before the pause, even though the task
+      // as a whole never actually finished in between.
+      initialOpenedTabIds: node.pendingOpenedTabIds,
+      initialIncompleteBranchTabIds: node.pendingIncompleteBranchTabIds,
     });
 
     // Remember wherever the agent actually ended up (which may differ from
@@ -485,6 +644,13 @@ async function drive(session, node, runOpts) {
       node.pendingQuestion = { ...result.pendingQuestion, pendingToolResultBlocks: result.pendingToolResultBlocks };
       node.cumulativeHistory = result.history;
       node.usage = result.usage || node.usage;
+      // Carried into the next runAgentTask call above whenever this node's
+      // pause gets resumed (ANSWER_QUESTION/STEP_LIMIT_RESPONSE/
+      // SITE_GATE_RESPONSE all funnel back through this same drive()) —
+      // without this, tabs opened before the pause would be silently
+      // forgotten once the task eventually does finish for real.
+      node.pendingOpenedTabIds = result.openedTabIds || [];
+      node.pendingIncompleteBranchTabIds = result.incompleteBranchTabIds || [];
       node.updatedAt = Date.now();
       session.updatedAt = Date.now();
       await saveSession(session);
@@ -496,6 +662,8 @@ async function drive(session, node, runOpts) {
     }
 
     node.pendingQuestion = null;
+    node.pendingOpenedTabIds = null;
+    node.pendingIncompleteBranchTabIds = null;
     node.uiEvents.push({ type: "done", success: result.success, finalAnswer: result.finalAnswer, alreadyShown: result.alreadyShown === true });
     node.cumulativeHistory = result.history || node.cumulativeHistory;
     node.usage = result.usage || node.usage;
@@ -503,15 +671,37 @@ async function drive(session, node, runOpts) {
     session.updatedAt = Date.now();
     await saveSession(session);
     chrome.runtime.sendMessage({ type: "AGENT_DONE", sessionId: session.id, nodeId: node.id, finalAnswer: result.finalAnswer, success: result.success, alreadyShown: result.alreadyShown === true });
+    // Only reached on a genuine finish/stop/error, never on a pause (see the
+    // `if (result.paused)` branch above, which returns before this point) —
+    // a resumed run might still need one of these tabs, so cleanup has to
+    // wait until the task is truly over.
+    await closeLeftoverOpenedTabs(result.openedTabIds, endedTabId);
+    // Branch tabs that ran out of steps (see lib/agentLoop.js's
+    // incompleteBranchTabIds) are left open on purpose WHILE the task is
+    // still going, so "Resume" can pick them back up later without losing
+    // that source's progress. But once we're at this point, the task itself
+    // is over — either it finished normally or the user hit the global Stop
+    // button (both funnel through this exact block; only a pause returns
+    // earlier, above) — so there's no more "later" for the per-branch Resume
+    // button to matter, and leaving these open would just be a trail of
+    // dangling tabs. Close them here unconditionally rather than only on
+    // Stop, and update their rows to "closed" (see closeIncompleteBranchTabs).
+    await closeIncompleteBranchTabs(session, node, result.incompleteBranchTabIds, endedTabId);
   } catch (err) {
     node.pendingQuestion = null;
+    node.pendingOpenedTabIds = null;
+    node.pendingIncompleteBranchTabIds = null;
     node.uiEvents.push({ type: "done", success: false, finalAnswer: `Unexpected error: ${err.message || err}`, alreadyShown: false });
     node.updatedAt = Date.now();
     session.updatedAt = Date.now();
     await saveSession(session);
     chrome.runtime.sendMessage({ type: "AGENT_DONE", sessionId: session.id, nodeId: node.id, finalAnswer: `Unexpected error: ${err.message || err}`, success: false, alreadyShown: false });
   } finally {
-    activeRun = null;
+    // Only clear the entry if it's still THIS run's — guards against a
+    // vanishingly narrow race where a new run for the same session id
+    // somehow started and re-set the map entry before this one's cleanup ran.
+    if (activeRuns.get(session.id) === runState) activeRuns.delete(session.id);
+    endKeepAlive();
   }
 }
 
@@ -530,6 +720,19 @@ async function drive(session, node, runOpts) {
 // (and the "scheduledTask|" string it builds on) has to stay in sync by hand
 // if it's ever changed in one place.
 const SCHEDULED_TASK_ALARM_PREFIX = "scheduledTask|";
+const MAX_RUN_HISTORY = 20; // per task — bounds storage growth for frequently-run checks
+
+// A schemeless URL like "google.com" passed to chrome.tabs.create resolves
+// relative to the CALLING context — which for a scheduled check is the
+// extension itself — landing on a nonexistent chrome-extension://<id>/...
+// page instead of the real site. Same normalization also lives in
+// options.js (applied when a check is saved) — this copy is a defensive
+// second layer for tasks saved before that existed, or edited via import.
+function normalizeTaskUrl(url) {
+  const trimmed = (url || "").trim();
+  if (!trimmed) return trimmed;
+  return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed) ? trimmed : `https://${trimmed}`;
+}
 
 async function loadScheduledTasks() {
   const { scheduledTasks = [] } = await chrome.storage.local.get(["scheduledTasks"]);
@@ -558,31 +761,80 @@ function waitForTabLoad(tabId, timeoutMs) {
   });
 }
 
-async function runScheduledTaskById(id) {
+// manual = true for the Settings "Run now" button — a deliberate, one-off
+// user action that should always actually run (and report why if it can't),
+// never silently no-op. manual = false is the unattended alarm-fired path,
+// which still needs its own guards: skip if the task was disabled (by the
+// user, or automatically after a prior needs_input run — see below), and
+// skip (without even counting it as a run) on a "weekly" schedule if today
+// isn't one of the selected days.
+async function runScheduledTaskById(id, { manual = false } = {}) {
   const tasks = await loadScheduledTasks();
   const task = tasks.find((t) => t.id === id);
-  // Guards a narrow race: the alarm can fire moments after the task was
-  // deleted or disabled in Settings, since clearing the alarm there isn't
-  // perfectly atomic with the alarm queue.
-  if (!task || !task.enabled) return;
+  if (!task) return;
+  if (!manual) {
+    // Guards a narrow race: the alarm can fire moments after the task was
+    // deleted or disabled in Settings, since clearing the alarm there isn't
+    // perfectly atomic with the alarm queue.
+    if (!task.enabled) return;
+    if (task.schedule?.kind === "weekly") {
+      const today = new Date().getDay(); // 0=Sun..6=Sat, matches the UI's day checkboxes
+      if (!Array.isArray(task.schedule.days) || !task.schedule.days.includes(today)) return;
+    }
+  }
 
   const startedAt = Date.now();
   let tabId = null;
-  let outcome;
+  // The agent can end up on a DIFFERENT tab than the one this function
+  // opened — e.g. if the starting page was broken/unusable and it called
+  // open_tab to actually get the work done elsewhere. runResult.tabId
+  // reflects wherever it ended up; track it separately so cleanup below can
+  // close both instead of only the tab this function itself created.
+  let finalTabId = null;
+  // Any other tabs the model opened via open_tab mid-run (see lib/agentLoop.js's
+  // openedTabIds) beyond just the first and the last — a scheduled run is
+  // headless, so unlike the interactive side panel these have no chance of
+  // being useful afterward and should all be swept up in the finally block
+  // below, not just the two endpoints.
+  let openedTabIds = [];
+  // parallel_investigate branches left open to be resumable (see
+  // lib/agentLoop.js's incompleteBranchTabIds) — that only matters when
+  // there's a side panel around for someone to click "Resume" on, which a
+  // headless scheduled check never has, so these get closed unconditionally
+  // here too rather than only when the interactive drive() run was stopped.
+  let incompleteBranchTabIds = [];
+  let status; // "ok" | "error" | "needs_input"
+  let message;
+  let usage = null;
+  beginKeepAlive();
   try {
     const config = await getConfig(task.providerId, task.modelId, { requireEnabled: false });
-    if (!config || !config.model) throw new Error("No API key/model configured for this scheduled check — check Settings.");
+    if (!config || !config.model) throw new Error("No API key/model configured for this scheduled check - check Settings.");
 
-    const tab = await chrome.tabs.create({ url: task.url, active: false });
+    const url = normalizeTaskUrl(task.url);
+    if (!url) throw new Error("No URL configured for this scheduled check - check Settings.");
+
+    // Notes/default context gathered from a prior manual run (see the
+    // "needs_input" branch below) — appended so the model has that
+    // information up front instead of needing to ask again.
+    const effectiveTask = task.notes && task.notes.trim() ? `${task.prompt}\n\n${task.notes.trim()}` : task.prompt;
+
+    const tab = await chrome.tabs.create({ url, active: false });
     tabId = tab.id;
     await waitForTabLoad(tabId, 25000);
 
     const grantedDomains = await getGrantedDomains();
     const visionConfig = await resolveVisionConfig();
     const limits = await getLimits();
+    // Deliberately no sessionId/pageCache here — a scheduled check's entire
+    // point is seeing current state on every run, so it must never read
+    // from (or pollute) the persisted page cache from a previous run. See
+    // lib/pageCache.js: recordPageRead/recallPage both no-op without a
+    // sessionId, so simply omitting it here is enough to bypass the cache
+    // completely for this run.
     const runResult = await runAgentTask({
       tabId,
-      task: task.prompt,
+      task: effectiveTask,
       initialHistory: [],
       config,
       visionConfig,
@@ -591,47 +843,101 @@ async function runScheduledTaskById(id) {
       onEvent: () => {},
       shouldStop: () => false,
     });
+    finalTabId = runResult.tabId || null;
+    usage = runResult.usage || null;
+    openedTabIds = runResult.openedTabIds || [];
+    incompleteBranchTabIds = runResult.incompleteBranchTabIds || [];
 
     if (runResult.paused) {
       // A scheduled run has nobody to answer ask_user or a site-category
-      // gate — treat "stopped waiting on input" as a soft failure rather
-      // than hanging. Surfacing this in the run's summary tells the user
-      // why (e.g. "needs your confirmation for an adult/financial site" or
-      // "the model asked a question it needed a human for").
-      const reason =
+      // gate — this isn't a "the task is broken" failure, it's "this task
+      // needs a human's input to proceed." Distinguish it (status:
+      // needs_input) from a genuine error so Settings can surface it
+      // differently and point the user at "run it manually" instead of just
+      // showing a generic failure.
+      status = "needs_input";
+      message =
         runResult.pendingQuestion?.kind === "site_category"
-          ? `Paused: this page needs one-time confirmation (${runResult.pendingQuestion.category}) — open it manually once in the side panel to grant access, then re-enable this check.`
-          : "Paused: the task asked a question only a person can answer, so it couldn't finish unattended.";
-      outcome = { success: false, finalAnswer: reason };
+          ? `Needs input: this page needs one-time confirmation (${runResult.pendingQuestion.category}) - open it manually once in the side panel to grant access, then re-enable this check.`
+          : "Needs input: the task asked a question only a person can answer, so it couldn't finish unattended. Run it manually to answer, then Save - what you enter can be kept as default context for future runs.";
+    } else if (runResult.success === false) {
+      status = "error";
+      message = runResult.finalAnswer || "Failed.";
     } else {
-      outcome = { success: runResult.success !== false, finalAnswer: runResult.finalAnswer || "" };
+      status = "ok";
+      message = runResult.finalAnswer || "";
     }
   } catch (err) {
-    outcome = { success: false, finalAnswer: `Error: ${err.message || err}` };
+    status = "error";
+    message = `Error: ${err.message || err}`;
   } finally {
-    if (tabId) chrome.tabs.remove(tabId).catch(() => {});
+    const idsToClose = new Set([tabId, finalTabId, ...openedTabIds, ...incompleteBranchTabIds.map((b) => b.tabId)].filter((v) => v));
+    for (const closeId of idsToClose) {
+      await chrome.tabs.remove(closeId).catch(() => {});
+    }
+    endKeepAlive();
   }
 
   const finishedAt = Date.now();
-  const freshTasks = await loadScheduledTasks();
-  const idx = freshTasks.findIndex((t) => t.id === id);
-  if (idx !== -1) {
-    freshTasks[idx].lastRun = {
-      startedAt,
-      finishedAt,
-      success: outcome.success,
-      summary: (outcome.finalAnswer || "").slice(0, 800),
-    };
-    await chrome.storage.local.set({ scheduledTasks: freshTasks });
-  }
+  // Two scheduled checks finishing close together would otherwise race on
+  // this same read-modify-write (see withStorageLock's comment above) — one
+  // run's history write could silently clobber the other's.
+  await withStorageLock("scheduledTasks", async () => {
+    const freshTasks = await loadScheduledTasks();
+    const idx = freshTasks.findIndex((t) => t.id === id);
+    if (idx !== -1) {
+      const runUsage = { inputTokens: usage?.inputTokens || 0, outputTokens: usage?.outputTokens || 0 };
+      // A stable id (independent of array position) so Settings' history
+      // popup can select/delete a specific entry safely even if the list
+      // shifts under it — e.g. a 1-minute-interval task completing another
+      // run while the popup happens to be open.
+      const entryId = `run_${startedAt}_${Math.random().toString(36).slice(2, 8)}`;
+      const entry = { id: entryId, startedAt, finishedAt, status, summary: (message || "").slice(0, 4000), usage: runUsage };
+      const history = Array.isArray(freshTasks[idx].runHistory) ? freshTasks[idx].runHistory : [];
+      history.unshift(entry);
+      freshTasks[idx].runHistory = history.slice(0, MAX_RUN_HISTORY);
+      freshTasks[idx].lastRun = entry; // convenience pointer to the latest entry
+      // Lifetime ledger — every run's tokens/count are added here regardless
+      // of whether that run's history entry survives (deleting old rows from
+      // runHistory is just log housekeeping; the tokens were still spent).
+      // Never decremented, same "total vs active" pattern used for chat
+      // sessions' /compact usage.
+      const prevTotal = freshTasks[idx].totalUsage || { inputTokens: 0, outputTokens: 0 };
+      freshTasks[idx].totalUsage = {
+        inputTokens: prevTotal.inputTokens + runUsage.inputTokens,
+        outputTokens: prevTotal.outputTokens + runUsage.outputTokens,
+      };
+      freshTasks[idx].totalRunCount = (freshTasks[idx].totalRunCount || 0) + 1;
+      if (status === "needs_input") {
+        // Stop firing on schedule until the user has actually looked at
+        // this and either fixed it (added notes/default context, changed
+        // the prompt) or re-enabled it deliberately — otherwise it would
+        // just fail the same way every single interval. Flipping `enabled`
+        // alone isn't enough: the alarm itself (created by options.js's
+        // syncAlarmForTask) has to be cleared too, or it just keeps firing
+        // forever and silently no-op'ing on the `!task.enabled` guard above
+        // — looking exactly like "this never runs" even though Chrome is
+        // dutifully firing it every interval.
+        freshTasks[idx].enabled = false;
+        freshTasks[idx].disabledReason = "needs_input";
+        await chrome.alarms.clear(`${SCHEDULED_TASK_ALARM_PREFIX}${id}`);
+      } else if (status === "ok" && freshTasks[idx].disabledReason) {
+        // A successful manual run after fixing things up clears the flag,
+        // though the user still has to re-check Enabled themselves — this
+        // just stops Settings from showing a stale "needs input" badge.
+        delete freshTasks[idx].disabledReason;
+      }
+      await chrome.storage.local.set({ scheduledTasks: freshTasks });
+    }
+  });
 
   if (task.notify) {
     chrome.notifications
       .create(`scheduledTask-${id}-${finishedAt}`, {
         type: "basic",
         iconUrl: chrome.runtime.getURL("icons/icon128.png"),
-        title: `Tab Agent — ${task.name}${outcome.success ? "" : " (failed)"}`,
-        message: (outcome.finalAnswer || (outcome.success ? "Done." : "Failed.")).slice(0, 250),
+        title: `Tab Agent - ${task.name}${status === "ok" ? "" : status === "needs_input" ? " (needs input)" : " (failed)"}`,
+        message: (message || "Done.").slice(0, 250),
       })
       .catch(() => {});
   }
@@ -640,7 +946,15 @@ async function runScheduledTaskById(id) {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm.name.startsWith(SCHEDULED_TASK_ALARM_PREFIX)) return;
   const id = alarm.name.slice(SCHEDULED_TASK_ALARM_PREFIX.length);
-  runScheduledTaskById(id);
+  // runScheduledTaskById's own try/catch only covers the run itself — a
+  // failure loading the task list up front, or in the withStorageLock write
+  // at the end (which re-throws to its caller if the write itself fails),
+  // happens outside that. Nothing here awaits this call, so without a
+  // .catch() either of those would become an unhandled rejection in the
+  // service worker instead of just being logged.
+  runScheduledTaskById(id).catch((err) => {
+    console.error(`Scheduled task ${id} failed outside its own error handling:`, err);
+  });
 });
 
 // --- message routing -----------------------------------------------------
@@ -690,7 +1004,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
       const attachmentPreviews = [
         ...(msg.attachments || []).map((a) => `data:${a.mediaType};base64,${a.data}`),
-        ...(msg.pdfAttachments || []).map((a) => ({ kind: "pdf", name: a.name, pageCount: a.pageCount })),
+        ...(msg.docAttachments || []).map((a) => ({ kind: a.kind || "doc", format: a.format, name: a.name, pageCount: a.pageCount })),
       ];
       const newNode = createNode(parentNode ? parentNode.id : null, msg.task, attachmentPreviews);
       attachNode(session, parentNode, newNode);
@@ -713,8 +1027,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       let taskForModel = tabSwitchNote ? `[${tabSwitchNote}]\n\n${msg.task}` : msg.task;
 
-      const { taskAddition: pdfAddition, note: pdfNote } = buildPdfBlocks(msg.pdfAttachments);
-      if (pdfAddition) taskForModel += pdfAddition;
+      const { taskAddition: docAddition, note: docNote } = await buildDocBlocks(session.id, msg.docAttachments);
+      if (docAddition) taskForModel += docAddition;
 
       const { task: effectiveTask, attachments: effectiveAttachments, note: visionNote } = await applyVisionFallback(config, taskForModel, msg.attachments);
       if (tabSwitchNote) {
@@ -722,8 +1036,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         newNode.uiEvents.push(infoEvent);
         broadcast(session.id, newNode.id, infoEvent);
       }
-      if (pdfNote) {
-        const infoEvent = { type: "info", message: `📄 ${pdfNote}` };
+      if (docNote) {
+        const infoEvent = { type: "info", message: `📄 ${docNote}` };
         newNode.uiEvents.push(infoEvent);
         broadcast(session.id, newNode.id, infoEvent);
       }
@@ -735,6 +1049,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const visionConfig = await resolveVisionConfig();
       const grantedDomains = await getGrantedDomains();
       const limits = await getLimits();
+      const pageCacheConfig = await getPageCacheConfig();
 
       await drive(session, newNode, {
         tabId,
@@ -746,6 +1061,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         visionConfig,
         grantedDomains,
         limits,
+        pageCacheConfig,
         onEvent: (event) => persistAgentEvent(session, newNode, event),
       });
     })();
@@ -788,6 +1104,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const visionConfig = await resolveVisionConfig();
       const grantedDomains = await getGrantedDomains();
       const limits = await getLimits();
+      const pageCacheConfig = await getPageCacheConfig();
 
       await drive(session, node, {
         tabId,
@@ -798,6 +1115,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         visionConfig,
         grantedDomains,
         limits,
+        pageCacheConfig,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();
@@ -822,13 +1140,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
 
       const beforeTokens = (node.usage?.inputTokens || 0) + (node.usage?.outputTokens || 0);
-      let summary;
+      let summary, compactUsage;
       try {
-        summary = await summarizeHistory(config, node.cumulativeHistory);
+        ({ summary, usage: compactUsage } = await summarizeHistory(config, node.cumulativeHistory));
       } catch (err) {
         chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId: msg.sessionId, event: { type: "error", message: `Could not compact this chat: ${err.message || err}` } });
         return;
       }
+
+      // Compacting shrinks the ACTIVE context going forward, but it must
+      // never make the chat's lifetime token total go down — that would
+      // misrepresent money already spent. So before this node's own usage
+      // gets cleared, fold it (plus the summarization call's own cost,
+      // which would otherwise go untracked) into a running ledger on the
+      // session that persists across every future compact too. sidepanel.js
+      // adds this ledger on top of the per-node sum to show "total this
+      // chat", while node.usage below becomes the "active" figure.
+      const carry = session.compactedUsage || { inputTokens: 0, outputTokens: 0 };
+      carry.inputTokens += (node.usage?.inputTokens || 0) + (compactUsage?.inputTokens || 0);
+      carry.outputTokens += (node.usage?.outputTokens || 0) + (compactUsage?.outputTokens || 0);
+      carry.model = node.usage?.model || carry.model;
+      carry.provider = node.usage?.provider || carry.provider;
+      session.compactedUsage = carry;
 
       // Collapsed to a clean two-turn exchange, not a partial trim — this
       // sidesteps the API's tool_use/tool_result pairing requirement
@@ -836,12 +1169,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // leaving a dangling tool_use with no matching result.
       node.cumulativeHistory = [
         { role: "user", content: [{ type: "text", text: `[Earlier conversation summarized to save context]\n\n${summary}` }] },
-        { role: "assistant", content: [{ type: "text", text: "Got it — I have the summary of our conversation so far and will continue from there." }] },
+        { role: "assistant", content: [{ type: "text", text: "Got it - I have the summary of our conversation so far and will continue from there." }] },
       ];
-      node.usage = { inputTokens: 0, outputTokens: 0 };
+      // The new "active" context isn't actually empty — it's this short
+      // exchange — so estimate its size (~4 chars/token) rather than
+      // showing 0. This estimate gets replaced by a real measured value the
+      // moment the next message runs, since that turn's own agent run
+      // reports real usage for node.usage as normal.
+      const activeEstimate = Math.ceil(JSON.stringify(node.cumulativeHistory).length / 4);
+      node.usage = { inputTokens: activeEstimate, outputTokens: 0, model: config.model, provider: config.provider };
+      const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
       const infoEvent = {
         type: "info",
-        message: `📦 Compacted this chat's context${beforeTokens ? ` (was tracking ~${Math.round(beforeTokens / 1000)}k tokens)` : ""} to save cost on future messages.`,
+        message: `📦 Compacted this chat's context${beforeTokens ? ` (~${fmtK(beforeTokens)} → ~${fmtK(activeEstimate)} active tokens)` : ""} to save cost on future messages.`,
       };
       node.uiEvents.push(infoEvent);
       node.updatedAt = Date.now();
@@ -894,6 +1234,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const visionConfig = await resolveVisionConfig();
       const grantedDomains = await getGrantedDomains();
       const limits = await getLimits();
+      const pageCacheConfig = await getPageCacheConfig();
 
       await drive(session, node, {
         tabId,
@@ -904,6 +1245,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         visionConfig,
         grantedDomains,
         limits,
+        pageCacheConfig,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();
@@ -928,7 +1270,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       node.pendingQuestion = null;
 
       if (!msg.approve) {
-        const finalAnswer = `Stopped — ${hostname} looks like a ${category} site and wasn't confirmed.`;
+        const finalAnswer = `Stopped - ${hostname} looks like a ${category} site and wasn't confirmed.`;
         node.uiEvents.push({ type: "done", success: false, finalAnswer, alreadyShown: false });
         node.updatedAt = Date.now();
         session.updatedAt = Date.now();
@@ -958,6 +1300,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const grantedDomains = await getGrantedDomains();
 
       const limits = await getLimits();
+      const pageCacheConfig = await getPageCacheConfig();
 
       // Both the pre-run and mid-run gate already left history in a clean,
       // nothing-pending state (see lib/agentLoop.js) — resuming either one is
@@ -971,6 +1314,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         visionConfig,
         grantedDomains,
         limits,
+        pageCacheConfig,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();
@@ -996,7 +1340,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       const tab = await chrome.tabs.get(msg.tabId).catch(() => null);
       if (!tab) {
-        sendResponse({ ok: false, error: "That tab was closed — reopen it first, then resume." });
+        sendResponse({ ok: false, error: "That tab was closed - reopen it first, then resume." });
         return;
       }
       const config = await getConfig(msg.providerId, msg.modelId);
@@ -1007,17 +1351,28 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const visionConfig = await resolveVisionConfig();
       const grantedDomains = await getGrantedDomains();
       const limits = await getLimits();
+      const pageCacheConfig = await getPageCacheConfig();
+      // Same turn-counting rationale as runAgentTask's own ctx.turnIndex —
+      // this resume isn't nested inside a runAgentTask call, so it has to be
+      // computed here from the node's own persisted history instead.
+      const turnIndex = (node.cumulativeHistory || []).filter((t) => t.role === "user").length;
 
-      // A resume isn't nested inside drive()/activeRun the way a fresh
-      // parallel_investigate call is, but it should still respect the same
-      // global Stop and per-card skip signals if the user reaches for
-      // either while a resume is running — reuse the same activeRun object
-      // rather than inventing a separate one. Reset skipSubtasks first in
-      // case a stale flag is still set from an earlier, unrelated call;
-      // otherwise this resume could see it immediately and skip itself
-      // before doing anything.
-      if (!activeRun) activeRun = { stop: false, skipSubtasks: false };
-      else activeRun.skipSubtasks = false;
+      // A resume isn't nested inside drive() the way a fresh
+      // parallel_investigate call is, but it should still respect Stop and
+      // the per-card skip signal for THIS session if the user reaches for
+      // either while a resume is running — reuse the same per-session
+      // runState a live drive() call would use rather than inventing a
+      // separate one. Reset skipSubtasks first in case a stale flag is still
+      // set from an earlier, unrelated call; otherwise this resume could see
+      // it immediately and skip itself before doing anything.
+      let runState = activeRuns.get(session.id);
+      if (!runState) {
+        runState = { stop: false, skipSubtasks: false };
+        activeRuns.set(session.id, runState);
+      } else {
+        runState.skipSubtasks = false;
+      }
+      beginKeepAlive();
 
       try {
         const result = await resumeBranch({
@@ -1030,13 +1385,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           limits,
           visionConfig,
           grantedDomains,
+          sessionId: session.id,
+          pageCacheConfig,
+          turnIndex,
           onEvent: (event) => persistAgentEvent(session, node, event),
-          shouldStop: () => activeRun?.stop === true,
-          shouldSkipSubtasks: () => activeRun?.skipSubtasks === true,
+          shouldStop: () => runState.stop === true,
+          shouldSkipSubtasks: () => runState.skipSubtasks === true,
         });
         sendResponse({ ok: true, result });
       } catch (err) {
         sendResponse({ ok: false, error: String(err.message || err) });
+      } finally {
+        if (activeRuns.get(session.id) === runState) activeRuns.delete(session.id);
+        endKeepAlive();
       }
     })();
     return true;
@@ -1047,26 +1408,70 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   // parallel_investigate branches / run_batch's sub-loop check (see
   // ctx.shouldSkip in lib/agentLoop.js); the main loop never looks at it,
   // so the conversation keeps going once the current sub-task(s) wrap up
-  // with whatever they'd gathered.
+  // with whatever they'd gathered. Scoped to msg.sessionId (see
+  // findRunState) so this can never flip the flag for a DIFFERENT chat's run.
   if (msg.type === "SKIP_SUBTASKS") {
-    if (activeRun) activeRun.skipSubtasks = true;
-    sendResponse({ ok: !!activeRun });
+    const runState = findRunState(msg.sessionId);
+    if (runState) runState.skipSubtasks = true;
+    sendResponse({ ok: !!runState });
+    return true;
+  }
+
+  if (msg.type === "DELETE_SESSION_CACHE") {
+    // Sent by sidepanel.js right after it removes a chat from the "sessions"
+    // array, so a deleted chat's cached page content (see lib/pageCache.js)
+    // and cached attachment content (see lib/attachmentCache.js) don't linger
+    // orphaned in storage indefinitely. Routed through background.js (rather
+    // than sidepanel.js touching pagecache*/attcache* keys directly) because
+    // sidepanel.js is a classic script, not an ES module, and can't import
+    // either module's key-naming logic directly.
+    deleteCacheForSession(msg.sessionId).catch((err) => console.log("[pageCache] deleteCacheForSession failed:", err?.message || err));
+    deleteAttachmentCacheForSession(msg.sessionId).catch((err) => console.log("[attachmentCache] deleteCacheForSession failed:", err?.message || err));
+    sendResponse({ ok: true });
     return true;
   }
 
   if (msg.type === "STOP_TASK") {
-    if (activeRun) activeRun.stop = true;
-    sendResponse({ stopped: true });
+    const runState = findRunState(msg.sessionId);
+    if (runState) runState.stop = true;
+    sendResponse({ stopped: !!runState });
     return true;
   }
 
   if (msg.type === "RUN_SCHEDULED_TASK_NOW") {
     // Fire-and-forget from Settings' "Run now" button — options.js re-reads
-    // the task's lastRun field from storage a few seconds later (or on the
-    // next chrome.storage.onChanged event) rather than waiting on a
+    // the task's lastRun/runHistory from storage a few seconds later (or on
+    // the next chrome.storage.onChanged event) rather than waiting on a
     // response here, since a run can take as long as any other agent task.
-    runScheduledTaskById(msg.id);
+    // manual: true — this is a deliberate one-off click, not the scheduler,
+    // so it must actually run (and report why if it can't) rather than
+    // silently no-op just because the task happens to be toggled off or
+    // (for a weekly schedule) today isn't one of its selected days.
+    runScheduledTaskById(msg.id, { manual: true });
     sendResponse({ started: true });
+    return true;
+  }
+
+  // "Run manually" from the needs_input review card — unlike RUN_SCHEDULED_
+  // TASK_NOW (headless, background tab, nobody to answer ask_user), this
+  // opens the task's URL as the active tab and the side panel alongside it,
+  // with the composer pre-filled, so the user can actually answer whatever
+  // the task got stuck on. The panel may not have a listener registered the
+  // instant it opens, so this also stashes the same info in storage as a
+  // fallback the panel checks on its own load.
+  if (msg.type === "OPEN_SCHEDULED_TASK_MANUAL") {
+    (async () => {
+      try {
+        const tab = await chrome.tabs.create({ url: normalizeTaskUrl(msg.url), active: true });
+        const prefill = { taskId: msg.id, prompt: msg.prompt || "", notes: msg.notes || "", ts: Date.now() };
+        await chrome.storage.local.set({ pendingScheduledTaskPrefill: prefill });
+        if (tab.windowId) await chrome.sidePanel.open({ windowId: tab.windowId }).catch(() => {});
+        chrome.runtime.sendMessage({ type: "PREFILL_SCHEDULED_TASK", ...prefill }).catch(() => {});
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err.message || err) });
+      }
+    })();
     return true;
   }
 
@@ -1091,7 +1496,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === "REOPEN_TAB") {
     (async () => {
       try {
-        const tab = await chrome.tabs.create({ url: msg.url, active: true });
+        // Same schemeless-URL problem as scheduled tasks — an unqualified
+        // "google.com" resolves relative to this extension's own origin
+        // instead of the real site if not normalized first.
+        const tab = await chrome.tabs.create({ url: normalizeTaskUrl(msg.url), active: true });
         sendResponse({ ok: true, tabId: tab.id });
       } catch (err) {
         sendResponse({ ok: false, error: String(err.message || err) });

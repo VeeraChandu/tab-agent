@@ -18,7 +18,7 @@ module.exports = [
 
   // ES module source files (service worker + lib modules that use import/export).
   {
-    files: ["background.js", "options.js", "lib/agentLoop.js", "lib/providers.js", "lib/tools.js", "lib/vision.js", "lib/siteCategories.js"],
+    files: ["background.js", "options.js", "lib/agentLoop.js", "lib/providers.js", "lib/tools.js", "lib/vision.js", "lib/siteCategories.js", "lib/mediaSniffer.js", "lib/pageCache.js", "lib/attachmentCache.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",

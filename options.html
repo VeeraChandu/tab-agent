@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Tab Agent — Settings</title>
+  <title>Tab Agent - Settings</title>
   <link rel="stylesheet" href="options.css" />
 </head>
 <body>
@@ -21,7 +21,7 @@
     <section id="tab-providers" class="tab-panel active" role="tabpanel" aria-labelledby="tabbtn-providers" tabindex="0">
       <h2>
         LLM Providers
-        <button type="button" class="info-icon" data-tooltip="Each key is stored locally in your browser only — calls go directly from your browser to that provider, never through any third-party server. Pick the &quot;Default&quot; one to use in the side panel, or switch between them there. Tab Agent has three independent model pickers: this Default (for tasks you run manually), the Vision model below (only used to describe images for non-vision chat models), and each Scheduled check's own model (Automation tab). Changing one does not affect the others.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="Each key is stored locally in your browser only - calls go directly from your browser to that provider, never through any third-party server. Pick the &quot;Default&quot; one to use in the side panel, or switch between them there. Tab Agent has three independent model pickers: this Default (for tasks you run manually), the Vision model below (only used to describe images for non-vision chat models), and each Scheduled check's own model (Automation tab). Changing one does not affect the others.">ⓘ</button>
       </h2>
 
       <div id="providerList" class="provider-list"></div>
@@ -30,8 +30,16 @@
       <hr />
       <h2>
         Vision model
-        <button type="button" class="info-icon" data-tooltip="A standalone model assignment for understanding images — separate from your chat model checklist above, so you can pick any model any provider has fetched, whether or not that model is enabled for chat. When you attach an image and your selected chat model doesn't look like it supports vision, Tab Agent hands the image to this model to describe first, then gives your chat model that description instead of the raw image. This is a best-effort guess based on model names — pick &quot;None&quot; to disable it and always send images as-is.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="A standalone model assignment for understanding images, separate from your chat model checklist above, so you can pick any model any provider has fetched, whether or not that model is enabled for chat. When you attach an image and your selected chat model doesn't look like it supports vision, Tab Agent hands the image to this model to describe first, then gives your chat model that description instead of the raw image. This is a best-effort guess based on model names - pick &quot;None&quot; to disable it and always send images as-is.">ⓘ</button>
       </h2>
+      <div class="field-row">
+        <label>Filter by provider
+          <select id="visionProviderFilterSelect"><option value="">All providers</option></select>
+        </label>
+        <label>Filter models <span class="optional">(by name)</span>
+          <input id="visionModelFilterInput" type="text" placeholder="Search models…" />
+        </label>
+      </div>
       <label>Vision model</label>
       <select id="visionFallbackSelect"></select>
     </section>
@@ -39,7 +47,7 @@
     <section id="tab-agents" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-agents" tabindex="0">
       <h2>
         Agents
-        <button type="button" class="info-icon" data-tooltip="Agents are reusable presets — instructions (and an optional target site) you can invoke from the side panel by typing /agent_slug. They use the same tools as the default assistant.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="Agents are reusable presets - instructions (and an optional target site) you can invoke from the side panel by typing @agent_slug. They use the same tools as the default assistant.">ⓘ</button>
       </h2>
 
       <div id="agentList" class="agent-list"></div>
@@ -49,7 +57,7 @@
     <section id="tab-automation" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-automation" tabindex="0">
       <h2>
         Scheduled checks
-        <button type="button" class="info-icon" data-tooltip="Runs a task automatically on a timer, with no side panel open — Tab Agent opens the target page in a background tab, runs the task, and closes it again. There's no one to answer a question mid-run, so anything needing ask_user (or a one-time adult/financial site confirmation) will pause and report back as unfinished rather than actually asking — confirm those sites manually in the side panel first if a check needs one.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="Runs a task automatically on a timer, with no side panel open - Tab Agent opens the target page in a background tab, runs the task, and closes it again. There's no one to answer a question mid-run, so anything needing ask_user (or a one-time adult/financial site confirmation) pauses, reports back as &quot;Needs input&quot;, and disables itself until you review it and run it manually. Prerequisite: Chrome itself must be running for these to fire - if Chrome is fully quit (not just all windows closed), checks won't run until you reopen it, and system sleep pauses timers too.">ⓘ</button>
       </h2>
       <div id="scheduledList" class="scheduled-list"></div>
       <button id="addScheduledBtn" type="button" class="add-btn">+ Add scheduled check</button>
@@ -58,7 +66,7 @@
     <section id="tab-limits" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-limits" tabindex="0">
       <h2>
         Step limits
-        <button type="button" class="info-icon" data-tooltip="How many actions the agent takes before checking in with you. Lower is safer (more chances to notice something's wrong); higher means fewer interruptions on long tasks. There's always some cap — none of these can be set to unlimited.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="How many actions the agent takes before checking in with you. Lower is safer (more chances to notice something's wrong); higher means fewer interruptions on long tasks. There's always some cap - none of these can be set to unlimited.">ⓘ</button>
       </h2>
       <p class="hint">These control how much the agent does before pausing to ask whether to keep going.</p>
 
@@ -89,18 +97,62 @@
       <label class="field-row">
         <span>
           Max steps per parallel branch
-          <button type="button" class="info-icon" data-tooltip="Separate, smaller budget for each individual source parallel_investigate checks — meant for quick, focused lookups, not the batch task step limit above. This is intentionally its own setting so a large batch limit doesn't get misread as governing branches too.">ⓘ</button>
+          <button type="button" class="info-icon" data-tooltip="Separate, smaller budget for each individual source parallel_investigate checks - meant for quick, focused lookups, not the batch task step limit above. This is intentionally its own setting so a large batch limit doesn't get misread as governing branches too.">ⓘ</button>
         </span>
         <input id="limitBranchSteps" type="number" min="5" max="60" step="5" />
       </label>
 
+      <label class="field-row">
+        <span>
+          Max sources per task
+          <button type="button" class="info-icon" data-tooltip="Total number of sources parallel_investigate can check across a whole task, added up across every round - not just the max parallel tabs in one round above. Without this, an open-ended request ('check every possible retailer') has no natural stopping point, since each round only costs one step toward the main conversation step limit no matter how many sources it opens. Sources already checked this task are also skipped automatically if asked for again.">ⓘ</button>
+        </span>
+        <input id="limitMaxSources" type="number" min="5" max="60" step="5" />
+      </label>
+
       <p class="hint" id="limitsSavedHint"></p>
+
+      <hr />
+      <h2>
+        Page recall
+        <button type="button" class="info-icon" data-tooltip="Lets the agent look up a page it already read earlier in the same chat (recall_page) instead of re-visiting it, when a later question needs a different detail from somewhere already checked. Off by default - it keeps more page content around in storage for longer than usual to make this possible. Element ids from a recalled page are never used to click/type - only for answering questions about what a page showed.">ⓘ</button>
+      </h2>
+      <div class="field-row toggle-row">
+        <span>Enable page recall cache</span>
+        <label class="switch">
+          <input id="pageCacheEnabled" type="checkbox" />
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+      <label class="field-row">
+        <span>
+          Max cached pages per chat
+          <button type="button" class="info-icon" data-tooltip="How many distinct pages (by URL) this chat keeps fully cached at once. Once over this, the oldest-turn entries are dropped first.">ⓘ</button>
+        </span>
+        <input id="pageCacheMaxEntries" type="number" min="3" max="100" step="1" />
+      </label>
+      <p class="hint" id="pageCacheSavedHint"></p>
     </section>
 
     <section id="tab-privacy" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-privacy" tabindex="0">
+      <h2>Data &amp; AI provider</h2>
+      <p>
+        When you run a task, the page content, screenshots, and tab details it needs are sent to the AI provider
+        you configure in the Providers tab, using your own API key - that data goes directly from your browser to
+        your chosen provider (Anthropic, OpenAI, or a compatible endpoint), never to Tab Agent's developer, because
+        no server operated by the developer exists in this flow.
+      </p>
+      <p>
+        Everything else (API keys, chat history, custom agents, scheduled tasks, and settings) is stored only in
+        this browser's local extension storage. It is never synced to Google or transmitted anywhere except as
+        described above. See this extension's <a href="docs/privacy-policy.html" target="_blank" rel="noopener">Privacy Policy</a>
+        (bundled with the extension, and linked from the Chrome Web Store listing) for the complete details.
+      </p>
+
+      <hr />
       <h2>
         Voice input
-        <button type="button" class="info-icon" data-tooltip="The side panel's microphone button uses Chrome's built-in speech recognition, which needs one-time microphone permission for this extension. Chrome doesn't reliably show that permission prompt inside the side panel itself — grant it here instead (a regular tab, where the prompt always works). It carries over to the side panel automatically, since both share the same extension origin.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="The side panel's microphone button uses Chrome's built-in speech recognition, which needs one-time microphone permission for this extension. Chrome doesn't reliably show that permission prompt inside the side panel itself - grant it here instead (a regular tab, where the prompt always works). It carries over to the side panel automatically, since both share the same extension origin.">ⓘ</button>
       </h2>
       <div class="mic-actions">
         <button id="enableMicBtn" type="button" class="add-btn">🎤 Enable microphone access</button>
@@ -111,7 +163,7 @@
       <hr />
       <h2>
         Site access
-        <button type="button" class="info-icon" data-tooltip="Tab Agent pauses to confirm before operating on sites that look like adult content or financial services, then remembers your answer per domain so it only asks once. This list is best-effort detection, not a guarantee — revoke anything below to be asked again next time.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="Tab Agent pauses to confirm before operating on sites that look like adult content or financial services, then remembers your answer per domain so it only asks once. This list is best-effort detection, not a guarantee - revoke anything below to be asked again next time.">ⓘ</button>
       </h2>
       <div id="siteAccessList" class="site-access-list"></div>
     </section>
@@ -119,18 +171,18 @@
     <section id="tab-about" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-about" tabindex="0">
       <h2>
         Backup
-        <button type="button" class="info-icon" data-tooltip="Export your providers, agents, vision model setting, scheduled checks, and theme preference as a file you can keep or move to another install. Includes your API keys in plain text — store the file somewhere private, the same way you'd treat the keys themselves.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="Export/Import let you pick which sections to include before proceeding. Providers includes your API keys in plain text - store an export with that included somewhere private.">ⓘ</button>
       </h2>
       <div class="backup-actions">
-        <button id="exportSettingsBtn" type="button" class="add-btn">⬇ Export settings</button>
-        <button id="importSettingsBtn" type="button" class="add-btn">⬆ Import settings</button>
+        <button id="exportSettingsBtn" type="button" class="add-btn">▲ Export settings</button>
+        <button id="importSettingsBtn" type="button" class="add-btn">▼ Import settings</button>
         <input type="file" id="importFileInput" accept="application/json" hidden />
       </div>
       <p id="backupStatus" class="hint"></p>
 
       <hr />
       <h2>How it works</h2>
-      <p>Tab Agent reads the active tab's content and interactive elements, sends them to the model along with your task, and executes whatever action the model chooses (click, type, scroll, navigate, switch tabs) directly on the browser — no MCP server, no proxy, no extra setup.</p>
+      <p>Tab Agent reads the active tab's content and interactive elements, sends them to the model along with your task, and executes whatever action the model chooses (click, type, scroll, navigate, switch tabs) directly on the browser - no MCP server, no proxy, no extra setup.</p>
       <p class="hint">Because the agent can click and type on pages on your behalf, review what it's about to do in the side panel log, and use Stop at any time.</p>
 
       <hr />
@@ -148,6 +200,85 @@
     </div>
   </div>
 
+  <!-- Shown after re-fetching an already-configured provider's models, only
+       when the new list actually differs from the old one — see
+       showModelDiffPopup in options.js. Reuses .confirm-overlay/.confirm-dialog
+       for the backdrop/box styling, single dismiss button since this is
+       informational, not a yes/no choice. -->
+  <div id="modelDiffOverlay" class="confirm-overlay hidden">
+    <div class="confirm-dialog model-diff-dialog" role="alertdialog" aria-modal="true" aria-labelledby="modelDiffTitle">
+      <p id="modelDiffTitle" class="model-diff-title"></p>
+      <p class="model-diff-heading model-diff-added-heading hidden">Added</p>
+      <ul class="model-diff-list model-diff-added-list"></ul>
+      <p class="model-diff-heading model-diff-removed-heading hidden">Removed</p>
+      <ul class="model-diff-list model-diff-removed-list"></ul>
+      <div class="confirm-actions">
+        <button id="modelDiffOkBtn" type="button" class="confirm-ok-btn">Got it</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="historyOverlay" class="confirm-overlay history-overlay hidden">
+    <div class="history-dialog" role="dialog" aria-modal="true" aria-labelledby="historyTitle">
+      <div class="history-dialog-header">
+        <div>
+          <h3 id="historyTitle"></h3>
+          <p id="historyTotalTokens" class="hint"></p>
+        </div>
+        <button id="historyCloseBtn" type="button" class="history-close-btn" title="Close">✕</button>
+      </div>
+      <div class="history-dialog-actions">
+        <label class="history-select-all-label"><input id="historySelectAll" type="checkbox" /> Select all</label>
+        <button id="historyDeleteSelectedBtn" type="button" class="history-delete-selected-btn" disabled>Delete selected</button>
+      </div>
+      <ul id="historyList" class="history-modal-list"></ul>
+    </div>
+  </div>
+
+  <template id="historyRowTemplate">
+    <li class="history-row">
+      <div class="history-row-main">
+        <input class="history-row-checkbox" type="checkbox" />
+        <button class="history-row-toggle" type="button">
+          <span class="history-row-icon"></span>
+          <span class="history-row-when"></span>
+          <span class="history-row-duration"></span>
+          <span class="history-row-tokens"></span>
+        </button>
+      </div>
+      <div class="history-row-body hidden">
+        <div class="history-row-markdown"></div>
+      </div>
+    </li>
+  </template>
+
+  <div id="runDetailOverlay" class="confirm-overlay run-detail-overlay hidden">
+    <div class="history-dialog run-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="runDetailTitle">
+      <div class="history-dialog-header">
+        <div>
+          <h3 id="runDetailTitle"></h3>
+          <p id="runDetailMeta" class="hint"></p>
+        </div>
+        <button id="runDetailCloseBtn" type="button" class="history-close-btn" title="Close">✕</button>
+      </div>
+      <div id="runDetailMarkdown" class="history-row-markdown run-detail-markdown"></div>
+      <div class="run-detail-actions">
+        <button id="runDetailDeleteBtn" type="button" class="history-delete-selected-btn">Delete this run</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="backupSectionsOverlay" class="confirm-overlay hidden">
+    <div class="confirm-dialog backup-sections-dialog" role="dialog" aria-modal="true" aria-labelledby="backupSectionsTitle">
+      <p id="backupSectionsTitle" class="backup-sections-title"></p>
+      <div id="backupSectionsList" class="backup-sections-list"></div>
+      <div class="confirm-actions">
+        <button id="backupSectionsCancelBtn" type="button" class="confirm-cancel-btn">Cancel</button>
+        <button id="backupSectionsOkBtn" type="button" class="confirm-ok-btn backup-sections-ok-btn">Continue</button>
+      </div>
+    </div>
+  </div>
+
   <template id="providerCardTemplate">
     <div class="provider-card">
       <div class="card-row">
@@ -155,7 +286,12 @@
           <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
         </button>
         <span class="card-summary"></span>
-        <label class="default-radio"><input type="radio" name="defaultProvider" /> Default</label>
+        <span class="card-switch-row">
+          <label class="switch">
+            <input class="provider-enabled-input" type="checkbox" />
+            <span class="switch-slider"></span>
+          </label>
+        </span>
         <button class="remove-btn" type="button" title="Remove provider">✕</button>
       </div>
 
@@ -177,9 +313,9 @@
           </button>
         </div>
 
-        <label>Base URL <span class="optional">(optional — for a non-default OpenAI-compatible endpoint)</span></label>
+        <label>Base URL <span class="optional">(optional - for a non-default OpenAI-compatible endpoint)</span></label>
         <input class="baseurl-input" type="text" placeholder="https://api.openai.com" />
-        <p class="hint">Works with any OpenAI-compatible endpoint — for a local model, try <code>http://localhost:11434/v1</code> (Ollama) or <code>http://localhost:1234/v1</code> (LM Studio). Any text is accepted as the API key if your local server doesn't check one.</p>
+        <p class="hint">Works with any OpenAI-compatible endpoint - for a local model, try <code>http://localhost:11434/v1</code> (Ollama) or <code>http://localhost:1234/v1</code> (LM Studio). Any text is accepted as the API key if your local server doesn't check one.</p>
 
         <button class="fetch-models-btn" type="button">Fetch models</button>
 
@@ -193,7 +329,13 @@
               <button class="select-none-btn" type="button">None</button>
             </span>
           </div>
-          <input type="text" class="model-search-input" placeholder="Search models…" autocomplete="off" />
+          <div class="model-search-row">
+            <input type="text" class="model-search-input" placeholder="Search models…" autocomplete="off" />
+            <span class="model-view-toggle">
+              <button class="model-view-btn active" type="button" data-view="all">All</button>
+              <button class="model-view-btn" type="button" data-view="selected">Selected</button>
+            </span>
+          </div>
           <div class="model-checklist"></div>
           <p class="model-search-empty hint hidden">No models match your search.</p>
         </div>
@@ -214,11 +356,11 @@
       </div>
 
       <div class="card-body">
-        <label>Agent name <input class="agent-name-input" type="text" placeholder="Agent name (e.g. YouTube Agent)" /></label>
+        <label>Agent name <input class="agent-name-input" type="text" placeholder="Agent name (e.g. Research Agent)" /></label>
 
         <div class="field-row">
-          <label>Slash command <span class="optional">(letters, numbers, underscores)</span><input class="agent-slug-input" type="text" placeholder="youtube_agent" /></label>
-          <label>Description <span class="optional">(shown when picking)</span><input class="agent-desc-input" type="text" placeholder="Finds videos on YouTube for you" /></label>
+          <label>@ command <span class="optional">(letters, numbers, underscores)</span><input class="agent-slug-input" type="text" placeholder="research_agent" /></label>
+          <label>Description <span class="optional">(shown when picking)</span><input class="agent-desc-input" type="text" placeholder="Finds and summarizes research for you" /></label>
         </div>
 
         <label>Target site <span class="optional">(optional)</span></label>
@@ -228,6 +370,10 @@
         <textarea class="agent-instructions-input" rows="4" placeholder="What this agent should do, how it should behave, what to ask the user for if something's missing…"></textarea>
 
         <p class="agent-status"></p>
+
+        <div class="agent-footer">
+          <button class="agent-save-btn" type="button">Save</button>
+        </div>
       </div>
     </div>
   </template>
@@ -239,7 +385,12 @@
           <svg class="chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
         </button>
         <span class="card-summary"></span>
-        <label class="sched-enabled-label"><input class="sched-enabled-input" type="checkbox" /> Enabled</label>
+        <span class="card-switch-row">
+          <label class="switch">
+            <input class="sched-enabled-input" type="checkbox" />
+            <span class="switch-slider"></span>
+          </label>
+        </span>
         <button class="remove-btn" type="button" title="Remove scheduled check">✕</button>
       </div>
 
@@ -252,6 +403,17 @@
         <label>Task</label>
         <textarea class="sched-prompt-input" rows="3" placeholder="What Tab Agent should do on that page every time this runs…"></textarea>
 
+        <label>Notes / default context <span class="optional">(carried into every future run - fill this in after a manual run to avoid asking the same question again)</span></label>
+        <textarea class="sched-notes-input" rows="2" placeholder="e.g. answers or details the task needs that it can't figure out on its own…"></textarea>
+
+        <div class="field-row">
+          <label>Filter by provider
+            <select class="sched-provider-filter-select"><option value="">All providers</option></select>
+          </label>
+          <label>Filter models <span class="optional">(by name)</span>
+            <input class="sched-model-filter-input" type="text" placeholder="Search models…" />
+          </label>
+        </div>
         <div class="field-row">
           <label>Model <select class="sched-model-select"></select></label>
           <label class="sched-notify-label"><input class="sched-notify-input" type="checkbox" /> Notify me when it finishes</label>
@@ -262,20 +424,42 @@
           <select class="sched-kind-select">
             <option value="interval">Every…</option>
             <option value="daily">Daily at…</option>
+            <option value="weekly">Weekly on…</option>
           </select>
-          <input class="sched-interval-input" type="number" min="5" step="1" placeholder="60" />
-          <span class="sched-interval-unit">minutes</span>
+          <input class="sched-interval-input" type="number" min="1" step="1" placeholder="60" />
+          <select class="sched-interval-unit-select">
+            <option value="minutes">minutes</option>
+            <option value="hours">hours</option>
+            <option value="days">days</option>
+          </select>
           <input class="sched-time-input" type="time" />
         </div>
 
-        <div class="sched-footer">
-          <button class="sched-run-now-btn" type="button">Run now</button>
-          <span class="sched-status"></span>
+        <div class="sched-days-row">
+          <label class="sched-day-label"><input class="sched-day-input" type="checkbox" value="0" /> Sun</label>
+          <label class="sched-day-label"><input class="sched-day-input" type="checkbox" value="1" /> Mon</label>
+          <label class="sched-day-label"><input class="sched-day-input" type="checkbox" value="2" /> Tue</label>
+          <label class="sched-day-label"><input class="sched-day-input" type="checkbox" value="3" /> Wed</label>
+          <label class="sched-day-label"><input class="sched-day-input" type="checkbox" value="4" /> Thu</label>
+          <label class="sched-day-label"><input class="sched-day-input" type="checkbox" value="5" /> Fri</label>
+          <label class="sched-day-label"><input class="sched-day-input" type="checkbox" value="6" /> Sat</label>
         </div>
+
+        <div class="sched-footer">
+          <div class="sched-footer-actions">
+            <button class="sched-run-now-btn" type="button">Run now</button>
+            <button class="sched-run-manually-btn hidden" type="button">Run manually</button>
+            <button class="sched-save-btn" type="button">Save</button>
+          </div>
+          <button class="sched-history-btn" type="button" title="View full run history">🕓 History</button>
+        </div>
+
+        <ul class="sched-recent-runs"></ul>
       </div>
     </div>
   </template>
 
+  <script src="lib/markdown.js"></script>
   <script type="module" src="options.js"></script>
 </body>
 </html>

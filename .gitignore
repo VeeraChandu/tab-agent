@@ -30,3 +30,4 @@ Thumbs.db
 # semantic-release / npm
 .npmrc
 *.tgz
+.fuse_hidden*

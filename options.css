@@ -125,7 +125,51 @@ label > input, label > select, label > textarea { display: block; margin-top: 4p
 /* Two short fields side by side instead of stacked full-width rows —
    collapses back to stacked below ~480px so narrower windows don't cramp. */
 .field-row { display: flex; gap: 14px; flex-wrap: wrap; }
-.field-row > label { flex: 1; min-width: 200px; }
+/* :not(.switch) — the toggle-switch row below nests a <label class="switch">
+   (for the checkbox's accessibility semantics) as a DIRECT child of
+   .field-row too, which this rule would otherwise stretch to flex:1 +
+   min-width:200px right along with the real field labels, turning a small
+   38px toggle into one that fills the entire remaining row width. */
+.field-row > label:not(.switch) { flex: 1; min-width: 200px; }
+
+/* A single on/off row (label text left, control right on the same line) —
+   used instead of a plain checkbox for the page-recall enable toggle. Not a
+   <label class="field-row"> like the numeric fields above, specifically to
+   avoid the `label > input { display: block }` rule further up forcing the
+   control onto its own line under the label text — that rule exists so a
+   plain checkbox/number input reads correctly with a screen reader as
+   "belonging" to its label, but fights a same-line layout. */
+.toggle-row { align-items: center; justify-content: space-between; }
+.toggle-row > span { font-size: 12.5px; font-weight: 600; }
+
+/* Minimal iOS-style toggle switch. The checkbox itself stays in the DOM
+   (real input, real keyboard/screen-reader semantics) but is visually
+   hidden — .switch-slider is the only part actually shown, styled purely
+   off the checkbox's :checked state via the CSS sibling combinator. */
+.switch { position: relative; display: inline-block; flex: none; width: 38px; height: 22px; margin: 0; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 999px;
+  transition: background-color 0.15s ease;
+}
+.switch-slider::before {
+  content: "";
+  position: absolute;
+  height: 16px;
+  width: 16px;
+  left: 3px;
+  top: 3px;
+  background: var(--card);
+  border-radius: 50%;
+  transition: transform 0.15s ease;
+  box-shadow: var(--shadow-sm);
+}
+.switch input:checked ~ .switch-slider { background: var(--accent); }
+.switch input:checked ~ .switch-slider::before { transform: translateX(16px); }
+.switch input:focus-visible ~ .switch-slider { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .tabs {
   display: flex;
@@ -213,6 +257,9 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; background:
 
 .hint { font-size: 11.5px; color: var(--text-faint); margin: 4px 0 0; }
 
+a { color: var(--accent-dark); }
+a:hover { color: var(--accent); }
+
 .provider-list { display: flex; flex-direction: column; gap: 14px; margin-bottom: 14px; }
 
 .provider-card {
@@ -293,17 +340,17 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; background:
 .agent-status { font-size: 11.5px; color: var(--text-faint); margin: 6px 0 0; min-height: 14px; }
 .agent-status.error { color: var(--error-text); }
 
-.default-radio {
+.card-switch-row {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-size: 12px;
   font-weight: 500;
   color: var(--text-muted);
   white-space: nowrap;
   margin: 0;
+  flex-shrink: 0;
 }
-.default-radio input { width: auto; accent-color: var(--accent); }
 
 .remove-btn {
   background: none;
@@ -379,7 +426,40 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; background:
 }
 .select-all-btn:hover, .select-none-btn:hover { border-color: var(--accent); color: var(--accent-dark); }
 
-.model-search-input { margin-bottom: 6px; font-size: 12.5px; padding: 6px 9px; }
+.model-search-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.model-search-row .model-search-input { flex: 1; margin-bottom: 0; }
+.model-search-input { font-size: 12.5px; padding: 6px 9px; }
+
+/* View filter (All / Selected) — distinct from .select-all-btn/.select-none-btn
+   above, which are bulk actions on the checkboxes themselves; this only
+   controls which rows are shown, never touches enabledModelIds. Kept as a
+   segmented pill pair rather than a plain dropdown to make the on/off state
+   obvious at a glance, matching the compact pill style of the bulk-action
+   buttons above it without being visually identical to them. */
+.model-view-toggle {
+  display: flex;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.model-view-btn {
+  background: var(--card-alt);
+  border: none;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.model-view-btn + .model-view-btn { border-left: 1px solid var(--border); }
+.model-view-btn:hover { color: var(--accent-dark); }
+.model-view-btn.active { background: var(--accent); color: #fff; }
 
 .model-checklist {
   display: flex;
@@ -430,6 +510,58 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; background:
 
 .backup-actions { display: flex; gap: 10px; }
 .backup-actions .add-btn { width: auto; flex: 1; }
+
+/* --- backup section picker popup (Export/Import) ----------------------- */
+
+.backup-sections-dialog { max-width: 340px; }
+
+.backup-sections-title { font-weight: 650; }
+
+.backup-sections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 18px;
+  padding: 6px 8px;
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.backup-section-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 4px;
+  margin: 0; /* overrides the page-wide label { margin: 12px 0 6px } */
+  font-size: 12.5px;
+  font-weight: 400; /* overrides the page-wide label { font-weight: 600 } */
+  color: var(--text);
+  cursor: pointer;
+}
+/* The page-wide `input { width: 100% }` and `label > input { display: block;
+   margin-top: 4px }` rules (meant for text fields stacked under their own
+   label) otherwise stretch this checkbox to fill the row and knock it out
+   of vertical alignment — reset both back to a normal small inline checkbox. */
+.backup-section-row input[type="checkbox"] {
+  width: auto;
+  flex: 0 0 auto;
+  display: inline-block;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.backup-section-row .optional { color: var(--text-faint); font-size: 11px; }
+.backup-section-row.disabled { color: var(--text-faint); cursor: default; opacity: 0.6; }
+.backup-section-row.disabled input[type="checkbox"] { cursor: default; }
+.backup-section-row .not-in-file { margin-left: auto; font-size: 10.5px; font-style: italic; flex-shrink: 0; }
+
+.backup-sections-ok-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.backup-sections-ok-btn:hover { opacity: 0.88; }
+.backup-sections-ok-btn:disabled { opacity: 0.5; cursor: default; }
 
 .mic-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .mic-actions .add-btn { width: auto; flex: 1; min-width: 160px; }
@@ -505,8 +637,41 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; background:
 }
 .sched-schedule-row label { margin: 0; flex-shrink: 0; }
 .sched-schedule-row select, .sched-schedule-row input { width: auto; flex: 1; min-width: 80px; }
-.sched-interval-unit { font-size: 12.5px; color: var(--text-muted); white-space: nowrap; }
-.sched-interval-input.hidden, .sched-interval-unit.hidden, .sched-time-input.hidden { display: none; }
+.sched-interval-unit-select { font-size: 12.5px; color: var(--text-muted); }
+.sched-interval-input.hidden, .sched-interval-unit-select.hidden, .sched-time-input.hidden { display: none; }
+
+.sched-days-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.sched-days-row.hidden { display: none; }
+.sched-day-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin: 0;
+  white-space: nowrap;
+}
+.sched-day-label input { width: auto; accent-color: var(--accent); }
+
+textarea.sched-notes-input {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 12.5px;
+  font-family: inherit;
+  background: var(--card);
+  color: var(--text);
+  resize: vertical;
+}
+textarea.sched-notes-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
 
 .sched-footer {
   display: flex;
@@ -514,8 +679,10 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; background:
   justify-content: space-between;
   gap: 10px;
   margin-top: 14px;
+  flex-wrap: wrap;
 }
-.sched-run-now-btn {
+.sched-footer-actions { display: flex; align-items: center; gap: 8px; }
+.sched-run-now-btn, .sched-save-btn, .agent-save-btn {
   padding: 7px 14px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
@@ -526,11 +693,203 @@ input:disabled, select:disabled { opacity: 0.6; cursor: not-allowed; background:
   cursor: pointer;
   width: auto;
 }
-.sched-run-now-btn:hover { border-color: var(--accent); color: var(--accent-dark); }
-.sched-run-now-btn:disabled { opacity: 0.5; cursor: default; }
-.sched-status { font-size: 11.5px; color: var(--text-faint); text-align: right; }
-.sched-status.ok { color: var(--success-text, #1c6b41); }
-.sched-status.fail { color: var(--error-text); }
+.sched-run-now-btn:hover, .sched-save-btn:hover, .agent-save-btn:hover { border-color: var(--accent); color: var(--accent-dark); }
+.sched-run-now-btn:disabled, .sched-save-btn:disabled, .agent-save-btn:disabled { opacity: 0.5; cursor: default; }
+.sched-save-btn, .agent-save-btn { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sched-save-btn:hover, .agent-save-btn:hover { color: #fff; }
+
+/* Mirrors .sched-footer — same "explicit Save, not autosave-per-keystroke"
+   pattern as scheduled checks, for the same reason: a clear, visible
+   confirmation moment instead of silently writing storage on every
+   keypress. */
+.agent-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.sched-history-btn {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  width: auto;
+  white-space: nowrap;
+}
+.sched-history-btn:hover { border-color: var(--accent); color: var(--accent-dark); }
+
+.sched-recent-runs {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.sched-recent-run {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--card-alt);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.sched-recent-run:hover { background: var(--border); }
+.sched-recent-run-icon { font-weight: 700; flex-shrink: 0; }
+.sched-recent-run.ok .sched-recent-run-icon { color: var(--success-text, #1c6b41); }
+.sched-recent-run.fail .sched-recent-run-icon { color: var(--error-text); }
+.sched-recent-run.needs-input .sched-recent-run-icon { color: var(--accent-dark, #9a6b00); }
+.sched-recent-run-when { color: var(--text); }
+.sched-recent-run-empty {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  padding: 5px 8px;
+  cursor: default;
+}
+
+.sched-run-manually-btn {
+  padding: 7px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  width: auto;
+}
+.sched-run-manually-btn:hover { opacity: 0.9; }
+.sched-run-manually-btn.hidden { display: none; }
+
+/* --- history modal (popup) ---------------------------------------------- */
+
+.history-dialog {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  padding: 20px;
+  max-width: 520px;
+  width: calc(100% - 40px);
+  max-height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+}
+.history-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.history-dialog-header h3 { margin: 0; font-size: 14.5px; color: var(--text); }
+.history-dialog-header .hint { margin: 4px 0 0; }
+.history-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+.history-close-btn:hover { color: var(--text); }
+
+.history-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 14px 0 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.history-select-all-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin: 0;
+}
+.history-select-all-label input { width: auto; accent-color: var(--accent); }
+.history-delete-selected-btn {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--error-border, var(--error-text));
+  background: var(--card-alt);
+  color: var(--error-text);
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  width: auto;
+}
+.history-delete-selected-btn:hover:not(:disabled) { background: var(--error-text); color: #fff; }
+.history-delete-selected-btn:disabled { opacity: 0.4; cursor: default; }
+
+.history-modal-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.history-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--card-alt);
+}
+.history-row-main { display: flex; align-items: center; gap: 8px; padding: 6px 8px; }
+.history-row-main .history-row-checkbox { width: auto; accent-color: var(--accent); flex-shrink: 0; }
+.history-row-toggle {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.history-row-icon { font-weight: 700; flex-shrink: 0; }
+.history-row.ok .history-row-icon { color: var(--success-text, #1c6b41); }
+.history-row.fail .history-row-icon { color: var(--error-text); }
+.history-row.needs-input .history-row-icon { color: var(--accent-dark, #9a6b00); }
+.history-row-when { flex: 1; color: var(--text); }
+.history-row-duration, .history-row-tokens { color: var(--text-faint); white-space: nowrap; }
+.history-row-body { padding: 0 10px 10px 34px; }
+.history-row-body.hidden { display: none; }
+.history-row-markdown {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--card);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  word-break: break-word;
+}
+.history-row-markdown p { margin: 0 0 8px; font-size: inherit; color: inherit; }
+.history-row-markdown p:last-child { margin-bottom: 0; }
+
+/* --- single-run detail popup --------------------------------------------- */
+/* Reuses .history-dialog/.history-dialog-header/.history-close-btn/
+   .history-row-markdown/.history-delete-selected-btn styling so this stays
+   visually consistent with the full history popup, just smaller/focused. */
+
+.run-detail-dialog { max-width: 440px; }
+.run-detail-markdown { margin-top: 12px; max-height: 50vh; overflow-y: auto; }
+.run-detail-actions { display: flex; justify-content: flex-end; margin-top: 14px; }
 
 hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
 p { font-size: 12.5px; line-height: 1.5; color: var(--text-muted); }
@@ -549,6 +908,13 @@ p { font-size: 12.5px; line-height: 1.5; color: var(--text-muted); }
   z-index: 50;
 }
 .confirm-overlay.hidden { display: none; }
+/* The plain delete-confirmation dialog can be triggered FROM inside the
+   history or run-detail popups — it must always render above whichever of
+   those is open, not fall back to source order (which previously put the
+   history popup on top and made the confirm dialog unreachable without
+   closing history first). An id selector always wins over the shared class
+   above regardless of stylesheet order, so this is unambiguous. */
+#confirmOverlay { z-index: 60; }
 
 .confirm-dialog {
   background: var(--card);
@@ -578,3 +944,42 @@ p { font-size: 12.5px; line-height: 1.5; color: var(--text-muted); }
 .confirm-cancel-btn:hover { background: var(--border); }
 .confirm-ok-btn { background: var(--error-text); color: #fff; border-color: var(--error-text); }
 .confirm-ok-btn:hover { opacity: 0.88; }
+
+/* Informational, not destructive — .confirm-ok-btn's default red implies a
+   "Remove"-style irreversible action, which is wrong for a plain "Got it"
+   acknowledgment. #id selector to win over the shared class regardless of
+   stylesheet order, same reasoning as #confirmOverlay's z-index override
+   above. */
+#modelDiffOkBtn { background: var(--accent); border-color: var(--accent); }
+#modelDiffOkBtn:hover { opacity: 0.9; }
+
+.model-diff-dialog { max-width: 420px; }
+.model-diff-title { font-weight: 650; }
+.model-diff-heading {
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-faint);
+  margin: 14px 0 4px;
+}
+.model-diff-heading.hidden, .model-diff-list.hidden { display: none; }
+.model-diff-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.model-diff-list li {
+  font-size: 12.5px;
+  color: var(--text);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--card-alt);
+}
+.model-diff-added-list li::before { content: "+ "; color: var(--success-text, #1c6b41); font-weight: 650; }
+.model-diff-removed-list li::before { content: "\2212 "; color: var(--error-text); font-weight: 650; }
