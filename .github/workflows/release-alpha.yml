@@ -1,0 +1,68 @@
+name: Release (alpha from dev)
+
+# Manual-only alpha releases, cut from dev. Never runs automatically —
+# publishing a prerelease is a deliberate act, triggered from the Actions tab.
+#
+# Uses release.alpha.config.json instead of .releaserc.json: no changelog
+# writing, no commit-back to dev, no Chrome Web Store publish. It only tags
+# dev's current tip as a GitHub prerelease (e.g. v1.2.0-alpha.1) with a zip
+# asset, so nothing here can conflict with dev's own history or touch main's
+# release pipeline.
+#
+# Always builds from the tip of dev regardless of which ref is selected in
+# the "Run workflow" dropdown, so this can't accidentally cut an alpha
+# release from the wrong branch.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: release-alpha
+  cancel-in-progress: false
+
+jobs:
+  quality-test:
+    name: Quality & tests
+    uses: ./.github/workflows/quality-test.yml
+    with:
+      ref: dev
+
+  release:
+    name: Build & semantic-release (alpha)
+    needs: quality-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: false
+      # semantic-release detects the current branch from the GITHUB_REF env
+      # var (via env-ci), NOT from the actual git checkout above — and for a
+      # workflow_dispatch run, GITHUB_REF reflects whatever ref was picked in
+      # the "Run workflow" dropdown, which defaults to the repo's default
+      # branch. Pin it to dev explicitly so a run left on the default
+      # selection still matches release.alpha.config.json's "dev" branch
+      # instead of silently no-op'ing.
+      - name: Pin release env to dev
+        run: |
+          echo "GITHUB_REF=refs/heads/dev" >> "$GITHUB_ENV"
+          echo "GITHUB_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Remove .releaserc.json before running so semantic-release's config
+      # search can't find and merge main's config on top of the alpha one —
+      # release.alpha.config.json must be the only config in play here. This
+      # only affects the ephemeral CI checkout, not the actual repo.
+      - run: |
+          rm -f .releaserc.json
+          npx semantic-release --extends ./release.alpha.config.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

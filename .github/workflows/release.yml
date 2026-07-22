@@ -6,9 +6,17 @@ name: Release
 # the last tag, decides whether a release is warranted and what version it
 # gets, builds the extension zip (via scripts/build.js, invoked through the
 # @semantic-release/exec plugin — see .releaserc.json), tags the commit,
-# writes CHANGELOG.md, and publishes a GitHub Release with the zip attached.
+# writes CHANGELOG.md, publishes a GitHub Release with the zip attached, and
+# publishes the release to the Chrome Web Store (also via @semantic-release/exec
+# — see scripts/publishToChromeStore.js).
 # If commits since the last release don't warrant one (e.g. only chore/docs
-# commits), semantic-release no-ops instead of failing.
+# commits), semantic-release no-ops instead of failing, and the back-merge
+# step below still runs but is a no-op fast-forward (nothing new to merge).
+#
+# main only ever advances via promote-to-main.yml's fast-forward, so the only
+# way main gets ahead of dev is the version/changelog commit semantic-release
+# creates right here. The back-merge step folds that commit into dev so the
+# two branches don't permanently diverge.
 on:
   push:
     branches: [main]
@@ -23,41 +31,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  quality:
-    name: Code quality (lint)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-
-  test:
-    name: Unit tests
-    needs: quality
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm test -- --ci --coverage
+  quality-test:
+    name: Quality & tests
+    uses: ./.github/workflows/quality-test.yml
 
   release:
     name: Build & semantic-release
-    needs: test
+    needs: quality-test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -65,7 +52,29 @@ jobs:
       # scripts/build.js runs as semantic-release's "prepare" step (see
       # .releaserc.json) once a release is confirmed, so a plain `npm run
       # build` here isn't needed — semantic-release owns the whole
-      # analyze -> build -> tag -> publish sequence from this point.
+      # analyze -> build -> tag -> publish -> Chrome Web Store sequence from
+      # this point.
       - run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
+          CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
+          CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
+          CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
+          CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
+      - name: Back-merge main into dev
+        run: |
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git fetch origin dev
+          if git push origin HEAD:dev; then
+            echo "Fast-forwarded dev to main."
+          else
+            echo "dev has diverged since the last promotion; creating a merge commit instead."
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git checkout -B dev origin/dev
+            git merge --no-edit origin/main -m "chore: back-merge main into dev [skip ci]"
+            git push origin dev
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

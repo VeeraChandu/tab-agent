@@ -219,3 +219,46 @@ orchestration without a real Chrome environment - tests here are limited to the 
 modules (pricing, markdown rendering, vision-capability heuristic, site-category detection, tool
 schema shape, page/attachment cache chunking and eviction logic - the latter two fake
 `chrome.storage.local` with an in-memory `Map` rather than mocking the whole extension).
+
+### Release pipeline: one-time manual setup required
+
+The dev → main → Chrome Web Store pipeline (`.github/workflows/ci.yml`, `release-alpha.yml`,
+`promote-to-main.yml`, `release.yml`, `quality-test.yml`, `.releaserc.json`,
+`release.alpha.config.json`, `scripts/publishToChromeStore.js`) is fully written, but several pieces
+can only be configured by a human with repo admin/owner access and a Chrome Web Store developer
+account - none of it is reachable from an agent session. If the pipeline doesn't fire end-to-end,
+check this list before assuming it's a bug:
+
+1. **`dev` branch must exist.** `main` doesn't exist yet as of this writing either - bootstrap both
+   manually (e.g. `git checkout -b dev && git push -u origin dev`, then `git checkout -b main && git
+   push -u origin main` once dev has real history worth releasing).
+2. **`main` needs ruleset protection with a bypass actor.** `promote-to-main.yml` fast-forwards main
+   using the `MAIN_PUSH_TOKEN` secret (see below) specifically so a PAT/App with bypass rights - not
+   the default `GITHUB_TOKEN` - performs the push. Set this up under Settings → Rules → Rulesets:
+   protect `main` (require PRs, block force-pushes/deletions as desired), then add the identity that
+   owns `MAIN_PUSH_TOKEN` as a bypass actor. **Confirm the exact bypass mechanism directly in the
+   ruleset UI when setting this up** - whether a fine-grained PAT's own identity can be listed as a
+   bypass actor, or whether a dedicated GitHub App is required instead, was not verified from this
+   environment.
+3. **Repo secrets to add** (Settings → Secrets and variables → Actions):
+   - `MAIN_PUSH_TOKEN` - PAT (or GitHub App installation token) for the bypass identity from step 2;
+     needs `contents: write` on this repo.
+   - `CHROME_CLIENT_ID`, `CHROME_CLIENT_SECRET`, `CHROME_REFRESH_TOKEN` - OAuth credentials for the
+     Chrome Web Store API, obtained via a Google Cloud OAuth client (see Chrome Web Store API docs for
+     the `chrome-webstore-upload` auth flow this project uses).
+   - `CHROME_EXTENSION_ID` - the Store listing's item ID (only exists after step 4).
+   - `CHROME_PUBLISHER_ID` - your Chrome Web Store *developer account* identifier (not the extension
+     ID) - visible in the Developer Dashboard's URL when logged in.
+   - `GITHUB_TOKEN` is automatic and already covers `ci.yml`'s and `release.yml`'s own needs (tags,
+     GitHub Releases, back-merge push to the unprotected `dev` branch).
+4. **First Chrome Web Store listing must be created and submitted manually** through the [developer
+   dashboard](https://chrome.google.com/webstore/devconsole) - there's no API for the very first
+   upload/listing creation. `scripts/publishToChromeStore.js` only handles updating an *existing*
+   listing (`uploadExisting` + `publish`) on every subsequent main release.
+   `CHROME_STORE_UPLOAD_ONLY=true` can be set temporarily to validate credentials/packaging (uploads a
+   draft without publishing) before wiring the real publish step.
+5. **Release channels, once the above is done:** push Conventional Commits to `dev` as normal; run
+   `release-alpha.yml` manually (Actions tab → Run workflow) whenever an alpha is wanted; run
+   `promote-to-main.yml` manually to fast-forward `main` and kick off `release.yml`, which does the
+   full release, Chrome Web Store publish, and back-merges the version/changelog commit into `dev`.
+   See the README's "Releases" section for the user-facing explanation of the two channels.

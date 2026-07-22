@@ -9,7 +9,10 @@
     ],
     [
       "@semantic-release/exec",
-      { "prepareCmd": "node scripts/build.js ${nextRelease.version}" }
+      {
+        "prepareCmd": "node scripts/build.js ${nextRelease.version}",
+        "publishCmd": "node scripts/publishToChromeStore.js ${nextRelease.version}"
+      }
     ],
     [
       "@semantic-release/git",

@@ -1,0 +1,21 @@
+{
+  "branches": [{ "name": "dev", "prerelease": "alpha" }],
+  "plugins": [
+    "@semantic-release/commit-analyzer",
+    "@semantic-release/release-notes-generator",
+    [
+      "@semantic-release/exec",
+      { "prepareCmd": "node scripts/build.js ${nextRelease.version}" }
+    ],
+    [
+      "@semantic-release/github",
+      {
+        "successComment": false,
+        "failComment": false,
+        "assets": [
+          { "path": "dist/tab-agent-*.zip", "label": "Tab Agent extension (zip) — load unpacked or drag into chrome://extensions" }
+        ]
+      }
+    ]
+  ]
+}

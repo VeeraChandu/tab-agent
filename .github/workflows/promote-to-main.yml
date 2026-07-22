@@ -1,0 +1,48 @@
+name: Promote dev to main
+
+# Manual-only. Fast-forwards main to dev's current tip with NO new commit —
+# main gets exactly the commits dev already has, unchanged. This is what
+# kicks off release.yml (which triggers on push to main).
+#
+# Fast-forwarding main directly requires bypassing its ruleset/branch
+# protection, which GITHUB_TOKEN cannot do. This workflow instead pushes
+# using the MAIN_PUSH_TOKEN secret — a PAT (or GitHub App token) belonging
+# to an identity that has been explicitly added as a bypass actor on main's
+# ruleset. See CLAUDE.md for the one-time manual setup this depends on.
+#
+# `git push origin HEAD:main` (a plain push, not a merge or rebase) already
+# refuses to move main unless it's a fast-forward, so there's no risk of
+# silently rewriting or dropping commits on main.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-to-main
+  cancel-in-progress: false
+
+jobs:
+  quality-test:
+    name: Quality & tests
+    uses: ./.github/workflows/quality-test.yml
+    with:
+      ref: dev
+
+  promote:
+    name: Fast-forward main to dev
+    needs: quality-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: dev
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fast-forward main to dev's tip
+        run: |
+          git remote set-url origin "https://x-access-token:${MAIN_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push origin HEAD:main
+        env:
+          MAIN_PUSH_TOKEN: ${{ secrets.MAIN_PUSH_TOKEN }}

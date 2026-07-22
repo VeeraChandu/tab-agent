@@ -1,0 +1,51 @@
+name: Quality & tests (reusable)
+
+# Shared lint -> test gate, called by every other workflow that needs it
+# (ci.yml on every push/PR, release.yml before a main release, and the two
+# manual workflow_dispatch workflows before an alpha release or a promotion)
+# so there's exactly one definition of "what does passing CI mean" instead
+# of three copies that could quietly drift out of sync with each other.
+#
+# The optional `ref` input exists because for a workflow_dispatch caller,
+# `github.ref` (actions/checkout's default) reflects whatever branch was
+# picked in the "Run workflow" dropdown - not necessarily the branch the
+# caller actually intends to gate. release-alpha.yml and promote-to-main.yml
+# both pass ref: dev explicitly so this gate always checks the same commit
+# their own release/promote step acts on, regardless of the dropdown.
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: false
+        type: string
+        default: ""
+
+jobs:
+  quality:
+    name: Code quality (lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+
+  test:
+    name: Unit tests
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test -- --ci --coverage

@@ -1,5 +1,7 @@
 # Tab Agent
 
+[![Release](https://img.shields.io/github/v/release/VeeraChandu/tab-agent)](https://github.com/VeeraChandu/tab-agent/releases)
+
 A Chrome (Manifest V3) extension that runs an agentic AI loop directly on your
 browser - reading page content, clicking/typing/navigating, and hopping
 between open tabs as needed - with no MCP server, no local proxy, and no
@@ -498,6 +500,23 @@ Settings → Privacy has the same summary at any time, permanently.
   [Developer Program Policies](https://developer.chrome.com/docs/webstore/program-policies/policies)
   against this project's actual behavior before submitting, since policy
   text can change after this was written.
+
+## Releases
+
+Two channels, both cut from Conventional Commit history via semantic-release:
+
+- **Full releases** come from `main` (e.g. `v1.4.0`) and are the only releases
+  published to the Chrome Web Store, alongside a tagged GitHub Release with
+  the extension zip attached. The badge above always tracks the latest full
+  release.
+- **Alpha releases** come from `dev` (e.g. `v1.4.0-alpha.1`) and are tagged as
+  GitHub prereleases with a zip attached, for early testing via "Load
+  unpacked" - they're never pushed to the Store. Cutting one is a manual step
+  (repo maintainers only), not automatic.
+
+`main` only ever advances by fast-forwarding to `dev`'s tip (no new commits),
+so every commit that ships in a full release already shipped in an earlier
+alpha first.
 
 ## License
 
