@@ -8,8 +8,15 @@
 //
 // Usage:
 //   node scripts/publishToChromeStore.js <version>
-//   (version must match the zip already built by scripts/build.js, e.g.
-//   dist/tab-agent-1.4.0.zip)
+//
+// This runs `node scripts/build.js <version> --store` itself first, producing
+// dist/store/tab-agent-<version>.zip - a copy of the package with manifest.json's
+// "key" field stripped out. The Chrome Web Store rejects any upload whose manifest
+// contains a "key" field ("key field is not allowed in manifest") - that field
+// only exists to pin a stable extension id for local "Load unpacked" installs (see
+// README's "Updating" section), and the Store assigns/owns its own id once an item
+// is created. This is intentionally a separate build from the dist/tab-agent-<version>.zip
+// that ships in GitHub Releases, which must keep the key.
 //
 // Required env vars (see CLAUDE.md for how to obtain these):
 //   CHROME_CLIENT_ID, CHROME_CLIENT_SECRET, CHROME_REFRESH_TOKEN, CHROME_EXTENSION_ID,
@@ -24,6 +31,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 // chrome-webstore-upload ships as an ESM-only package ("type": "module"), so
 // require()'ing it returns the module namespace object (with __esModule/
 // default/named exports), not the factory function itself directly - the
@@ -49,9 +57,15 @@ async function main() {
     throw new Error("publishToChromeStore.js: usage: node scripts/publishToChromeStore.js <version>");
   }
 
-  const zipPath = path.join(ROOT, "dist", `tab-agent-${version}.zip`);
+  console.log(`Building Store-safe package (no "key" field) for ${version}...`);
+  execFileSync(process.execPath, [path.join(ROOT, "scripts", "build.js"), version, "--store"], {
+    cwd: ROOT,
+    stdio: "inherit",
+  });
+
+  const zipPath = path.join(ROOT, "dist", "store", `tab-agent-${version}.zip`);
   if (!fs.existsSync(zipPath)) {
-    throw new Error(`publishToChromeStore.js: expected zip missing: ${path.relative(ROOT, zipPath)} (did the exec prepareCmd build step run first?)`);
+    throw new Error(`publishToChromeStore.js: expected zip missing after build: ${path.relative(ROOT, zipPath)}`);
   }
 
   const extensionId = requireEnv("CHROME_EXTENSION_ID");

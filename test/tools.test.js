@@ -1,4 +1,4 @@
-import { TOOLS, SYSTEM_PROMPT, buildSystemPrompt } from "../lib/tools.js";
+import { TOOLS, SYSTEM_PROMPT, buildSystemPrompt } from "../src/lib/tools.js";
 
 describe("TOOLS schema", () => {
   test("every tool has a unique name, a description, and a JSON-schema input_schema", () => {

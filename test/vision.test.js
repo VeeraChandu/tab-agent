@@ -1,4 +1,4 @@
-import { looksVisionCapable } from "../lib/vision.js";
+import { looksVisionCapable } from "../src/lib/vision.js";
 
 describe("looksVisionCapable", () => {
   test("returns false for falsy input", () => {

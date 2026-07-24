@@ -3,7 +3,7 @@
 // "Module system is intentionally mixed" note in CLAUDE.md. Under the jsdom
 // test environment `window` is already global, so requiring the file for its
 // side effect is enough to pick up the API it attaches.
-require("../lib/markdown.js");
+require("../src/lib/markdown.js");
 const { renderMarkdown, escapeHtml } = window.TabAgentMarkdown;
 
 describe("escapeHtml", () => {

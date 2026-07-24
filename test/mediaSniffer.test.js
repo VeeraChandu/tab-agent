@@ -1,4 +1,4 @@
-import { isMediaRequest, getMediaRequests, recordMediaRequest } from "../lib/mediaSniffer.js";
+import { isMediaRequest, getMediaRequests, recordMediaRequest } from "../src/lib/mediaSniffer.js";
 
 describe("isMediaRequest", () => {
   test("flags Chrome's own 'media' resource type regardless of URL", () => {

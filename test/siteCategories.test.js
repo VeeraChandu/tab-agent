@@ -1,4 +1,4 @@
-import { hostnameOf, detectSiteCategory } from "../lib/siteCategories.js";
+import { hostnameOf, detectSiteCategory } from "../src/lib/siteCategories.js";
 
 describe("hostnameOf", () => {
   test("extracts and strips a leading www.", () => {

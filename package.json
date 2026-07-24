@@ -5,12 +5,12 @@
   "license": "SEE LICENSE IN LICENSE",
   "description": "A Chrome (Manifest V3) extension that runs an agentic AI loop directly on your browser tabs.",
   "scripts": {
-    "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "test": "jest",
-    "test:watch": "jest --watch",
+    "lint": "eslint -c config/eslint.config.js .",
+    "lint:fix": "eslint -c config/eslint.config.js . --fix",
+    "test": "jest --config config/jest.config.js",
+    "test:watch": "jest --config config/jest.config.js --watch",
     "build": "node scripts/build.js",
-    "semantic-release": "semantic-release"
+    "semantic-release": "semantic-release --extends ./.github/workflows/.releaserc.json"
   },
   "engines": {
     "node": ">=20"

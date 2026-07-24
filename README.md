@@ -12,7 +12,7 @@ the extension calls the provider directly from the browser.
 
 1. Open `chrome://extensions`.
 2. Turn on **Developer mode** (top right).
-3. Click **Load unpacked** and select this `tab-agent` folder.
+3. Click **Load unpacked** and select this `tab-agent` folder's `src` subfolder.
 4. Click the extension icon to open the side panel, then click the ⚙ icon to
    open Settings and add a provider:
    - Click **+ Add provider**, pick **Anthropic** or **OpenAI-compatible**,
@@ -45,8 +45,8 @@ the extension calls the provider directly from the browser.
 
 `manifest.json` pins a fixed extension id (via its `"key"` field), so the
 extension keeps the same id no matter which folder path you load it from. To
-update: replace this folder's contents with the new version and click the
-small ↻ **Reload** icon on `chrome://extensions` - your providers, agents,
+update: replace the `src` folder's contents with the new version and click
+the small ↻ **Reload** icon on `chrome://extensions` - your providers, agents,
 and chat history all carry over automatically. See **Backup** below for an
 extra safety net.
 

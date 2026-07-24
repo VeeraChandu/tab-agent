@@ -10,22 +10,53 @@ to do next, executes the chosen tool (click, type, scroll, navigate, switch tabs
 until the model calls `finish`. No MCP server, no backend - API calls go straight from the browser to
 whatever provider the user configured in Settings.
 
+## Repo layout
+
+`src/` is the loadable extension - every file `chrome://extensions` → Load unpacked needs
+(`manifest.json`, `background.js`, `content.js`, `options.*`, `sidepanel.*`, `lib/`, `icons/`) and
+nothing else. Everything at the repo root is dev tooling, config, or docs: `test/`, `scripts/`,
+`config/` (`eslint.config.js`, `jest.config.js`), `babel.config.js` (stays at the repo root - it's
+Jest-only and auto-discovery finding it there just works, not worth wiring a `configFile` override
+for), `.github/workflows/` (the two workflow files plus `.releaserc.json`/`release.alpha.config.json`,
+each living next to its one and only consumer rather than in `config/`, since neither is used outside
+its own workflow), `docs/` (the GitHub Pages privacy policy site - see the `src/docs/` note below),
+`README.md`/`CLAUDE.md`/etc. All four config files above need an explicit `--config`/`--extends`/`-c`
+flag pointed at them (see the `package.json` scripts and the two release workflows) since none of these
+tools auto-discover config outside the repo root - and for the two under `.github/workflows/`, that
+path has to be spelled out in full from the repo root even inside the workflow file that lives right
+next to it, since GitHub Actions `run:` steps always execute with cwd = the repo root. References to
+source files elsewhere in this doc (`background.js`, `lib/agentLoop.js`, ...) are relative to `src/`
+unless said otherwise.
+
+`src/docs/privacy-policy.html` is a deliberate hand-kept **duplicate** of the root
+`docs/privacy-policy.html` - not a symlink, not generated. The root copy is the GitHub Pages source
+(`docs/index.html` redirects to it, per README's "Enable it once" Pages setup); the `src/` copy exists
+because Options' Privacy tab links to `docs/privacy-policy.html` relatively, so it has to physically
+live inside `src/` to resolve both from a local "Load unpacked" pointed at `src/` and from
+`scripts/build.js`'s zip. If you edit one, edit the other to match - nothing currently catches drift
+between them.
+
 ## Commands
 
 There is no build step for development - this is a plain unpacked extension.
 
 - **Load/reload in Chrome**: `chrome://extensions` → enable Developer mode → **Load unpacked** →
-  select this folder. After editing background.js/lib files, click the ↻ reload icon on the
-  extension card; after editing content.js, also reload any already-open tab you're testing on.
-- **Lint**: `npm run lint` (ESLint flat config, `eslint.config.js`)
+  select the `src` folder (not the repo root). After editing background.js/lib files, click the ↻
+  reload icon on the extension card; after editing content.js, also reload any already-open tab you're
+  testing on.
+- **Lint**: `npm run lint` (ESLint flat config, `config/eslint.config.js`)
 - **Test**: `npm test` (Jest). Run a single file with `npm test -- test/pricing.test.js` or a single
   case with `npm test -- -t "name of test"`.
-- **Build a release zip**: `npm run build` - writes `dist/tab-agent-<version>.zip` and syncs
-  `manifest.json`'s `version` field to `package.json`'s version. `scripts/build.js`'s `INCLUDE` list is
-  the source of truth for what ships (dev tooling like `docs/`, tests, and configs are left out); the
-  one exception is `docs/privacy-policy.html`, added individually via
-  `INCLUDE_FILES_FROM_EXCLUDED_DIRS` because the Options page links to it directly and it needs to work
-  even without GitHub Pages set up.
+- **Build a release zip**: `npm run build` - writes `dist/tab-agent-<version>.zip` from `src/` and
+  syncs `src/manifest.json`'s `version` field to `package.json`'s version. `scripts/build.js`'s
+  `INCLUDE` list (paths relative to `src/`) is the source of truth for what ships - it's the whole
+  `src/` tree, so nothing needs excluding the way dev tooling at the repo root does.
+  `node scripts/build.js <version> --store` writes to
+  `dist/store/tab-agent-<version>.zip` instead, with `manifest.json`'s `key` field stripped from the
+  copy in the archive - that field pins a stable extension id for local "Load unpacked" installs, but
+  the Chrome Web Store rejects any upload whose manifest contains one. `scripts/publishToChromeStore.js`
+  runs this `--store` build itself before uploading, so the GitHub Release zip (with `key`) and the
+  Store upload (without it) are always built separately from the same source.
 - **Release**: pushes to `main` trigger `.github/workflows/release.yml`, which runs lint → test →
   build → `semantic-release`. Version bumps and the published zip asset are entirely derived from
   Conventional Commits messages (`fix:`, `feat:`, `feat!:`/`BREAKING CHANGE:`, etc.) - there is no
@@ -134,6 +165,32 @@ Two independent stuck-loop guards exist and must stay independent:
   It must **not** apply to `run_batch`, whose entire purpose is long uninterrupted scroll/extract
   sequences that this guard would otherwise false-positive on.
 
+Three unrelated things can pause a run mid-task (`result.paused` from `runAgentTask()`), and all three
+resume through the same path - background.js's `drive()` (see its `if (result.paused)` branch) saves
+`node.pendingQuestion`/`pendingOpenedTabIds`/`pendingIncompleteBranchTabIds` and waits for the matching
+response message to call `drive()` again on the same node:
+- **`ask_user`** - the model calls this tool directly to ask the user a clarifying or confirmation
+  question; resumed via `ANSWER_QUESTION`. Not in `SUB_AGENT_ALLOWED_TOOLS` - branches/batches have
+  nobody to answer it, so `executeTool()` rejects the call there instead of pausing.
+- **Site-category gate** - `lib/siteCategories.js` flags a hostname as adult/financial content (via a
+  curated hostname list plus the page's own RTA/ICRA self-rating meta tag, folded into `read_page`'s
+  result as `meta_category`); `navigate`/`click`/`type_text` targeting an ungated-but-flagged hostname
+  pauses for a one-time "confirm before proceeding" prompt instead of silently acting. Resumed via
+  `SITE_GATE_RESPONSE`; a confirmed hostname is written into `chrome.storage.local`'s
+  `siteAccessGrants` (see `getGrantedDomains()` in background.js) so it never re-prompts again on any
+  tab, until revoked in Settings. This is deliberately not a blocklist - the goal is ask-once-and-
+  remember, not prevent access.
+- **Step limit** - the main loop hitting `limits.mainMaxSteps` pauses rather than stopping outright;
+  resumed via `STEP_LIMIT_RESPONSE`. Unlike the other two, this also sets a 10-minute
+  `chrome.alarms` reminder (`stepLimitAlarmName()`) in case the user never comes back to it.
+
+Separately (not a pause), `isRiskyText()` in `lib/agentLoop.js` pattern-matches a `click`/`type_text`
+target's visible text against `RISKY_ACTION_PATTERNS`/`RISKY_ACTION_KEYWORDS_INTL` (submit/delete/pay/
+confirm-order-style wording, English and a few other languages) *before* executing the action. A match
+fails the tool call with an error telling the model to call `ask_user` to confirm first, then retry the
+exact same call with `confirmed: true` - this is a synchronous one-tool-call round trip within the
+running loop, not a `result.paused` pause like the three above.
+
 Other things worth knowing before touching this file:
 - `ctx` is a single mutable object threaded through the whole run and into every sub-loop - it carries
   `tabId`, `config`, `limits`, `grantedDomains`, `visionConfig`, `sessionId`, `pageCacheConfig`,
@@ -224,7 +281,8 @@ schema shape, page/attachment cache chunking and eviction logic - the latter two
 
 The dev → main → Chrome Web Store pipeline (`.github/workflows/ci.yml`, `release-alpha.yml`,
 `promote-to-main.yml`, `release.yml`, `quality-test.yml`, `.releaserc.json`,
-`release.alpha.config.json`, `scripts/publishToChromeStore.js`) is fully written, but several pieces
+`release.alpha.config.json`, `scripts/publishToChromeStore.js` - the first six all live in
+`.github/workflows/`) is fully written, but several pieces
 can only be configured by a human with repo admin/owner access and a Chrome Web Store developer
 account - none of it is reachable from an agent session. If the pipeline doesn't fire end-to-end,
 check this list before assuming it's a bug:
@@ -262,3 +320,36 @@ check this list before assuming it's a bug:
    `promote-to-main.yml` manually to fast-forward `main` and kick off `release.yml`, which does the
    full release, Chrome Web Store publish, and back-merges the version/changelog commit into `dev`.
    See the README's "Releases" section for the user-facing explanation of the two channels.
+
+### What happens when the Chrome Web Store step fails on main
+
+Confirmed by reading semantic-release's own source (`node_modules/semantic-release/index.js` and
+`lib/plugins/pipeline.js`), not assumed:
+
+- The version-bump commit (`@semantic-release/git`) and the git tag are pushed to `main`
+  **unconditionally**, before any `publish`-step plugin runs at all. A failure later in the `publish`
+  step never rolls either of those back - `main` will already be one commit ahead with a real tag on
+  it, even on a run that ultimately fails.
+- The `publish` step runs its plugins in the order listed in `.github/workflows/.releaserc.json`, and it is **fail-fast**
+  (unlike `success`/`fail`, it does not set `settleAll: true`) - the first plugin to throw stops every
+  plugin after it from running for that run.
+- Because of this, `.github/workflows/.releaserc.json` deliberately lists `@semantic-release/github` (creates the
+  Release, uploads the zip asset) *before* the second `@semantic-release/exec` entry (Chrome Web Store
+  publish). This way a Chrome failure can only ever block the Chrome step - the GitHub Release and its
+  downloadable zip are already created by the time Chrome is attempted. Don't reorder these back.
+- `release.yml`'s back-merge-to-dev step has `if: ${{ !cancelled() }}` specifically so it still runs
+  and folds the version-bump commit into `dev` even when the semantic-release step above it fails.
+- One thing this can't fix: semantic-release decides whether to release by checking for commits since
+  the **last tag**. Once a version's tag exists on `main`, re-running the same workflow (even after
+  fixing whatever failed) will find "no relevant changes" and no-op - it will not retry publishing
+  that same version. If a release ever gets stuck with a tag already created but the GitHub
+  Release/zip or Chrome Store step still missing, the fix is a one-time manual catch-up for that
+  specific version, not a re-run:
+  - Create the missing GitHub Release by hand for the existing tag (Releases → Draft a new release →
+    pick the tag → attach the matching `dist/tab-agent-<version>.zip`, rebuilding it locally with
+    `node scripts/build.js <version>` if needed), and/or
+  - Run `node scripts/publishToChromeStore.js <version>` by hand (locally, with the Chrome secrets as
+    env vars, once they're set up) to push that already-tagged version to the Store.
+  - Separately, back-merge `main` into `dev` by hand if the automatic step didn't run for that commit:
+    `git fetch origin && git checkout dev && git merge --no-edit origin/main && git push origin dev`
+    (falls back to `git merge` automatically if a fast-forward isn't possible either).

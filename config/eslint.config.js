@@ -13,12 +13,12 @@ module.exports = [
   js.configs.recommended,
 
   {
-    ignores: ["dist/**", "node_modules/**", "coverage/**", "lib/pdf.min.js", "lib/pdf.worker.min.js"],
+    ignores: ["dist/**", "node_modules/**", "coverage/**", "src/lib/pdf.min.js", "src/lib/pdf.worker.min.js"],
   },
 
   // ES module source files (service worker + lib modules that use import/export).
   {
-    files: ["background.js", "options.js", "lib/agentLoop.js", "lib/providers.js", "lib/tools.js", "lib/vision.js", "lib/siteCategories.js", "lib/mediaSniffer.js", "lib/pageCache.js", "lib/attachmentCache.js"],
+    files: ["src/background.js", "src/options.js", "src/lib/agentLoop.js", "src/lib/providers.js", "src/lib/tools.js", "src/lib/vision.js", "src/lib/siteCategories.js", "src/lib/mediaSniffer.js", "src/lib/pageCache.js", "src/lib/attachmentCache.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",
@@ -31,7 +31,7 @@ module.exports = [
 
   // Classic (non-module) scripts loaded directly by sidepanel.html/options.html.
   {
-    files: ["content.js", "sidepanel.js", "lib/markdown.js", "lib/pricing.js"],
+    files: ["src/content.js", "src/sidepanel.js", "src/lib/markdown.js", "src/lib/pricing.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "script",
@@ -42,9 +42,11 @@ module.exports = [
     },
   },
 
-  // Node-side tooling: build script, this config file, jest/babel config.
+  // Node-side tooling: build script, config/ (this file, jest config,
+  // semantic-release), and babel.config.js (the one config file that stays
+  // at the repo root - see CLAUDE.md "Repo layout").
   {
-    files: ["scripts/**/*.js", "*.config.js", "babel.config.js"],
+    files: ["scripts/**/*.js", "config/**/*.js", "babel.config.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "commonjs",

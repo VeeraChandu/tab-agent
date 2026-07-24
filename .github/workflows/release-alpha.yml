@@ -57,12 +57,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      # Remove .releaserc.json before running so semantic-release's config
-      # search can't find and merge main's config on top of the alpha one —
-      # release.alpha.config.json must be the only config in play here. This
-      # only affects the ephemeral CI checkout, not the actual repo.
-      - run: |
-          rm -f .releaserc.json
-          npx semantic-release --extends ./release.alpha.config.json
+      # Lives next to release-alpha.yml (its only consumer) rather than in
+      # config/ - `run:` steps execute with cwd = the repo root regardless
+      # of where the workflow file itself sits, so the path below still
+      # needs to be spelled out in full from the root. Neither this file nor
+      # .github/workflows/.releaserc.json sits at the repo root, so semantic-
+      # release's own auto-discovery never finds either one — --extends is
+      # the only config in play here, nothing to worry about merging with.
+      - run: npx semantic-release --extends ./.github/workflows/release.alpha.config.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

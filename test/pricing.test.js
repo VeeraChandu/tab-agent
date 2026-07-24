@@ -1,6 +1,6 @@
 // lib/pricing.js is a classic (non-module) script — see the note in
 // test/markdown.test.js and CLAUDE.md's "Module system" section.
-require("../lib/pricing.js");
+require("../src/lib/pricing.js");
 const { findPricing, estimateCost, formatCost } = window.TabAgentPricing;
 
 describe("findPricing", () => {
