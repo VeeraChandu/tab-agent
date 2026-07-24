@@ -1,4 +1,4 @@
-import { chunkText, recordAttachment, getChunk, deleteCacheForSession, CHUNK_CHARS } from "../lib/attachmentCache.js";
+import { chunkText, recordAttachment, getChunk, deleteCacheForSession, CHUNK_CHARS } from "../src/lib/attachmentCache.js";
 
 // Same minimal in-memory stand-in for chrome.storage.local used by
 // pageCache.test.js - reset before every test so entries from one test

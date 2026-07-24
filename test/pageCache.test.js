@@ -1,4 +1,4 @@
-import { hashString, contentSignature, recordPageRead, recallPage, isUrlCached, deleteCacheForSession, DEFAULT_MAX_ENTRIES } from "../lib/pageCache.js";
+import { hashString, contentSignature, recordPageRead, recallPage, isUrlCached, deleteCacheForSession, DEFAULT_MAX_ENTRIES } from "../src/lib/pageCache.js";
 
 // Minimal in-memory stand-in for chrome.storage.local - just enough of the
 // real API (get/set/remove, callback-less/promise-based) for pageCache.js's

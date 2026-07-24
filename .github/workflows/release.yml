@@ -5,13 +5,22 @@ name: Release
 # job run `npx semantic-release`, which inspects Conventional Commits since
 # the last tag, decides whether a release is warranted and what version it
 # gets, builds the extension zip (via scripts/build.js, invoked through the
-# @semantic-release/exec plugin — see .releaserc.json), tags the commit,
+# @semantic-release/exec plugin — see .releaserc.json in this same directory), tags the commit,
 # writes CHANGELOG.md, publishes a GitHub Release with the zip attached, and
-# publishes the release to the Chrome Web Store (also via @semantic-release/exec
-# — see scripts/publishToChromeStore.js).
+# ONLY THEN publishes to the Chrome Web Store (a second @semantic-release/exec
+# entry, deliberately placed after @semantic-release/github in the plugins
+# list — see scripts/publishToChromeStore.js).
 # If commits since the last release don't warrant one (e.g. only chore/docs
 # commits), semantic-release no-ops instead of failing, and the back-merge
 # step below still runs but is a no-op fast-forward (nothing new to merge).
+#
+# Ordering matters here: semantic-release pushes the version-bump commit and
+# the git tag to main UNCONDITIONALLY, before any "publish"-step plugin runs
+# at all, and the publish step is fail-fast (the first plugin to throw stops
+# the rest from running - it does NOT run every plugin and collect errors).
+# Putting the Chrome Web Store exec step last means a Chrome failure can
+# never prevent the GitHub Release/zip asset from being created - only the
+# Chrome step itself is at risk of failing.
 #
 # main only ever advances via promote-to-main.yml's fast-forward, so the only
 # way main gets ahead of dev is the version/changelog commit semantic-release
@@ -50,11 +59,15 @@ jobs:
           cache: npm
       - run: npm ci
       # scripts/build.js runs as semantic-release's "prepare" step (see
-      # .releaserc.json) once a release is confirmed, so a plain `npm run
-      # build` here isn't needed — semantic-release owns the whole
-      # analyze -> build -> tag -> publish -> Chrome Web Store sequence from
-      # this point.
-      - run: npx semantic-release
+      # .releaserc.json in this same directory) once a release is confirmed,
+      # so a plain `npm run build` here isn't needed — semantic-release owns
+      # the whole analyze -> build -> tag -> publish -> Chrome Web Store
+      # sequence from this point. --extends is required since the config
+      # doesn't live at the repo root where semantic-release would otherwise
+      # auto-discover it; the path is spelled out from the repo root because
+      # `run:` steps execute with cwd = the repo root, not this file's own
+      # directory.
+      - run: npx semantic-release --extends ./.github/workflows/.releaserc.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
@@ -63,6 +76,13 @@ jobs:
           CHROME_EXTENSION_ID: ${{ secrets.CHROME_EXTENSION_ID }}
           CHROME_PUBLISHER_ID: ${{ secrets.CHROME_PUBLISHER_ID }}
       - name: Back-merge main into dev
+        # Runs even if the semantic-release step above failed (e.g. Chrome Web
+        # Store publish rejected) or partially succeeded, since the tag and
+        # version-bump commit are pushed to main unconditionally before any
+        # publish-step plugin runs - by the time this step is reached there's
+        # almost always something on main worth folding back into dev. Only
+        # skipped if the job was cancelled outright.
+        if: ${{ !cancelled() }}
         run: |
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch origin dev

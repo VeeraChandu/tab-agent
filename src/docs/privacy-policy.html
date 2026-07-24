@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tab Agent - Privacy Policy</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 32px 20px 80px;
+    line-height: 1.6;
+    color: #24211d;
+    background: #fdfcfb;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { color: #ede8e0; background: #1a1815; }
+    a { color: #a5b4fc; }
+    code { background: #2a2620; }
+    hr { border-color: #3a352d; }
+  }
+  h1 { font-size: 1.6em; margin-bottom: 4px; }
+  h2 { font-size: 1.15em; margin-top: 2em; border-bottom: 1px solid #e9e4dc; padding-bottom: 6px; }
+  @media (prefers-color-scheme: dark) { h2 { border-bottom-color: #3a352d; } }
+  .updated { opacity: 0.65; font-size: 0.9em; margin-top: 0; }
+  code {
+    background: #f0ece5;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 0.9em;
+  }
+  ul { padding-left: 1.3em; }
+  .contact-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 6px;
+    color: inherit;
+    text-decoration: none;
+    vertical-align: middle;
+    margin-left: 6px;
+  }
+  .contact-link:hover { background: #f0ece5; }
+  @media (prefers-color-scheme: dark) { .contact-link:hover { background: #2a2620; } }
+</style>
+</head>
+<body>
+
+<h1>Tab Agent - Privacy Policy</h1>
+<p class="updated">Last updated: 2026-07-19</p>
+
+<p>This document explains what Tab Agent does with your data.</p>
+
+<h2>The short version</h2>
+<p>
+  Tab Agent reads and acts on the pages you ask it to work with, and sends
+  that information to the AI provider (Anthropic, OpenAI, or an
+  OpenAI-compatible endpoint) <strong>you configure yourself, using your own
+  API key</strong>. That data goes from your browser directly to that
+  provider - never to Tab Agent's developer, and never to any server the
+  developer operates, because no such server exists. Everything else (your
+  API keys, chat history, settings, scheduled tasks) is stored locally in
+  your browser via <code>chrome.storage.local</code> and is never
+  transmitted anywhere except to the AI provider, and only as much of it as
+  a given task actually needs.
+</p>
+
+<h2>What Tab Agent accesses, and when</h2>
+<p>
+  Tab Agent only reads or acts on a page when you (or a scheduled task you
+  created) ask it to do something involving that page. It does not run in
+  the background scanning every page you browse. When it does run,
+  depending on what the task needs, it may access:
+</p>
+<ul>
+  <li><strong>Page content</strong>: visible text, interactive elements (buttons, links, form fields), tables, and images on the current tab or a tab you direct it to.</li>
+  <li><strong>Screenshots</strong>: only when the <code>screenshot</code> tool is used, and only of the active tab.</li>
+  <li><strong>Tab metadata</strong>: titles and URLs of your open tabs, when a task asks it to list, read, or switch between tabs.</li>
+  <li><strong>Network request metadata</strong>: Tab Agent passively watches for media (video/audio stream) requests on tabs it's actively working with, so it can report direct stream URLs back to you - it does not log or transmit general browsing/network activity, and this data is kept only in memory for the current browser session, never written to storage.</li>
+  <li><strong>Attachments you provide</strong>: images or PDFs you attach to a message.</li>
+</ul>
+
+<h2>Where that data goes</h2>
+<p>
+  When a task runs, the relevant page content, screenshots, or attachments
+  are sent as part of the conversation to whichever AI provider and model
+  you've configured in Settings - using the API key you supplied. Tab
+  Agent's developer never receives this data, has no server that
+  intercepts or logs it, and has no way to see your conversations,
+  browsing activity, or API keys. Your data's handling once it reaches the
+  AI provider is governed by that provider's own privacy policy and terms
+  (e.g. Anthropic's or OpenAI's), not by this one.
+</p>
+<p>
+  If you configure a custom/self-hosted OpenAI-compatible endpoint, data
+  goes to that endpoint instead - the same principle applies: it's your
+  configuration, and the data goes directly there, not through anything Tab
+  Agent's developer operates.
+</p>
+
+<h2>What's stored locally, and where</h2>
+<p>
+  Everything below lives in <code>chrome.storage.local</code>, sandboxed to
+  your browser profile, and is never synced to Google's servers or any
+  third party:
+</p>
+<ul>
+  <li>API keys and provider/model configuration</li>
+  <li>Chat history (including page content and tool results from past tasks)</li>
+  <li>Agents (custom slash-command presets) you've created</li>
+  <li>Scheduled/recurring task definitions and their run history</li>
+  <li>Site-access grants (domains you've confirmed for adult/financial content)</li>
+  <li>Theme preference and other UI settings</li>
+</ul>
+<p>
+  <strong>API keys are stored in plain text</strong>, not encrypted - this
+  is standard for "bring your own key" extensions, but it means anyone with
+  access to your browser profile's local storage (e.g. via other software
+  on a compromised device) could read them. Keep your device secure
+  accordingly.
+</p>
+<p>
+  <strong>Export/backup files</strong> (from Settings → Backup) contain
+  whatever you select to export in plain, unencrypted JSON, including API
+  keys if you include that section. Store exported files as carefully as
+  you would a password.
+</p>
+
+<h2>What Tab Agent does NOT do</h2>
+<ul>
+  <li>It does not collect analytics, telemetry, or usage statistics.</li>
+  <li>It does not send your data to Tab Agent's developer or any server the developer operates - none exists.</li>
+  <li>It does not sell or share your data with advertisers or data brokers.</li>
+  <li>It does not sync your data to any account or cloud service on its own.</li>
+</ul>
+
+<h2>Data retention and deletion</h2>
+<p>
+  Chat history, scheduled tasks, and settings persist until you delete
+  them yourself (via the chat history panel, Settings, or by uninstalling
+  the extension - uninstalling wipes all locally stored extension data
+  automatically, per Chrome's standard behavior for uninstalled
+  extensions).
+</p>
+
+<h2>Changes to this policy</h2>
+<p>
+  If a future update changes what data Tab Agent accesses or where it
+  goes, that change will be called out in the extension's release notes,
+  and the in-product data-use notice (shown on first run, and re-shown
+  after a material change) will be updated to match.
+</p>
+
+<h2>Children's privacy</h2>
+<p>
+  Tab Agent is not directed at children and is not intended for use by
+  anyone under the age required by their local law to consent to data
+  processing without a parent/guardian.
+</p>
+
+<h2>Contact</h2>
+<p>
+  Veera Chandu
+  <a class="contact-link" href="mailto:veerachandu1693@gmail.com" aria-label="Email Veera Chandu">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="2" y="4" width="20" height="16" rx="2"></rect>
+      <path d="m22 7-10 5L2 7"></path>
+    </svg>
+  </a>
+</p>
+
+</body>
+</html>
