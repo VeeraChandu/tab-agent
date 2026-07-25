@@ -72,7 +72,7 @@ extra safety net.
 
 ## Tools the model can call
 
-`read_page`, `list_frames`, `list_media_requests`, `recall_page`,
+`read_page`, `read_page_chunk`, `list_frames`, `list_media_requests`, `recall_page`,
 `read_attachment_chunk`, `click`, `type_text`, `scroll`, `navigate`,
 `list_tabs`, `read_tabs`, `switch_tab`, `open_tab`, `view_image`,
 `filter_images`, `screenshot`, `extract_table`, `parallel_investigate`,
@@ -103,6 +103,12 @@ A couple of the less obvious ones:
   without re-visiting it - see **Page recall cache** below.
 - **`read_attachment_chunk`** fetches more of a large attached file that
   didn't fit in one piece - see **Composer** below.
+- **`read_page_chunk`** fetches more of a `read_page` result that didn't fit
+  in one piece - rare, since `read_page` returns a page's complete rendered
+  text with no fixed size trim, but a genuinely huge page still needs
+  splitting the same way a large attachment does. Kept as its own tool
+  (rather than reusing `read_attachment_chunk`) purely so the model never
+  mistakes page content it read for a file the user uploaded.
 
 ## Multi-source and batch tasks (parallel_investigate / run_batch)
 
@@ -365,13 +371,24 @@ panel first if a scheduled check needs one.
 - A `parallel_investigate` branch that gets stuck reading/scrolling the same
   page without clicking or navigating anywhere is nudged, then stopped,
   instead of silently burning its whole step budget on one unproductive page.
-- Only the most recent `read_page`/`list_tabs`/`read_attachment_chunk` result
-  is kept in full in the conversation sent back to the model each turn; older
-  ones are collapsed to a short placeholder so long tasks don't balloon in
-  token cost or storage size. If the **Page recall cache** (below) is turned
-  on, that placeholder points the model at `recall_page` instead of a live
-  re-read; attached-file chunks always point back at `read_attachment_chunk`,
+- `read_page` returns a page's complete rendered text - there's no fixed
+  character trim, the same way attached files are never trimmed (see
+  **Composer** below). On the rare page too large for one result, the model
+  gets the first chunk plus a note to fetch the rest via `read_page_chunk`
+  (and `recall_page` supports the same chunking for cached pages), instead of
+  silently losing whatever didn't fit.
+- Only the most recent `read_page`/`list_tabs`/`read_attachment_chunk`/
+  `read_page_chunk` result is kept in full in the conversation sent back to
+  the model each turn; older ones are collapsed to a short placeholder so
+  long tasks don't balloon in token cost or storage size. If the **Page
+  recall cache** (below) is turned on, that placeholder points the model at
+  `recall_page` instead of a live re-read; attached-file and page-text
+  chunks always point back at `read_attachment_chunk`/`read_page_chunk`,
   since a cached chunk never goes stale.
+- If a provider occasionally returns a genuinely empty response (no text, no
+  tool call, no error - seen on some OpenAI-compatible backends), Tab Agent
+  retries that same request a couple of times before giving up, instead of
+  the run silently stalling.
 - Every system prompt is stamped with today's actual date, so date-relative
   requests ("latest", "this year", "recent") resolve against the real
   calendar instead of the model's training-data assumptions about what year

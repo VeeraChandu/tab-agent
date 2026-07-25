@@ -100,11 +100,13 @@
   // other small graphics that are never what a "look at this image" or
   // "filter these images" request actually means.
   const MIN_IMAGE_DIM = 80;
-  // Separate cap from the 250-element interactive cap: image-heavy pages
-  // (search results, product grids) can have hundreds of <img> tags, and
-  // tagging all of them would bloat the scan payload for little benefit —
-  // the model can scroll and re-scan to reach more.
-  const MAX_IMAGES = 60;
+  // These are pathological-safety ceilings, not content budgets — the agent
+  // is meant to see everything actually rendered on a page, the same as a
+  // person would, not a pre-guessed "enough" slice of it. Sized to never
+  // realistically trigger on real content; only to stop a genuinely
+  // pathological page (e.g. a broken infinite-scroll dumping thousands of
+  // nodes) from making one scan unworkably large.
+  const MAX_IMAGES = 300;
 
   function scanPage() {
     clearTags();
@@ -176,7 +178,7 @@
         }
       }
       elements.push(entry);
-      if (elements.length >= 250) break; // safety cap
+      if (elements.length >= 2000) break; // pathological-safety cap, see MAX_IMAGES above
     }
 
     // Separate pass + separate id namespace ("imgN") for <img> elements, so
@@ -219,16 +221,23 @@
         columns: headerCells.length,
         header_preview: headerCells,
       });
-      if (tables.length >= 20) break;
+      if (tables.length >= 100) break; // pathological-safety cap, see MAX_IMAGES above
     }
 
+    // No token-budget trim here — the agent should read the complete text
+    // that's actually rendered, the same as a person looking at the page,
+    // regardless of how it got there (static HTML or client-side JS). The
+    // only limit is a pathological-safety ceiling far above anything a real
+    // page would hit; agentLoop.js's readPage() decides whether this fits in
+    // one message or needs chunking, not this scan.
+    const MAX_BODY_TEXT_CHARS = 2000000;
     return {
       url: location.href,
       title: document.title,
       elements,
       images,
       tables,
-      bodyText: (document.body?.innerText || "").replace(/\n{3,}/g, "\n\n").slice(0, 6000),
+      bodyText: (document.body?.innerText || "").replace(/\n{3,}/g, "\n\n").slice(0, MAX_BODY_TEXT_CHARS),
       metaCategory: detectMetaCategory(),
     };
   }
@@ -396,7 +405,7 @@
     return { ok: true, page_changed: before !== after };
   }
 
-  const MAX_TABLE_ROWS = 500;
+  const MAX_TABLE_ROWS = 5000; // pathological-safety cap, see MAX_IMAGES above
 
   function extractTable(id) {
     const el = findByAgentId(id);
@@ -406,7 +415,7 @@
     const allRows = Array.from(el.querySelectorAll("tr"));
     const rows = allRows.slice(0, MAX_TABLE_ROWS).map((tr) =>
       Array.from(tr.querySelectorAll("th, td")).map((cell) => {
-        const text = cell.textContent.replace(/\s+/g, " ").trim().slice(0, 300);
+        const text = cell.textContent.replace(/\s+/g, " ").trim().slice(0, 2000);
         // Most cells are plain text, kept as a bare string to avoid bloating
         // the payload — only a cell that actually wraps a link (e.g. a
         // product name that's also its own page link) becomes {text, href},

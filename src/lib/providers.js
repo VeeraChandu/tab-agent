@@ -365,7 +365,17 @@ async function readSSE(res, onEvent, shouldStop) {
       await reader.cancel().catch(() => {});
       throw err;
     }
-    if (done) break;
+    if (done) {
+      // TEMP DIAGNOSTIC — chasing a Venice (OpenAI-compat) bug report where
+      // the agent stops mid-response with no error. A non-empty leftover
+      // buffer here means the connection closed mid-frame (a real drop),
+      // vs. a clean close where the last "data: ..." line was fully
+      // terminated by its own trailing newline. Safe to remove once resolved.
+      if (buffer.trim()) {
+        console.log("[stream-debug] SSE closed with unconsumed partial line:", JSON.stringify(buffer.slice(0, 300)));
+      }
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     const lines = buffer.split("\n");
     buffer = lines.pop(); // keep the last (possibly partial) line for next chunk
@@ -386,6 +396,7 @@ async function readSSE(res, onEvent, shouldStop) {
 }
 
 async function callAnthropicStream(config, history, system, onDelta, shouldStop) {
+  const startedAt = Date.now(); // TEMP DIAGNOSTIC, see readSSE — safe to remove once resolved.
   const baseUrl = (config.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
   const res = await fetchWithRetry(`${baseUrl}/v1/messages`, {
     method: "POST",
@@ -419,9 +430,11 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
   const blocksByIndex = new Map();
   let text = "";
   let stopReason = null;
+  let sawMessageStop = false; // TEMP DIAGNOSTIC, see readSSE — safe to remove once resolved.
   const usage = { inputTokens: 0, outputTokens: 0 };
 
   await readSSE(res, (evt) => {
+    if (evt.type === "message_stop") sawMessageStop = true;
     if (evt.type === "message_start" && evt.message?.usage) {
       usage.inputTokens = evt.message.usage.input_tokens || 0;
     } else if (evt.type === "content_block_start") {
@@ -446,6 +459,15 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
     }
   }, shouldStop);
 
+  // TEMP DIAGNOSTIC, see readSSE — safe to remove once resolved.
+  console.log("[stream-debug] anthropic stream ended", {
+    elapsedMs: Date.now() - startedAt,
+    stopReason,
+    sawMessageStop,
+    textLength: text.length,
+    blockCount: blocksByIndex.size,
+  });
+
   const blocks = [];
   const toolCalls = [];
   for (const idx of Array.from(blocksByIndex.keys()).sort((a, b) => a - b)) {
@@ -468,6 +490,7 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
 }
 
 async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
+  const startedAt = Date.now(); // TEMP DIAGNOSTIC, see readSSE — safe to remove once resolved.
   const requestMessages = toOpenAIMessages(history, system);
   const res = await fetchWithRetry(openaiApiUrl(config.baseUrl, "/chat/completions"), {
     method: "POST",
@@ -497,9 +520,11 @@ async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
   let text = "";
   let finishReason = null;
   let usage = null;
+  let chunkCount = 0; // TEMP DIAGNOSTIC, see readSSE — safe to remove once resolved.
   const toolCallsByIndex = new Map();
 
   await readSSE(res, (chunk) => {
+    chunkCount += 1;
     if (chunk.usage) {
       usage = { inputTokens: chunk.usage.prompt_tokens || 0, outputTokens: chunk.usage.completion_tokens || 0 };
     }
@@ -520,6 +545,15 @@ async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
       if (tc.function?.arguments) entry.argsText += tc.function.arguments;
     }
   }, shouldStop);
+
+  // TEMP DIAGNOSTIC, see readSSE — safe to remove once resolved.
+  console.log("[stream-debug] openai stream ended", {
+    elapsedMs: Date.now() - startedAt,
+    chunkCount,
+    finishReason,
+    textLength: text.length,
+    toolCallCount: toolCallsByIndex.size,
+  });
 
   const blocks = [];
   const toolCalls = [];
@@ -573,6 +607,8 @@ export async function callProvider(config, history, system, onDelta, shouldStop)
         return await callOpenAIStream(config, history, system, onDelta, shouldStop);
       } catch (err) {
         if (isStoppedError(err) || isRealApiError(err)) throw err;
+        // TEMP DIAGNOSTIC, see readSSE — safe to remove once resolved.
+        console.log("[stream-debug] openai streaming failed, falling back to non-streaming:", err?.message);
         return callOpenAI(config, history, system, shouldStop);
       }
     }

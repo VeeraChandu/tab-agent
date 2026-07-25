@@ -826,12 +826,20 @@ async function runScheduledTaskById(id, { manual = false } = {}) {
     const grantedDomains = await getGrantedDomains();
     const visionConfig = await resolveVisionConfig();
     const limits = await getLimits();
-    // Deliberately no sessionId/pageCache here — a scheduled check's entire
-    // point is seeing current state on every run, so it must never read
-    // from (or pollute) the persisted page cache from a previous run. See
-    // lib/pageCache.js: recordPageRead/recallPage both no-op without a
-    // sessionId, so simply omitting it here is enough to bypass the cache
-    // completely for this run.
+    // No pageCacheConfig here — a scheduled check's entire point is seeing
+    // current state on every run, so it must never read from (or pollute)
+    // the persisted page cache from a previous run. recordPageRead/recallPage
+    // (lib/pageCache.js) both check ctx.pageCacheConfig?.enabled, which stays
+    // falsy since it's never passed, so that cache stays off regardless of
+    // sessionId below.
+    //
+    // sessionId itself IS passed (scoped to just this one run, cleaned up in
+    // the finally block below) — it's what gates lib/agentLoop.js's readPage()
+    // chunk-and-store path for a page whose text is too big for one
+    // read_page result. Without it, an oversized page would be silently cut
+    // to its first chunk with no way for this headless run to ever see the
+    // rest.
+    const chunkSessionId = `sched_${task.id}_${startedAt}`;
     const runResult = await runAgentTask({
       tabId,
       task: effectiveTask,
@@ -840,6 +848,7 @@ async function runScheduledTaskById(id, { manual = false } = {}) {
       visionConfig,
       grantedDomains,
       limits,
+      sessionId: chunkSessionId,
       onEvent: () => {},
       shouldStop: () => false,
     });
@@ -875,6 +884,11 @@ async function runScheduledTaskById(id, { manual = false } = {}) {
     for (const closeId of idsToClose) {
       await chrome.tabs.remove(closeId).catch(() => {});
     }
+    // Matches the chunkSessionId passed into runAgentTask above (same
+    // deterministic id, recomputed rather than hoisted) — cleans up any
+    // oversized-page chunks this one run stored under it, so a scheduled
+    // check that fires repeatedly doesn't leave orphaned entries behind.
+    deleteAttachmentCacheForSession(`sched_${task.id}_${startedAt}`).catch(() => {});
     endKeepAlive();
   }
 

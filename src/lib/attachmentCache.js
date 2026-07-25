@@ -40,9 +40,12 @@ function entryStorageKey(sessionId, attachmentId) {
 
 // Fixed chunk size - not model-aware (no context-window metadata exists
 // anywhere in this codebase to size against; lib/pricing.js only has
-// cost-per-token, not context limits), so a conservative constant is the
-// realistic choice rather than something that adapts per-model.
-const CHUNK_CHARS = 6000;
+// cost-per-token, not context limits). ~50k tokens at the same 4-chars/token
+// estimate background.js's compaction path uses — big enough that the vast
+// majority of attachments round-trip in a single chunk (no
+// read_attachment_chunk round-trip needed at all), while still bounding any
+// one request's size for the genuine outliers.
+const CHUNK_CHARS = 200000;
 
 // Splits text into chunks without ever cutting a line in half where that can
 // be avoided - a CSV/log/code file split mid-line doesn't lose any data

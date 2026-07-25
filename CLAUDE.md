@@ -101,11 +101,28 @@ Chrome extension pages don't share a JS runtime, so the pieces talk over `chrome
   recall, off by default - see `getPageCacheConfig()`/`DEFAULT_PAGE_CACHE` in background.js) since a
   page's content can change between reads, so it needs signature-based dedup, refresh/supersede logic,
   and a write lock (`withLock`) to stay correct under concurrent `parallel_investigate` branches.
-  `attachmentCache.js` is always on (fixes silent data loss - see "Attachments are never truncated"
-  below - rather than an opt-in feature) and needs none of that: an attachment is immutable from the
-  moment it's uploaded, written once before the agent loop starts, and only ever read after, so there's
-  no lock and no dedup logic. Both are scoped out for scheduled-task runs (`RUN_SCHEDULED_TASK_NOW`
-  never passes a `sessionId`), since a recurring check should always see fresh data.
+  `attachmentCache.js` is always on (fixes silent data loss - see "Nothing the model reads is silently
+  truncated" below - rather than an opt-in feature) and needs none of that: an attachment is immutable
+  from the moment it's uploaded, written once before the agent loop starts, and only ever read after, so
+  there's no lock and no dedup logic. `pageCache.js` is scoped out for scheduled-task runs entirely
+  (`RUN_SCHEDULED_TASK_NOW` never passes a `pageCacheConfig`, so `recordPageRead`/`recallPage` both stay
+  no-ops regardless of `sessionId`), since a recurring check should always see fresh state, never a
+  previous run's cached page.
+  `readPage()` in `lib/agentLoop.js` also writes into `attachmentCache.js` (under a synthetic `pg...`
+  id, same key family) whenever a page's rendered text is too big for one `read_page` result - the
+  chunk store isn't attachment-specific, so a real page read reuses it rather than growing a second
+  parallel mechanism. It's surfaced back through its own `read_page_chunk` tool (not
+  `read_attachment_chunk`) purely so the model never confuses page content it read with a file the user
+  uploaded - the wrapper tag (`page_content_untrusted` vs `document_content_untrusted`) carries the same
+  distinction. `recall_page` chunks the same way but from `pageCache.js`'s already-cached text via
+  `chunkText()` directly, without a second write into `attachmentCache.js`.
+  Unlike `pageCache.js`, `attachmentCache.js` is NOT scoped out for scheduled-task runs -
+  `runScheduledTaskById()` (background.js) passes a per-run synthetic `sessionId`
+  (`sched_<taskId>_<startedAt>`) specifically so `readPage()`'s chunk store above still works headless;
+  omitting it would silently cut an oversized page to its first chunk with nobody around to notice. That
+  synthetic session's attachment-cache entries are deleted in the same function's `finally` block after
+  every run (recomputing the same id, rather than a separate `DELETE_SESSION_CACHE` message - there's no
+  session/node tree entry to key off here) so they don't pile up.
 - **`sidepanel.js`** / **`options.js`** - the two UI surfaces. Side panel is the chat; Options is
   provider/agent/limits/scheduled-task configuration. Both are plain scripts driven by
   `chrome.runtime.sendMessage` round-trips to background.js - neither talks to a provider API or a tab
@@ -200,15 +217,23 @@ Other things worth knowing before touching this file:
   click/type_text automatically triggers a fresh `read_page` scan so the model gets corrected ids on
   its very next turn instead of burning a whole extra turn on error → re-scan → retry.
 - `compactHistory()` collapses all but the most recent result of each tool in `COMPACTABLE_TOOLS`
-  (`read_page`, `list_tabs`, `read_attachment_chunk`) to a short placeholder before sending history back
-  to the model, so long tasks don't balloon token cost. When the page recall cache is enabled, a
-  discarded `read_page` result's placeholder points at `recall_page` by name instead of a generic
-  "re-read it"; a discarded `read_attachment_chunk` result always does the same for itself (see
-  "Page & attachment caches" above), since re-fetching either is cheap and the underlying content never
-  changes mid-conversation.
-- `recall_page` and `read_attachment_chunk` are both in `SUB_AGENT_ALLOWED_TOOLS`, so a
-  `parallel_investigate` branch can use content the main loop (or another branch) already read/was given
-  even though the branch's own sub-loop history is discarded once it finishes.
+  (`read_page`, `list_tabs`, `read_attachment_chunk`, `read_page_chunk`) to a short placeholder before
+  sending history back to the model, so long tasks don't balloon token cost. When the page recall cache
+  is enabled, a discarded `read_page` result's placeholder points at `recall_page` by name instead of a
+  generic "re-read it"; a discarded `read_attachment_chunk`/`read_page_chunk` result always does the
+  same for itself (see "Page & attachment caches" above), since re-fetching either is cheap and the
+  underlying content never changes mid-conversation. A chunked `read_page` result's placeholder also
+  points at `read_page_chunk` (with its `chunk_id`/`total_chunks`) alongside the `recall_page` pointer,
+  since the chunk store is always on regardless of whether the recall cache is enabled.
+- `recall_page`, `read_attachment_chunk`, and `read_page_chunk` are all in `SUB_AGENT_ALLOWED_TOOLS`, so
+  a `parallel_investigate` branch can use content the main loop (or another branch) already read/was
+  given even though the branch's own sub-loop history is discarded once it finishes.
+- `callProviderRetryingEmpty()` wraps `callProvider()` in the main loop and in `runSubLoop()`: some
+  OpenAI-compatible backends occasionally return a genuinely empty completion (no text, no tool calls,
+  normal "stop" finish reason - not a `max_tokens`/`length` truncation) most often right after a tool
+  result lands in history. It retries the same request up to `MAX_EMPTY_RESPONSE_RETRIES` (2) times
+  rather than ending the run on nothing, which is what manually sending "continue" was previously
+  papering over.
 - `sendToTab()` (and `ensureContentScript()`/`readPage()`, which call it) wrap every
   `chrome.tabs.sendMessage` in a `SEND_TO_TAB_TIMEOUT_MS` (12s) hard timeout plus a 250ms
   `shouldStop()` poll, both passed in as an optional last argument. This exists because
@@ -218,7 +243,7 @@ Other things worth knowing before touching this file:
   code left running to notice a stop request). Any new call site that awaits `sendToTab`/
   `ensureContentScript`/`readPage` should thread `ctx.shouldStop` through for the same reason.
 
-### Attachments are never truncated (`sidepanel.js`, `background.js`)
+### Nothing the model reads is silently truncated (`sidepanel.js`, `background.js`, `content.js`, `lib/agentLoop.js`)
 
 Attachments accepted beyond images: PDF (`lib/pdf.min.js`, text layer only - no OCR) and a fixed set of
 plain-text-ish extensions (`.txt`/`.md`/`.csv`/`.tsv`/`.json`/`.log`/`.yaml`/`.xml`/`.html`/common code
@@ -231,6 +256,19 @@ task text; if there's more than one chunk, the wrapper tells the model to call `
 for the rest. This replaced an earlier flat `MAX_PDF_CHARS` cap that silently dropped anything past
 ~40k characters - don't reintroduce a similar cap without routing it through the same chunk-and-fetch
 pattern instead.
+
+The same principle now applies to page reads: `content.js`'s `scanPage()` used to cap `bodyText` at a
+flat 6000 characters as a content budget. It doesn't anymore - the model is meant to see the complete
+text actually rendered on a page, the same as a person would, not a pre-guessed "enough" slice of it.
+Every numeric cap left in `scanPage()`/`extractTable()` (`MAX_IMAGES` 300, the 2000-element interactive
+cap, the 100-table cap, `MAX_TABLE_ROWS` 5000, per-cell text at 2000 chars, `MAX_BODY_TEXT_CHARS` 2M) is
+a pathological-safety ceiling only, sized to never realistically trigger on real content - not a budget
+meant to shave down normal pages. `readPage()` in `lib/agentLoop.js` is what actually decides whether a
+page's text fits in one result or needs chunking (via `chunkText()`/`recordAttachment()` from
+`lib/attachmentCache.js` - see "Page & attachment caches" above), the same chunk-and-fetch pattern as
+attachments, surfaced through the `read_page_chunk` tool. `recall_page` chunks its cached text the same
+way via a `chunk_index` argument. Don't reintroduce a flat character cap in `content.js` or `readPage()`
+without routing overflow through this chunking path instead.
 
 ### Providers (`lib/providers.js`)
 

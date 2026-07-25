@@ -2852,12 +2852,18 @@ async function maybeAutoCompact() {
   const raw = sessions.find((s) => s.id === currentSessionId);
   if (!raw) return;
   const session = migrateSessionIfNeeded(raw);
-  let total = 0;
-  for (const node of Object.values(session.nodes || {})) {
-    if (node.usage) total += (node.usage.inputTokens || 0) + (node.usage.outputTokens || 0);
-  }
-  if (total <= AUTO_COMPACT_TOKEN_THRESHOLD) return;
-  addEntry("info", "Info", `This chat has grown large (~${Math.round(total / 1000)}k tokens) - compacting automatically before sending to keep costs down.`);
+  // The active leaf's own usage IS the active context size — each request is
+  // stateless and resends the full history, so its inputTokens already
+  // reflects everything accumulated so far on this path. Summing node.usage
+  // across every node in session.nodes (the old behavior) instead added up
+  // lifetime billed tokens across the whole tree, including dead retry/edit
+  // branches never even sent again - a number that only ever grows and has
+  // nothing to do with how large the next request's context actually is.
+  const path = computeActivePath(session);
+  const lastNode = path[path.length - 1];
+  const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
+  if (active <= AUTO_COMPACT_TOKEN_THRESHOLD) return;
+  addEntry("info", "Info", `This chat has grown large (~${Math.round(active / 1000)}k tokens) - compacting automatically before sending to keep costs down.`);
   await compactCurrentSession();
 }
 

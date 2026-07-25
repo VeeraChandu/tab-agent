@@ -31,3 +31,7 @@ Thumbs.db
 .npmrc
 *.tgz
 .fuse_hidden*
+
+# Local working notes - not part of the shipped extension or its docs
+improvements/
+.playwright-mcp/

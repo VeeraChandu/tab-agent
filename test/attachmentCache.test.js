@@ -86,7 +86,8 @@ describe("recordAttachment / getChunk", () => {
 
   test("large attachment splits into multiple chunks, all individually fetchable", async () => {
     const lines = [];
-    for (let i = 0; i < 2000; i += 1) lines.push(`line ${i}`);
+    const lineCount = Math.ceil((CHUNK_CHARS * 2.5) / 10); // comfortably past 2 chunks' worth at ~10 chars/line
+    for (let i = 0; i < lineCount; i += 1) lines.push(`line ${i}`);
     const text = lines.join("\n");
 
     const { totalChunks, firstChunkText } = await recordAttachment("s1", "att1", { name: "big.csv", format: "csv", text });
