@@ -224,12 +224,15 @@ async function getLimits() {
 }
 
 // --- page recall cache (Settings → Page recall) --------------------------
-// Off by default — this is a genuinely cross-cutting feature (new storage
-// schema, touches branches/run_batch, domain-lock, compaction, export,
-// session deletion), so it ships as an opt-in the user can turn off
-// instantly if something unexpected turns up, rather than an always-on
-// default. See lib/pageCache.js for the actual cache implementation.
-const DEFAULT_PAGE_CACHE = { enabled: false, maxEntries: PAGE_CACHE_DEFAULT_MAX_ENTRIES };
+// On by default: compactHistory (lib/agentLoop.js) collapses all but the most
+// recent read_page result, and with the cache off the placeholder it leaves
+// can only say "call read_page again" — i.e. re-visit the site live, which is
+// what drove the agent to re-investigate sources it had already finished with.
+// With the cache on that placeholder points at recall_page instead. Page
+// content can change between reads (the original reason this was opt-in);
+// pageCache.js handles that with signature-based dedup and refresh/supersede
+// logic rather than serving stale text blindly.
+const DEFAULT_PAGE_CACHE = { enabled: true, maxEntries: PAGE_CACHE_DEFAULT_MAX_ENTRIES };
 async function getPageCacheConfig() {
   const { pageCache = {} } = await chrome.storage.local.get(["pageCache"]);
   return { ...DEFAULT_PAGE_CACHE, ...pageCache };

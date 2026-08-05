@@ -2,6 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Comments
+
+Comments say why, not what - the constraint, the bug prevented, the reason a non-obvious choice is
+the right one. One to three lines is the norm; longer only when the mechanism genuinely needs it.
+Cut restatements of the code, war stories about how a bug was found, and rationale for paths not
+taken. See the `concise-comments` skill for the full version.
+
 ## What this is
 
 Tab Agent is a Chrome (Manifest V3) extension that runs an agentic read → decide → act loop directly
@@ -97,9 +104,15 @@ Chrome extension pages don't share a JS runtime, so the pieces talk over `chrome
   that back the `recall_page` and `read_attachment_chunk` tools, respectively. Each uses its own key
   family (`pagecacheIndex_*`/`pagecacheEntry_*`, `attcacheIndex_*`/`attcacheEntry_*`) kept separate from
   the `session`/`node` tree, and is cleaned up via `DELETE_SESSION_CACHE` when a chat is deleted -
-  neither is ever exported/imported with a session. `pageCache.js` is opt-in (Settings → Limits → Page
-  recall, off by default - see `getPageCacheConfig()`/`DEFAULT_PAGE_CACHE` in background.js) since a
-  page's content can change between reads, so it needs signature-based dedup, refresh/supersede logic,
+  neither is ever exported/imported with a session. `pageCache.js` is user-toggleable (Settings → Limits → Page
+  recall, **on by default** - see `getPageCacheConfig()`/`DEFAULT_PAGE_CACHE` in background.js; note
+  `options.js` keeps a hand-synced copy of that default, and `options.html`'s tooltip states it in
+  prose, so all three change together). It defaulted to off originally, but `compactHistory` collapses
+  all but the most recent `read_page` result, and with the cache off the placeholder it leaves can only
+  say "call read_page again" - i.e. re-visit live. That drove the agent to re-investigate sources it had
+  already finished with, since a fresh visit was the only recovery route on offer; with the cache on the
+  placeholder points at `recall_page` instead. Because a page's content can change between reads, it
+  needs signature-based dedup, refresh/supersede logic,
   and a write lock (`withLock`) to stay correct under concurrent `parallel_investigate` branches.
   `attachmentCache.js` is always on (fixes silent data loss - see "Nothing the model reads is silently
   truncated" below - rather than an opt-in feature) and needs none of that: an attachment is immutable

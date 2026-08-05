@@ -53,7 +53,7 @@ const limitsSavedHint = document.getElementById("limitsSavedHint");
 // Defaults mirror background.js's DEFAULT_PAGE_CACHE — same manual-sync
 // reasoning as DEFAULT_LIMITS above (options.js and the service worker
 // don't share a module here).
-const DEFAULT_PAGE_CACHE = { enabled: false, maxEntries: 15 };
+const DEFAULT_PAGE_CACHE = { enabled: true, maxEntries: 15 };
 const pageCacheEnabledInput = document.getElementById("pageCacheEnabled");
 const pageCacheMaxEntriesInput = document.getElementById("pageCacheMaxEntries");
 const pageCacheSavedHint = document.getElementById("pageCacheSavedHint");

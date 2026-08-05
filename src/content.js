@@ -344,6 +344,29 @@
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  // Tags whose click() runs a native activation behaviour the page depends on
+  // (checkbox/radio toggling, form submit, link navigation) — see doClick.
+  const NATIVE_ACTIVATION_TAGS = new Set(["a", "button", "input", "select", "textarea", "label", "summary", "option"]);
+
+  const CLICK_SETTLE_POLL_MS = 150;
+  const CLICK_SETTLE_CEILING_MS = 1500;
+
+  // Polls instead of a flat sleep: some client-side re-renders take ~1-1.5s,
+  // which a fixed 350ms wait would return before - the next read_page/click
+  // would then act on the stale, pre-update page.
+  async function waitForSettled(ceilingMs) {
+    let prev = pageSignature();
+    let elapsed = 0;
+    while (elapsed < ceilingMs) {
+      await settle(CLICK_SETTLE_POLL_MS);
+      elapsed += CLICK_SETTLE_POLL_MS;
+      const cur = pageSignature();
+      if (cur === prev) return cur;
+      prev = cur;
+    }
+    return prev;
+  }
+
   async function doClick(id) {
     const el = findByAgentId(id);
     if (!el) return { ok: false, error: `No element with id ${id}. Re-scan the page.` };
@@ -368,11 +391,15 @@
       el.dispatchEvent(new PointerEvent("pointerup", opts));
     } catch { /* see above */ }
     el.dispatchEvent(new MouseEvent("mouseup", opts));
-    el.click?.();
-    el.dispatchEvent(new MouseEvent("click", opts));
+    // Exactly ONE click activation - firing both el.click() and a synthetic
+    // click delivered two click events per agent click, so anything toggling
+    // netted back to where it started. Only el.click() runs native activation
+    // behaviour (checkbox/radio, form submit, link); the dispatched event
+    // carries the real clientX/clientY that el.click() reports as 0.
+    if (NATIVE_ACTIVATION_TAGS.has(el.tagName.toLowerCase())) el.click();
+    else el.dispatchEvent(new MouseEvent("click", opts));
 
-    await settle(350);
-    const after = pageSignature();
+    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS);
     // page_changed is a heuristic, not proof either way: a false page can
     // legitimately not change on a valid click (e.g. toggling a checkbox
     // with no visible label change), and a page can drift on its own (ads,

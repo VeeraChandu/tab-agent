@@ -197,6 +197,34 @@ function compactHistory(history, cacheEnabled) {
 // providers.js's readSSE/fetchWithRetry poll for the LLM call side) lets a
 // deliberate Stop click resolve this immediately instead of waiting it out.
 const SEND_TO_TAB_TIMEOUT_MS = 12000;
+
+// Fired when the target frame is torn down mid-flight by a real navigation
+// before content.js calls sendResponse (most often the tab entering the
+// back/forward cache as an <a href> click navigates). Unlike other lastError
+// cases the click DID work, so failing hard would make the model abandon the
+// tab and retry from scratch - wait for the navigation instead.
+const BFCACHE_NAV_ERROR_RE = /back\/forward cache|message channel is closed/i;
+const BFCACHE_NAV_WAIT_MS = 4000;
+const BFCACHE_NAV_POLL_MS = 200;
+// Click/type only: the synthetic response below is a valid CLICK/TYPE reply
+// and a malformed one for every other type - SCAN would clear readPage's
+// !res.ok guard, then throw destructuring the res.data it doesn't carry.
+const NAV_RECOVERABLE_TYPES = new Set(["CLICK", "TYPE"]);
+
+async function waitForTabComplete(tabId, ceilingMs, intervalMs) {
+  const start = Date.now();
+  while (Date.now() - start < ceilingMs) {
+    let tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      return; // tab was closed - nothing further to wait for
+    }
+    if (tab.status === "complete") return;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+}
+
 function sendToTab(tabId, message, frameId = 0, shouldStop) {
   return new Promise((resolve) => {
     let settled = false;
@@ -210,7 +238,14 @@ function sendToTab(tabId, message, frameId = 0, shouldStop) {
 
     chrome.tabs.sendMessage(tabId, message, { frameId }, (response) => {
       if (chrome.runtime.lastError) {
-        finish({ ok: false, error: chrome.runtime.lastError.message });
+        const errMsg = chrome.runtime.lastError.message || "";
+        if (BFCACHE_NAV_ERROR_RE.test(errMsg) && NAV_RECOVERABLE_TYPES.has(message?.type)) {
+          waitForTabComplete(tabId, BFCACHE_NAV_WAIT_MS, BFCACHE_NAV_POLL_MS).then(() =>
+            finish({ ok: true, page_changed: true })
+          );
+        } else {
+          finish({ ok: false, error: errMsg });
+        }
       } else {
         finish(response || { ok: false, error: "No response from page." });
       }
@@ -435,6 +470,18 @@ async function readPage(ctx, tabId, frameId = 0, shouldStop) {
   }
   if (notes.length) out.filter_note = notes.join(" ");
   if (metaCategory) out.meta_category = metaCategory;
+
+  // Record this hostname for parallel_investigate's dedup, so a site the main
+  // loop already worked through by hand can't be handed to a branch that redoes
+  // it. Keyed off the set EXISTING, which only the main run's ctx has -
+  // branchCtx/batchCtx don't carry it, so a branch wandering onto a
+  // redirect/CDN/login hostname can't poison it. Note this hard-skips a later
+  // parallel_investigate for the host even if the main loop only glanced at it;
+  // re-checking via navigate/open_tab on the main tab still works.
+  if (ctx?.investigatedHostnames) {
+    const readHostname = hostnameOf(url);
+    if (readHostname) ctx.investigatedHostnames.add(readHostname);
+  }
 
   // Page recall cache — see lib/pageCache.js. Fire-and-forget-safe: this
   // must never turn a successful read_page into a failed tool call just
@@ -1023,14 +1070,20 @@ function checkRepeatedAction(ctx, name, input) {
 // --- exploration-loop guard (parallel_investigate branches only) ---------
 //
 // checkRepeatedAction above catches "the exact same click/type keeps not
-// working" — it doesn't catch a different failure shape: read_page, scroll,
-// and extract_table all look "productive" individually (each one genuinely
-// returns something, page_changed is legitimately true on every scroll) but
-// the model can still get stuck cycling through them on ONE page for its
-// entire step budget without ever clicking, navigating, or calling finish —
-// e.g. re-scrolling and re-extracting the same long thread over and over.
-// That's a real bug we hit: a branch spent its whole 20-step budget re-
-// reading a single Reddit thread and never produced an answer.
+// working" — it doesn't catch a different failure shape: read_page,
+// extract_table, view_image, and filter_images all look "productive"
+// individually (each one genuinely returns something) but the model can
+// still get stuck cycling through them on ONE page for its entire step
+// budget without ever clicking, navigating, or calling finish — e.g.
+// re-reading/re-extracting the same long thread over and over. That's a
+// real bug we hit: a branch spent its whole 20-step budget re-reading a
+// single Reddit thread and never produced an answer.
+//
+// scroll is deliberately NOT in EXPLORATION_TOOLS: it's how a branch reaches
+// content it hasn't seen yet (scroll-gated pagination, lazy-loaded "load
+// more" below the fold), not a symptom of re-reading the same static content.
+// Counting it hard-stopped branches on such sites before they ever got far
+// enough to click the thing that would reset the streak.
 //
 // This is deliberately scoped to branches only (ctx.explorationGuard, set
 // in runOneBranch/resumeBranch below) — NOT the main loop, and NOT
@@ -1041,7 +1094,7 @@ function checkRepeatedAction(ctx, name, input) {
 // prompt guidance in lib/tools.js), so many consecutive exploration-only
 // steps with no click/navigate in between is a much stronger signal of
 // something wrong there specifically.
-const EXPLORATION_TOOLS = new Set(["read_page", "scroll", "extract_table", "view_image", "filter_images"]);
+const EXPLORATION_TOOLS = new Set(["read_page", "extract_table", "view_image", "filter_images"]);
 const EXPLORATION_NUDGE_LIMIT = 7;
 const EXPLORATION_STOP_LIMIT = 12;
 
@@ -1278,7 +1331,6 @@ async function callProviderRetryingEmpty(config, history, system, onDelta, shoul
     !(shouldStop && shouldStop())
   ) {
     retries += 1;
-    console.log(`[stream-debug] empty completion (stopReason: ${result.stopReason}), retrying (${retries}/${MAX_EMPTY_RESPONSE_RETRIES})`);
     result = await callProvider(config, history, system, onDelta, shouldStop);
   }
   return result;
@@ -1641,30 +1693,12 @@ async function runOneBranch(ctx, task, label, config, callId) {
   // branch settles, silently dropping the close with no error.
   if (openedByUs && !hitCeiling) {
     await sleep(BRANCH_AUTO_CLOSE_DELAY_MS);
-    const stillThere = await chrome.tabs.get(tabId).catch((err) => {
-      // TEMP DIAGNOSTIC (see resumeBranch for the matching block) — trying to
-      // pin down cases where a "Couldn't complete" branch's tab stays open
-      // (shows "view" instead of "reopen") with no obvious pause/step-limit
-      // cause. Safe to remove once the cause is confirmed.
-      console.log(`[branch-close] tabs.get threw for tab ${tabId} (${label}, ${task.url}):`, err?.message || err);
-      return null;
-    });
-    console.log(
-      `[branch-close] ${label} (${task.url}) tab ${tabId} post-delay check:`,
-      stillThere
-        ? { active: stillThere.active, status: stillThere.status, url: stillThere.url, windowId: stillThere.windowId, discarded: stillThere.discarded }
-        : "tabs.get returned null (already gone, or the get itself failed)"
-    );
+    const stillThere = await chrome.tabs.get(tabId).catch(() => null);
     // Don't yank a tab the user is actively looking at right now — leave
     // it for them and skip the "closed" transition for this one.
     if (stillThere && !stillThere.active) {
-      chrome.tabs.remove(tabId).then(
-        () => console.log(`[branch-close] ${label} tab ${tabId} removed OK`),
-        (err) => console.log(`[branch-close] ${label} tab ${tabId} remove FAILED:`, err?.message || err)
-      );
+      chrome.tabs.remove(tabId).catch(() => {});
       if (ctx.onEvent) ctx.onEvent({ type: "branch_closed", callId, label, url: task.url });
-    } else if (stillThere) {
-      console.log(`[branch-close] ${label} tab ${tabId} SKIPPED close — tab reports active:true`);
     }
   } else if (openedByUs && hitCeiling && ctx.incompleteBranchTabIds) {
     // Left open on purpose (see above) so a later "Resume" click can reuse
@@ -1788,26 +1822,10 @@ export async function resumeBranch({
   // the delay inline instead of a detached setTimeout (see runOneBranch).
   if (!hitCeiling) {
     await sleep(BRANCH_AUTO_CLOSE_DELAY_MS);
-    const stillThere = await chrome.tabs.get(tabId).catch((err) => {
-      // TEMP DIAGNOSTIC — see the matching block in runOneBranch. Remove once
-      // the tabs-not-closing cause is confirmed.
-      console.log(`[branch-close] (resume) tabs.get threw for tab ${tabId} (${label}, ${url}):`, err?.message || err);
-      return null;
-    });
-    console.log(
-      `[branch-close] (resume) ${label} (${url}) tab ${tabId} post-delay check:`,
-      stillThere
-        ? { active: stillThere.active, status: stillThere.status, url: stillThere.url, windowId: stillThere.windowId, discarded: stillThere.discarded }
-        : "tabs.get returned null (already gone, or the get itself failed)"
-    );
+    const stillThere = await chrome.tabs.get(tabId).catch(() => null);
     if (stillThere && !stillThere.active) {
-      chrome.tabs.remove(tabId).then(
-        () => console.log(`[branch-close] (resume) ${label} tab ${tabId} removed OK`),
-        (err) => console.log(`[branch-close] (resume) ${label} tab ${tabId} remove FAILED:`, err?.message || err)
-      );
+      chrome.tabs.remove(tabId).catch(() => {});
       if (onEvent) onEvent({ type: "branch_closed", callId, label, url });
-    } else if (stillThere) {
-      console.log(`[branch-close] (resume) ${label} tab ${tabId} SKIPPED close — tab reports active:true`);
     }
   }
 
