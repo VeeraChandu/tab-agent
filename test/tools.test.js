@@ -24,7 +24,7 @@ describe("TOOLS schema", () => {
 
   test("includes the core tools the agent loop depends on by name", () => {
     const names = TOOLS.map((t) => t.name);
-    for (const expected of ["read_page", "click", "type_text", "scroll", "navigate", "finish"]) {
+    for (const expected of ["read_page", "click", "type_text", "select_option", "scroll", "navigate", "finish"]) {
       expect(names).toContain(expected);
     }
   });

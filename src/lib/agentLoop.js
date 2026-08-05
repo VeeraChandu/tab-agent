@@ -69,7 +69,9 @@ function restrictedReason(url) {
     : null;
 }
 
-const STALE_ID_PATTERN = /No element with id/i;
+// "no longer rendered" is content.js catching the same thing one step later:
+// the id resolves, but to a node the page has torn down. Same recovery.
+const STALE_ID_PATTERN = /No element with id|no longer rendered/i;
 
 // SPA pages (React/Vue/etc.) can replace the DOM nodes read_page tagged,
 // between one turn and the next, without a full navigation — the model's
@@ -97,9 +99,24 @@ async function recoverStaleElement(ctx, name, result) {
 // growing too. Keep only the MOST RECENT result for each of these tool
 // types in full; collapse earlier ones to a short placeholder.
 const COMPACTABLE_TOOLS = new Set(["read_page", "list_tabs", "read_attachment_chunk", "read_page_chunk"]);
+// These carry a full page scan inline when their action changed the page (see
+// attachPageState), so they compete with read_page for the same "freshest
+// scan" slot and are tracked under one key. Without this, the most frequently
+// called tools in the loop would be the ones never compacted.
+const PAGE_EMBEDDING_TOOLS = new Set(["click", "type_text", "navigate", "select_option", "scroll", "switch_tab", "open_tab"]);
+const PAGE_SCAN_KEY = "read_page";
 const COMPACT_MIN_LENGTH = 200;
 
-function compactHistory(history, cacheEnabled) {
+function parseResultBlock(block) {
+  try {
+    return JSON.parse(block.content);
+  } catch {
+    return null;
+  }
+}
+
+// Exported for test/compactHistory.test.js only.
+export function compactHistory(history, cacheEnabled) {
   const idToName = new Map();
   for (const turn of history) {
     if (turn.role !== "assistant") continue;
@@ -114,7 +131,11 @@ function compactHistory(history, cacheEnabled) {
     (turn.content || []).forEach((block, bi) => {
       if (block.type !== "tool_result") return;
       const name = idToName.get(block.tool_use_id);
-      if (name && COMPACTABLE_TOOLS.has(name)) lastKeyForTool.set(name, `${ti}:${bi}`);
+      if (!name || typeof block.content !== "string") return;
+      if (COMPACTABLE_TOOLS.has(name)) lastKeyForTool.set(name, `${ti}:${bi}`);
+      // Only an action that actually carries a scan can claim the freshest-page
+      // slot; one that changed nothing must not evict a real read_page result.
+      else if (PAGE_EMBEDDING_TOOLS.has(name) && parseResultBlock(block)?.page) lastKeyForTool.set(PAGE_SCAN_KEY, `${ti}:${bi}`);
     });
   });
 
@@ -123,8 +144,24 @@ function compactHistory(history, cacheEnabled) {
     (turn.content || []).forEach((block, bi) => {
       if (block.type !== "tool_result") return;
       const name = idToName.get(block.tool_use_id);
-      if (!name || !COMPACTABLE_TOOLS.has(name)) return;
+      if (!name) return;
       if (typeof block.content !== "string" || block.content.length < COMPACT_MIN_LENGTH) return;
+
+      // Drop just the superseded scan — the action's own outcome is the record
+      // of what the run did.
+      if (PAGE_EMBEDDING_TOOLS.has(name)) {
+        if (lastKeyForTool.get(PAGE_SCAN_KEY) === `${ti}:${bi}`) return;
+        const parsed = parseResultBlock(block);
+        if (!parsed?.page) return;
+        const recall =
+          cacheEnabled && parsed.page.url
+            ? `call recall_page with url "${parsed.page.url}" if you need it again`
+            : "call read_page for a fresh look";
+        parsed.page = `[The page scan that rode along with this ${name} was omitted to save context - ${recall}.]`;
+        block.content = JSON.stringify(parsed);
+        return;
+      }
+      if (!COMPACTABLE_TOOLS.has(name)) return;
       if (lastKeyForTool.get(name) === `${ti}:${bi}`) return; // keep the freshest one in full
 
       // If the page recall cache is active, the actual content isn't really
@@ -510,6 +547,36 @@ async function readPage(ctx, tabId, frameId = 0, shouldStop) {
   return out;
 }
 
+// A click can start a navigation outlasting content.js's settle poll, so the
+// tab may still be loading when the action returns.
+const POST_ACTION_NAV_WAIT_MS = 10000;
+
+// Folds the fresh scan into the action's own result, so acting and observing
+// cost one model round-trip instead of two. Only worth taking when something
+// changed, and only trustworthy once an in-flight navigation has finished —
+// otherwise this hands over the OUTGOING page and nothing looks again.
+async function attachPageState(ctx, result, frameId, scanWanted) {
+  let tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
+  if (tab?.status === "loading") {
+    await waitForTabComplete(ctx.tabId, POST_ACTION_NAV_WAIT_MS, BFCACHE_NAV_POLL_MS);
+    result.navigated = true;
+    tab = await chrome.tabs.get(ctx.tabId).catch(() => tab);
+  }
+  // On every action, not just scanned ones — this is how the model notices a
+  // click that navigated somewhere it didn't intend (redirect, logout).
+  if (tab) {
+    result.url = tab.url;
+    result.title = tab.title;
+  }
+  if (scanWanted || result.navigated) {
+    const fresh = await readPage(ctx, ctx.tabId, frameId, ctx.shouldStop);
+    // A failed scan isn't a failed action; omitting `page` sends the model to
+    // read_page, where it gets the real error.
+    if (fresh.ok) result.page = fresh;
+  }
+  return result;
+}
+
 // Best-effort heuristic scan for text that reads like it's trying to
 // redirect an AI assistant reading the page — not a security guarantee (a
 // sufficiently subtle attack won't match these patterns), but a cheap,
@@ -858,7 +925,8 @@ async function switchTab(ctx, input) {
   // having to remember it across turns or, worse, guess at one — the
   // failure mode this is meant to close is a model inventing a plausible
   // but wrong id (e.g. off by one from a real one it saw earlier).
-  return { ok: true, tab_id: tabId, previous_tab_id: previousTabId, title: tab.title, url: tab.url };
+  // Switching is always followed by "what's on it?" — answer it here.
+  return attachPageState(ctx, { ok: true, tab_id: tabId, previous_tab_id: previousTabId }, 0, true);
 }
 
 async function openTab(ctx, input) {
@@ -884,12 +952,17 @@ async function openTab(ctx, input) {
     return { ok: true, tab_id: tab.id, previous_tab_id: previousTabId, note: `Opened, but landed on a restricted page: ${restricted}` };
   }
   const inject = await ensureContentScript(tab.id, 0, ctx.shouldStop);
-  return {
-    ok: true,
-    tab_id: tab.id,
-    previous_tab_id: previousTabId,
-    note: inject.ok ? undefined : `Opened, but couldn't run on this page: ${inject.error}`,
-  };
+  return attachPageState(
+    ctx,
+    {
+      ok: true,
+      tab_id: tab.id,
+      previous_tab_id: previousTabId,
+      note: inject.ok ? undefined : `Opened, but couldn't run on this page: ${inject.error}`,
+    },
+    0,
+    inject.ok
+  );
 }
 
 // Heuristic, text-based tripwire for clicks that look irreversible or
@@ -1025,7 +1098,8 @@ const RAW_REPEAT_LIMIT = 4;
 function checkRepeatedAction(ctx, name, input) {
   const sig =
     name === "click" ? `click:${input.element_id}`
-    : name === "type_text" ? `type:${input.element_id}:${input.text}`
+    : name === "type_text" ? `type:${input.element_id}:${input.text}:${input.per_key ? "perkey" : ""}`
+    : name === "select_option" ? `select:${input.element_id}:${(input.values || []).join(",")}`
     : null;
 
   if (!sig) {
@@ -1046,7 +1120,7 @@ function checkRepeatedAction(ctx, name, input) {
     ctx._lastActionNoChangeStreak = 0;
   }
 
-  const verb = name === "click" ? "clicked" : "typed into";
+  const verb = name === "click" ? "clicked" : name === "select_option" ? "selected in" : "typed into";
   if (ctx._lastActionNoChangeStreak >= NO_CHANGE_REPEAT_LIMIT) {
     return {
       ok: false,
@@ -1214,6 +1288,7 @@ const SUB_AGENT_ALLOWED_TOOLS = new Set([
   "read_page",
   "click",
   "type_text",
+  "select_option",
   "scroll",
   "navigate",
   "extract_table",
@@ -2073,9 +2148,12 @@ async function executeTool(ctx, name, input, callId) {
       // content.js's doClick already waits for the page to settle and
       // compares a before/after fingerprint before responding, so no extra
       // delay is needed here — page_changed rides along on the response.
-      const res = await sendToTab(ctx.tabId, { type: "CLICK", id: input.element_id }, input.frame_id ?? 0, ctx.shouldStop);
+      const frameId = input.frame_id ?? 0;
+      const res = await sendToTab(ctx.tabId, { type: "CLICK", id: input.element_id }, frameId, ctx.shouldStop);
       ctx._lastActionNoChange = res.ok && res.page_changed === false;
-      return res.ok ? { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed } : { ok: false, error: res.error };
+      if (!res.ok) return { ok: false, error: res.error };
+      // res.note diagnoses a click that did nothing — don't drop it here.
+      return attachPageState(ctx, { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed, note: res.note }, frameId, res.page_changed === true);
     }
 
     case "type_text": {
@@ -2101,6 +2179,7 @@ async function executeTool(ctx, name, input, callId) {
         }
       }
 
+      const frameId = input.frame_id ?? 0;
       const res = await sendToTab(
         ctx.tabId,
         {
@@ -2108,19 +2187,54 @@ async function executeTool(ctx, name, input, callId) {
           id: input.element_id,
           text: input.text,
           submit: !!input.submit,
+          perKey: !!input.per_key,
         },
-        input.frame_id ?? 0,
+        frameId,
         ctx.shouldStop
       );
       ctx._lastActionNoChange = res.ok && res.page_changed === false;
-      return res.ok ? { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed } : { ok: false, error: res.error };
+      if (!res.ok) return { ok: false, error: res.error };
+      return attachPageState(ctx, { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed }, frameId, res.page_changed === true);
+    }
+
+    case "select_option": {
+      resetExplorationStreak(ctx);
+      const repeatBlock = checkRepeatedAction(ctx, "select_option", input);
+      if (repeatBlock) return repeatBlock;
+      const frameId = input.frame_id ?? 0;
+      const res = await sendToTab(
+        ctx.tabId,
+        { type: "SELECT_OPTION", id: input.element_id, values: input.values },
+        frameId,
+        ctx.shouldStop
+      );
+      ctx._lastActionNoChange = res.ok && res.page_changed === false;
+      if (!res.ok) return { ok: false, error: res.error };
+      return attachPageState(
+        ctx,
+        { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed, selected: res.selected },
+        frameId,
+        res.page_changed === true
+      );
     }
 
     case "scroll": {
       const streakBlock = checkExplorationStreak(ctx, "scroll");
       if (streakBlock) return streakBlock;
-      const res = await sendToTab(ctx.tabId, { type: "SCROLL", direction: input.direction, amount: input.amount }, 0, ctx.shouldStop);
-      const result = res.ok ? { ok: true, tab_id: ctx.tabId } : { ok: false, error: res.error };
+      const res = await sendToTab(
+        ctx.tabId,
+        { type: "SCROLL", direction: input.direction, amount: input.amount, elementId: input.element_id },
+        0,
+        ctx.shouldStop
+      );
+      if (!res.ok) return noteExplorationStreak(ctx, { ok: false, error: res.error });
+      // Scrolling exists to reveal content — hand over what it revealed.
+      const result = await attachPageState(
+        ctx,
+        { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed, scrolled_by: res.scrolled_by, at_bottom: res.at_bottom },
+        0,
+        res.page_changed === true
+      );
       return noteExplorationStreak(ctx, result);
     }
 
@@ -2161,18 +2275,24 @@ async function executeTool(ctx, name, input, callId) {
         return { ok: true, tab_id: ctx.tabId, note: `Navigated, but landed on a restricted page: ${restricted}` };
       }
       const inject = await ensureContentScript(ctx.tabId, 0, ctx.shouldStop);
-      const result = {
-        ok: true,
-        tab_id: ctx.tabId,
-        note: inject.ok ? undefined : `Navigated, but couldn't run on the new page: ${inject.error}`,
-      };
+      const result = await attachPageState(
+        ctx,
+        {
+          ok: true,
+          tab_id: ctx.tabId,
+          note: inject.ok ? undefined : `Navigated, but couldn't run on the new page: ${inject.error}`,
+        },
+        0,
+        inject.ok
+      );
       // Proactive cache-hit surfacing (see lib/pageCache.js) — don't rely on
       // the model remembering a prompt rule to check before re-visiting
       // somewhere it's already been; say so right in the tool result, same
       // philosophy as filter_controls/collapsed_filter_sections surfacing
       // opportunities directly instead of leaving them to be recalled from
-      // the system prompt.
-      if (ctx.sessionId && ctx.pageCacheConfig?.enabled && input.url !== "back") {
+      // the system prompt. Pointless once the fresh scan above already rode
+      // along — the read it advises avoiding has happened either way.
+      if (!result.page && ctx.sessionId && ctx.pageCacheConfig?.enabled && input.url !== "back") {
         const cached = await isUrlCached(ctx.sessionId, input.url, ctx.pageCacheConfig).catch(() => null);
         if (cached) {
           result.cache_hint = `You already have a cached read of this exact URL from earlier this conversation (captured ${new Date(cached.capturedAt).toISOString()}) - consider recall_page instead of read_page if you just need what was already there.`;

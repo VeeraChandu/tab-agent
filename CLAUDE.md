@@ -238,6 +238,17 @@ Other things worth knowing before touching this file:
   underlying content never changes mid-conversation. A chunked `read_page` result's placeholder also
   points at `read_page_chunk` (with its `chunk_id`/`total_chunks`) alongside the `recall_page` pointer,
   since the chunk store is always on regardless of whether the recall cache is enabled.
+- `attachPageState()` folds a full fresh `readPage()` scan into the *action's own* result (`page`) for
+  `click`/`type_text`/`navigate` whenever the action changed the page, after waiting out any navigation
+  it triggered — so acting and observing cost one step instead of the act-then-`read_page` pair the
+  system prompt used to require (the prompt's "Other rules" now say to use the scan that rode along).
+  It also stamps `url`/`title` (and `navigated: true`) on every one of those results. Because of this,
+  `compactHistory` tracks those three tools under the same freshest-scan key as `read_page`
+  (`PAGE_EMBEDDING_TOOLS`/`PAGE_SCAN_KEY`): a scan riding along with a click makes an earlier
+  `read_page` just as stale as a new `read_page` would, and only the newest survives in full — a
+  superseded one has just its `page` field replaced (the action's own `ok`/`page_changed`/`url` stay).
+  An action that changed nothing carries no scan and so can never evict a real `read_page` result.
+  `compactHistory` is the one function here exported purely for tests (`test/compactHistory.test.js`).
 - `recall_page`, `read_attachment_chunk`, and `read_page_chunk` are all in `SUB_AGENT_ALLOWED_TOOLS`, so
   a `parallel_investigate` branch can use content the main loop (or another branch) already read/was
   given even though the branch's own sub-loop history is discarded once it finishes.
@@ -290,7 +301,10 @@ self-hosted/local like Ollama/LM Studio via `baseUrl`) behind one interface: `ca
 agent loop, `describeImage()`/`classifyImages()` for the vision fallback and `view_image`/
 `filter_images` tools, `listModels()` for auto-detect in Settings, `summarizeHistory()` for `/compact`.
 Adding a new tool means updating `lib/tools.js`'s `TOOLS` schema (and `SYSTEM_PROMPT` if it changes
-model behavior expectations) *and* both provider adapters' tool-calling translation in this file.
+model behavior expectations) plus an `executeTool` case in `lib/agentLoop.js`; both adapters here map
+over `TOOLS` generically (see the two `TOOLS.map` calls) and need no per-tool edit. Don't forget
+`SUB_AGENT_ALLOWED_TOOLS` if branches should get it, and `sidepanel.js`'s `TOOL_LABELS`/`toolIcon`/
+`summarizeInput` so the transcript doesn't fall back to raw JSON.
 
 ### Module system is intentionally mixed - don't "fix" it
 

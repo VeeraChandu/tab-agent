@@ -30,6 +30,8 @@
     return true;
   }
 
+  // A link's text is often the distinguishing data itself (paper titles, product
+  // names differing only past char 120), so links get a longer cap than buttons.
   function shortText(el) {
     const text =
       el.getAttribute("aria-label") ||
@@ -39,7 +41,7 @@
       el.innerText ||
       el.textContent ||
       "";
-    return text.replace(/\s+/g, " ").trim().slice(0, 120);
+    return text.replace(/\s+/g, " ").trim().slice(0, el.tagName === "A" ? 300 : 120);
   }
 
   // A bare checkbox/radio <input> almost never has its own readable text —
@@ -81,13 +83,25 @@
     return "";
   }
 
+  // Every ARIA role a library uses to make a plain <div> operable. One missing
+  // here is a control the agent can't see at all.
+  const INTERACTIVE_ROLES = new Set([
+    "button", "link", "textbox", "searchbox", "checkbox", "radio", "combobox", "listbox", "option",
+    "tab", "menuitem", "menuitemcheckbox", "menuitemradio", "switch", "treeitem", "gridcell",
+    "slider", "spinbutton",
+  ]);
+
   function isInteractive(el) {
     const tag = el.tagName.toLowerCase();
-    if (["a", "button", "input", "textarea", "select"].includes(tag)) return true;
-    const role = el.getAttribute("role");
-    if (role && ["button", "link", "textbox", "checkbox", "radio", "combobox", "tab", "menuitem"].includes(role)) return true;
+    if (["a", "button", "input", "textarea", "select", "summary"].includes(tag)) return true;
+    if (INTERACTIVE_ROLES.has(el.getAttribute("role"))) return true;
     if (el.getAttribute("contenteditable") === "true") return true;
     if (el.onclick || el.getAttribute("onclick")) return true;
+    // Component libraries hide the input and style the label over it, so the
+    // label is often the only thing a click can land on (see occludedBy).
+    if (tag === "label" && el.control) return true;
+    const tabindex = el.getAttribute("tabindex");
+    if (tabindex?.trim() && Number(tabindex) >= 0) return true;
     return false;
   }
 
@@ -107,6 +121,10 @@
   // pathological page (e.g. a broken infinite-scroll dumping thousands of
   // nodes) from making one scan unworkably large.
   const MAX_IMAGES = 300;
+  // The prompt allows navigating only via hrefs from read_page, so a cut href
+  // corrupts the one mechanism it has. Real URLs routinely pass 300 chars
+  // (signed/tokenized links); this is a pathological ceiling, not a budget.
+  const MAX_HREF_CHARS = 4096;
 
   function scanPage() {
     clearTags();
@@ -127,11 +145,32 @@
         tag,
         text: shortText(el),
       };
+      // For a <div>-built control the tag says nothing; the role is the description.
+      const role = el.getAttribute("role");
+      if (role) entry.role = role;
+      // Nearest tagged ancestor, so a flat list reads as a tree. Absent unless
+      // the container is itself interactive — <div> wrappers are never tagged.
+      const parentTagged = el.parentElement?.closest(`[${AGENT_ATTR}]`);
+      if (parentTagged) entry.parent = parentTagged.getAttribute(AGENT_ATTR);
+
+      // Read off ANY element, not just real <input>s — a div-built switch
+      // carrying only ARIA attributes is otherwise indistinguishable from off.
+      if (el.disabled === true || el.getAttribute("aria-disabled") === "true") entry.disabled = true;
+      const ariaChecked = el.getAttribute("aria-checked");
+      if (ariaChecked === "true" || ariaChecked === "false") entry.checked = ariaChecked === "true";
+      else if (el.type === "checkbox" || el.type === "radio") entry.checked = !!el.checked;
+      const pressed = el.getAttribute("aria-pressed");
+      if (pressed === "true" || pressed === "false") entry.pressed = pressed === "true";
+      const selected = el.getAttribute("aria-selected");
+      if (selected === "true" || selected === "false") entry.selected = selected === "true";
+      // Every collapsed disclosure, not just the filter-gating ones flagged below.
+      const expanded = el.getAttribute("aria-expanded");
+      if (expanded === "true" || expanded === "false") entry.expanded = expanded === "true";
+
       if (tag === "input") {
         entry.inputType = el.type || "text";
         entry.value = el.value ? el.value.slice(0, 200) : "";
-        if (el.checked !== undefined && (el.type === "checkbox" || el.type === "radio")) {
-          entry.checked = el.checked;
+        if (el.type === "checkbox" || el.type === "radio") {
           // Groups related checkboxes/radios together (see
           // detectFilterControls in lib/agentLoop.js) — a shared `name` is
           // the standard HTML mechanism a radio group relies on to function
@@ -143,20 +182,15 @@
           // for why the input's own text is usually empty or unhelpful.
           const label = labelForInput(el);
           if (label) entry.text = label;
-          // Real facet panels commonly disable an option that doesn't exist
-          // in combination with whatever else is already selected (e.g. a
-          // 32GB config that isn't offered for a given model/size pair).
-          // Surfacing this means the agent can report "not offered" as a
-          // real finding instead of silently failing to click it, or
-          // concluding — wrongly — that the option simply isn't on the page.
-          if (el.disabled) entry.disabled = true;
         }
       }
-      if (tag === "a" && el.href) entry.href = el.href.slice(0, 200);
+      if (tag === "a" && el.href) entry.href = el.href.slice(0, MAX_HREF_CHARS);
       if (tag === "select") {
+        // Country/state dropdowns run to ~200 options — showing 30 made the
+        // model conclude the option it needed simply wasn't offered.
         entry.options = Array.from(el.options)
-          .slice(0, 30)
-          .map((o) => o.textContent.trim().slice(0, 60));
+          .slice(0, 500)
+          .map((o) => o.textContent.trim().slice(0, 200));
         entry.value = el.value;
       }
       // Standard ARIA disclosure/accordion pattern: a toggle whose panel is
@@ -297,19 +331,25 @@
       // page itself — surface that href here so view_image/filter_images
       // results can be traced back to a page to link to, not just the image.
       const link = el.closest("a[href]");
-      if (link && link.href) entry.href = link.href.slice(0, 300);
+      if (link && link.href) entry.href = link.href.slice(0, MAX_HREF_CHARS);
       return entry;
     });
   }
 
-  function nativeSetValue(el, value) {
-    const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+  // These setters are brand-checked, so the prototype must match the element:
+  // HTMLInputElement's on a <select> throws "Illegal invocation".
+  function setValueRaw(el, value) {
+    const proto =
+      el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype
+      : el.tagName === "SELECT" ? window.HTMLSelectElement.prototype
+      : window.HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
-    if (setter) {
-      setter.call(el, value);
-    } else {
-      el.value = value;
-    }
+    if (setter) setter.call(el, value);
+    else el.value = value;
+  }
+
+  function nativeSetValue(el, value) {
+    setValueRaw(el, value);
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
   }
@@ -351,27 +391,83 @@
   const CLICK_SETTLE_POLL_MS = 150;
   const CLICK_SETTLE_CEILING_MS = 1500;
 
+  // A change that hasn't STARTED yet is indistinguishable from no change, so
+  // two matching polls alone can't mean "settled" — XHR listings and lazy
+  // images routinely land 500ms+ after the action, and returning at the first
+  // match reported them as page_changed: false. Watch at least this long for
+  // the first sign of movement before concluding nothing is coming.
+  const SETTLE_FIRST_CHANGE_MS = 800;
+
   // Polls instead of a flat sleep: some client-side re-renders take ~1-1.5s,
   // which a fixed 350ms wait would return before - the next read_page/click
-  // would then act on the stale, pre-update page.
-  async function waitForSettled(ceilingMs) {
-    let prev = pageSignature();
+  // would then act on the stale, pre-update page. `baseline` is the caller's
+  // pre-action signature, so movement between dispatch and the first poll
+  // isn't missed.
+  async function waitForSettled(ceilingMs, baseline) {
+    let prev = baseline ?? pageSignature();
     let elapsed = 0;
+    let changed = false;
     while (elapsed < ceilingMs) {
       await settle(CLICK_SETTLE_POLL_MS);
       elapsed += CLICK_SETTLE_POLL_MS;
       const cur = pageSignature();
-      if (cur === prev) return cur;
-      prev = cur;
+      if (cur !== prev) {
+        changed = true;
+        prev = cur;
+        continue;
+      }
+      if (changed || elapsed >= SETTLE_FIRST_CHANGE_MS) return cur;
     }
     return prev;
+  }
+
+  function describeEl(el) {
+    const cls = (el.getAttribute("class") || "").trim().split(/\s+/).filter(Boolean).slice(0, 2).join(".");
+    return `<${el.tagName.toLowerCase()}${cls ? `.${cls}` : ""}>`;
+  }
+
+  // Pre-dispatch actionability: turn a silent no-op into a stated reason. Only
+  // conditions that genuinely stop a SYNTHETIC dispatch count as errors here —
+  // see occludedBy for the one Playwright treats as fatal and this can't.
+  function notActionable(el, id) {
+    if (el.disabled === true || el.getAttribute("aria-disabled") === "true") {
+      return `Element ${id} ${describeEl(el)} is disabled, so clicking or typing into it does nothing. Pick a different element, or first change whatever gates it (a required field, a prior selection).`;
+    }
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      return `Element ${id} ${describeEl(el)} is no longer rendered (zero size) — the page changed since the last read_page. Call read_page again for fresh ids.`;
+    }
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden") {
+      return `Element ${id} ${describeEl(el)} is hidden (${style.display === "none" ? "display:none" : "visibility:hidden"}) — expand or open whatever section holds it first, then re-scan.`;
+    }
+    return null;
+  }
+
+  // dispatchEvent reaches an element's listeners even when something covers it,
+  // so an overlay must not refuse a click that would have worked — this is only
+  // a reason-hint for a click that changed nothing. "" when clear or untestable.
+  function occludedBy(el) {
+    const rect = el.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return "";
+    const top = document.elementFromPoint(x, y);
+    if (!top || top === el || el.contains(top) || top.contains(el)) return "";
+    // A <label> (or anything inside one) bound to this control activates it
+    // anyway — that's an association, not an obstruction.
+    if (top.closest?.("label")?.control === el) return "";
+    return describeEl(top);
   }
 
   async function doClick(id) {
     const el = findByAgentId(id);
     if (!el) return { ok: false, error: `No element with id ${id}. Re-scan the page.` };
+    const blocked = notActionable(el, id);
+    if (blocked) return { ok: false, error: blocked };
     el.scrollIntoView({ block: "center", behavior: "instant" });
     flashHighlight(el);
+    const covering = occludedBy(el);
 
     const before = pageSignature();
     const rect = el.getBoundingClientRect();
@@ -399,36 +495,160 @@
     if (NATIVE_ACTIVATION_TAGS.has(el.tagName.toLowerCase())) el.click();
     else el.dispatchEvent(new MouseEvent("click", opts));
 
-    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS);
+    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS, before);
     // page_changed is a heuristic, not proof either way: a false page can
     // legitimately not change on a valid click (e.g. toggling a checkbox
     // with no visible label change), and a page can drift on its own (ads,
     // clocks). It's still a strong, cheap signal for the common failure mode
     // this exists to catch — clicking something that does nothing at all.
-    return { ok: true, page_changed: before !== after };
+    const changed = before !== after;
+    const result = { ok: true, page_changed: changed };
+    if (!changed && covering) {
+      result.note = `Nothing changed, and the click point is covered by ${covering} — likely an overlay, cookie banner or sticky header intercepting it. Dismiss that first, or click it instead if it's what you actually wanted.`;
+    }
+    return result;
   }
 
-  async function doType(id, text, submit) {
+  // read_page shows options as visible TEXT, so that's what comes back.
+  function findOption(el, wanted) {
+    const norm = (s) => String(s).replace(/\s+/g, " ").trim().toLowerCase();
+    // Internal spacing is where this actually bites: "32 GB" vs "32GB".
+    const squash = (s) => norm(s).replace(/\s/g, "");
+    const opts = Array.from(el.options);
+    return (
+      opts.find((o) => o.value === wanted) ||
+      opts.find((o) => o.text.trim() === String(wanted).trim()) ||
+      opts.find((o) => norm(o.text) === norm(wanted)) ||
+      opts.find((o) => squash(o.text) === squash(wanted)) ||
+      opts.find((o) => norm(o.text).includes(norm(wanted))) ||
+      null
+    );
+  }
+
+  async function doSelect(id, values) {
     const el = findByAgentId(id);
     if (!el) return { ok: false, error: `No element with id ${id}. Re-scan the page.` };
+    if (el.tagName !== "SELECT") {
+      return {
+        ok: false,
+        error: `Element ${id} ${describeEl(el)} is not a <select> dropdown. If it's a custom dropdown widget, click it to open it and then click the option you want; if it's a text field, use type_text.`,
+      };
+    }
+    const blocked = notActionable(el, id);
+    if (blocked) return { ok: false, error: blocked };
+
+    const wanted = (Array.isArray(values) ? values : [values]).filter((v) => v !== undefined && v !== null && v !== "");
+    if (!wanted.length) return { ok: false, error: "values is required - pass the option(s) to select, as shown in read_page's options list." };
+    if (!el.multiple && wanted.length > 1) {
+      return { ok: false, error: `Element ${id} only takes one option at a time (it isn't a multi-select), but ${wanted.length} were given.` };
+    }
+
+    const matched = [];
+    const missing = [];
+    for (const want of wanted) {
+      const opt = findOption(el, want);
+      if (opt) matched.push(opt);
+      else missing.push(want);
+    }
+    // Listing what IS there costs one round trip instead of a stall.
+    if (missing.length) {
+      const available = Array.from(el.options).map((o) => o.text.trim()).join(" | ");
+      return { ok: false, error: `No option matching ${missing.map((m) => `"${m}"`).join(", ")} in element ${id}. Available options: ${available}` };
+    }
+
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    flashHighlight(el);
+    const before = pageSignature();
+    if (el.multiple) {
+      for (const opt of el.options) opt.selected = matched.includes(opt);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    } else {
+      nativeSetValue(el, matched[0].value);
+    }
+    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS, before);
+    return { ok: true, page_changed: before !== after, selected: matched.map((o) => o.text.trim()) };
+  }
+
+  function codeForChar(ch) {
+    if (/^[a-z]$/i.test(ch)) return `Key${ch.toUpperCase()}`;
+    if (/^[0-9]$/.test(ch)) return `Digit${ch}`;
+    if (ch === " ") return "Space";
+    return "";
+  }
+
+  // A one-shot value set fires ONE input event, invisible to widgets built on
+  // per-character keydown/keyup (address autocompletes, @-mention menus). The
+  // pause gives them a chance to render between keys.
+  const PER_KEY_DELAY_MS = 15;
+
+  async function typePerKey(el, text) {
+    setValueRaw(el, "");
+    for (const ch of text) {
+      const init = { key: ch, code: codeForChar(ch), bubbles: true, cancelable: true };
+      el.dispatchEvent(new KeyboardEvent("keydown", init));
+      el.dispatchEvent(new KeyboardEvent("keypress", init));
+      setValueRaw(el, el.value + ch);
+      el.dispatchEvent(new InputEvent("input", { bubbles: true, data: ch, inputType: "insertText" }));
+      el.dispatchEvent(new KeyboardEvent("keyup", init));
+      await settle(PER_KEY_DELAY_MS);
+    }
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Rich editors (ProseMirror, Slate, Quill, Lexical) rebuild the DOM from
+  // their own model, so assigning textContent skips beforeinput and corrupts
+  // them. execCommand is deprecated but the only synthetic path they accept.
+  function setContentEditable(el, text) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    if (document.execCommand("insertText", false, text)) return;
+    el.textContent = text;
+    el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
+  }
+
+  async function doType(id, text, submit, perKey) {
+    const el = findByAgentId(id);
+    if (!el) return { ok: false, error: `No element with id ${id}. Re-scan the page.` };
+    if (el.tagName === "SELECT") {
+      return { ok: false, error: `Element ${id} is a <select> dropdown, not a text field - use select_option with the option's visible text instead.` };
+    }
+    // Everything else has no value setter to call, and reaching for one throws
+    // an opaque "Illegal invocation" instead of saying what's wrong.
+    if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && !el.isContentEditable) {
+      return {
+        ok: false,
+        error: `Element ${id} ${describeEl(el)} isn't a text field, so there's nothing to type into. If it opens one (a search icon, a combobox), click it first and re-scan; the field itself will be a separate id.`,
+      };
+    }
+    const blocked = notActionable(el, id);
+    if (blocked) return { ok: false, error: blocked };
+    if (el.readOnly) return { ok: false, error: `Element ${id} ${describeEl(el)} is read-only — typed text won't stick. It's probably filled by picking from a widget (date picker, dropdown) instead.` };
     el.scrollIntoView({ block: "center", behavior: "instant" });
     flashHighlight(el);
     el.focus();
     const before = pageSignature();
-    if (el.getAttribute("contenteditable") === "true") {
-      el.textContent = text;
-      el.dispatchEvent(new Event("input", { bubbles: true }));
+    if (el.isContentEditable) {
+      setContentEditable(el, text);
+    } else if (perKey) {
+      await typePerKey(el, text);
     } else {
       nativeSetValue(el, text);
     }
     if (submit) {
-      el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      const enter = { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      el.dispatchEvent(new KeyboardEvent("keydown", enter));
+      // Legacy form code still binds to keypress, which nothing here fired.
+      el.dispatchEvent(new KeyboardEvent("keypress", enter));
       const form = el.closest("form");
       if (form && form.requestSubmit) form.requestSubmit();
-      el.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent("keyup", enter));
     }
-    await settle(250);
-    const after = pageSignature();
+    // A flat wait returned before async validation/autocomplete had rendered.
+    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS, before);
     return { ok: true, page_changed: before !== after };
   }
 
@@ -449,16 +669,55 @@
         // so the model can carry that link into a summary/comparison instead
         // of losing it (extract_table used to return text only).
         const link = cell.querySelector("a[href]");
-        return link && link.href ? { text, href: link.href.slice(0, 300) } : text;
+        return link && link.href ? { text, href: link.href.slice(0, MAX_HREF_CHARS) } : text;
       })
     );
     return { ok: true, rows, truncated: allRows.length > MAX_TABLE_ROWS, total_rows: allRows.length };
   }
 
-  function doScroll(direction, amount) {
+  // Content in a scrollable div (chat panes, virtualized lists, modal bodies)
+  // never moves when only the window scrolls.
+  function scrollableAncestor(el) {
+    for (let node = el; node && node !== document.body; node = node.parentElement) {
+      const style = window.getComputedStyle(node);
+      const scrollable = /auto|scroll|overlay/.test(style.overflowY);
+      if (scrollable && node.scrollHeight > node.clientHeight + 1) return node;
+    }
+    return null;
+  }
+
+  async function doScroll(direction, amount, elementId) {
     const px = amount || Math.round(window.innerHeight * 0.8);
-    window.scrollBy({ top: direction === "up" ? -px : px, behavior: "instant" });
-    return { ok: true };
+    const delta = direction === "up" ? -px : px;
+
+    let container = null;
+    if (elementId) {
+      const el = findByAgentId(elementId);
+      if (!el) return { ok: false, error: `No element with id ${elementId}. Re-scan the page.` };
+      container = scrollableAncestor(el);
+      if (!container) {
+        return { ok: false, error: `Element ${elementId} isn't inside a scrollable container - scroll without element_id to scroll the page itself.` };
+      }
+    }
+
+    const before = pageSignature();
+    const beforeTop = container ? container.scrollTop : window.scrollY;
+    if (container) container.scrollTop += delta;
+    else window.scrollBy({ top: delta, behavior: "instant" });
+
+    // Lazy-loading listings render after the scroll event; returning
+    // immediately left the next read_page scanning the pre-load DOM.
+    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS, before);
+    const afterTop = container ? container.scrollTop : window.scrollY;
+    const height = container ? container.scrollHeight : document.documentElement.scrollHeight;
+    const viewport = container ? container.clientHeight : window.innerHeight;
+    return {
+      ok: true,
+      page_changed: before !== after,
+      // at_bottom with page_changed false is the honest "stop scrolling" signal.
+      scrolled_by: afterTop - beforeTop,
+      at_bottom: afterTop + viewport >= height - 2,
+    };
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -470,21 +729,25 @@
         case "SCAN":
           sendResponse({ ok: true, data: scanPage() });
           break;
-        case "GET_TEXT":
-          sendResponse({ ok: true, data: { url: location.href, title: document.title, text: (document.body?.innerText || "").slice(0, 8000) } });
-          break;
         case "CLICK":
           doClick(msg.id)
             .then(sendResponse)
             .catch((err) => sendResponse({ ok: false, error: String(err) }));
           break;
         case "TYPE":
-          doType(msg.id, msg.text, msg.submit)
+          doType(msg.id, msg.text, msg.submit, msg.perKey)
+            .then(sendResponse)
+            .catch((err) => sendResponse({ ok: false, error: String(err) }));
+          break;
+        case "SELECT_OPTION":
+          doSelect(msg.id, msg.values)
             .then(sendResponse)
             .catch((err) => sendResponse({ ok: false, error: String(err) }));
           break;
         case "SCROLL":
-          sendResponse(doScroll(msg.direction, msg.amount));
+          doScroll(msg.direction, msg.amount, msg.elementId)
+            .then(sendResponse)
+            .catch((err) => sendResponse({ ok: false, error: String(err) }));
           break;
         case "GET_IMAGE_SRCS":
           sendResponse({ ok: true, data: getImageSrcs(msg.ids) });

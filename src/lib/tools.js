@@ -9,7 +9,12 @@ export const TOOLS = [
       "Scan the current tab: get the page title/URL, the id of the tab this scan actually ran on (tab_id), a text " +
       "snapshot, a list of interactive elements (links, buttons, inputs, etc.) each with a short id like 'e12' — " +
       "link elements (<a> tags) also include their href, which is the actual URL to that specific item's page — " +
-      "a list of sizable on-page images " +
+      "elements also carry whatever state they actually have: role (what a <div>-built control really is), " +
+      "disabled, checked, pressed, selected, expanded, and parent (the id of the enclosing tagged element, so you " +
+      "can tell which control belongs to which card/menu). Trust these: a disabled element won't respond to a " +
+      "click, an expanded:false one is a collapsed section whose contents aren't in this scan yet, and a " +
+      "checked/pressed:true one is ALREADY on — clicking it turns it off. " +
+      "There's also a list of sizable on-page images " +
       "each with a short id like 'img3' (with alt text and dimensions) — pass an image id to view_image or " +
       "filter_images to actually look at it — and a list of real HTML tables each with a short id like 'tbl2' " +
       "(with row/column counts and a header preview) — pass a table id to extract_table for clean structured data. " +
@@ -143,7 +148,10 @@ export const TOOLS = [
       "requires_confirmation: true instead of clicking — use ask_user to confirm with the user, then retry the " +
       "exact same call with confirmed: true. The result includes page_changed: true/false — a signal for whether " +
       "the click actually did anything. If you click the exact same element with page_changed: false twice in a " +
-      "row, this tool will refuse the next identical attempt and tell you to try something else instead.",
+      "row, this tool will refuse the next identical attempt and tell you to try something else instead. " +
+      "When the click DID change the page, the result also carries a full fresh scan in its 'page' field (same " +
+      "shape as read_page, taken after any triggered navigation finished) plus the resulting url/title — act on " +
+      "those ids directly instead of spending a step calling read_page again.",
     input_schema: {
       type: "object",
       properties: {
@@ -168,13 +176,21 @@ export const TOOLS = [
       "on the page actually responded. If submit: true would trigger a risky or hard-to-undo action (delete, " +
       "purchase, payment, unsubscribe, etc. — judged from the field's own text or its form's submit button), this " +
       "returns requires_confirmation: true instead of submitting — use ask_user to confirm with the user, then " +
-      "retry the exact same call with confirmed: true.",
+      "retry the exact same call with confirmed: true. Like click, a result that changed the page also carries a " +
+      "full fresh scan in its 'page' field, so a submit and the search results it produced cost one step, not two.",
     input_schema: {
       type: "object",
       properties: {
         element_id: { type: "string", description: "The id of the field to type into, e.g. 'e5'." },
         text: { type: "string", description: "Text to enter into the field." },
         submit: { type: "boolean", description: "If true, press Enter / submit the form after typing." },
+        per_key: {
+          type: "boolean",
+          description:
+            "Type one character at a time, firing real key events per character. Slower - use it only when a normal " +
+            "type_text left a typeahead/autocomplete/mention widget unresponsive (those build their suggestions from " +
+            "keydown/keyup, which a one-shot value set never fires).",
+        },
         confirmed: {
           type: "boolean",
           description: "Set to true only after the user has confirmed this specific risky submission via ask_user. Omit otherwise.",
@@ -188,13 +204,49 @@ export const TOOLS = [
     },
   },
   {
+    name: "select_option",
+    description:
+      "Pick option(s) in a native <select> dropdown by id (from read_page, which lists each dropdown's options). " +
+      "This is the ONLY way to operate a <select> — type_text doesn't work on one, and clicking it opens a native " +
+      "picker that can't be driven. Match by the option's visible text as read_page showed it (its underlying value " +
+      "works too); if nothing matches, the error lists every available option so you can pick a real one. Pass " +
+      "several values only for a multi-select. Like click, a result that changed the page carries a full fresh scan " +
+      "in its 'page' field — dropdowns that filter or re-sort a listing usually do.",
+    input_schema: {
+      type: "object",
+      properties: {
+        element_id: { type: "string", description: "The id of the <select> element, e.g. 'e7'." },
+        values: {
+          type: "array",
+          items: { type: "string" },
+          description: "Option(s) to select, by visible text (or value). One entry for a normal dropdown; several only for a multi-select.",
+        },
+        frame_id: {
+          type: "number",
+          description: "Select inside a specific iframe instead of the main page — a frame_id from list_frames, and the id must be from that same frame's own read_page scan. Omit for the main page (default).",
+        },
+      },
+      required: ["element_id", "values"],
+    },
+  },
+  {
     name: "scroll",
-    description: "Scroll the page up or down.",
+    description:
+      "Scroll the page up or down. The result tells you whether it accomplished anything: page_changed (new content " +
+      "loaded in), scrolled_by (pixels actually moved - 0 means it didn't budge) and at_bottom. When scrolling did " +
+      "reveal new content, a full fresh scan rides along in the 'page' field, so you don't need a separate read_page. " +
+      "at_bottom: true together with page_changed: false means you have genuinely reached the end - stop scrolling. " +
+      "Pass element_id to scroll a scrollable panel INSIDE the page (a chat pane, a virtualized list, a modal body, " +
+      "an embedded results panel) instead of the window - content in those never moves when the page itself scrolls.",
     input_schema: {
       type: "object",
       properties: {
         direction: { type: "string", enum: ["up", "down"] },
         amount: { type: "number", description: "Pixels to scroll. Defaults to ~80% of viewport height." },
+        element_id: {
+          type: "string",
+          description: "Scroll the scrollable container holding this element, instead of the page itself. Omit to scroll the page.",
+        },
       },
       required: ["direction"],
     },
@@ -209,7 +261,9 @@ export const TOOLS = [
       "'/dubai/city-tours' did) — site URL structures are inconsistent, a guessed path usually 404s, and even when " +
       "it happens to resolve it can silently land on the wrong item (a guessed product id can return a totally " +
       "different product). If you don't have a real link to what you're after, use the site's own search box or " +
-      "nav/category menu instead of guessing.",
+      "nav/category menu instead of guessing. The result carries a full scan of wherever you landed in its 'page' " +
+      "field (same shape as read_page), so navigate + read_page in a row is one step wasted — read the 'page' you " +
+      "already got.",
     input_schema: {
       type: "object",
       properties: {
@@ -469,6 +523,7 @@ You act step by step using tools:
 - read_page: see what's on the *active* tab (title, URL, text, and a list of interactive elements with ids like "e12")
 - click: click an element by id
 - type_text: type into a field by id (can submit)
+- select_option: pick an option in a native <select> dropdown by id — the only thing that works on one
 - scroll: scroll up/down to reveal more content
 - navigate: go to a URL on the active tab, or go back
 - recall_page: look up a page you already read earlier this conversation, without a live re-read (informational only — never a basis for click/type_text ids)
@@ -568,9 +623,14 @@ read_page on it first is wasted work and produces a confusing error for a questi
 directly.
 
 Other rules:
-- Re-call read_page after any action that could change the page (navigation, click, submit, switch_tab), since
-  element ids can change or belong to a different tab entirely.
-- Only interact with element ids that were returned by the most recent read_page call on the currently active tab.
+- Action results already carry the fresh scan for you: when the action changed the page, the result
+  has a "page" field holding exactly what read_page would have returned (url, title, visible_text,
+  interactive_elements, ...), taken after any navigation finished loading. Use the ids in there directly — calling
+  read_page again right after is a wasted step. The same is true of select_option, scroll, switch_tab and open_tab.
+  Only re-read when the result has NO "page" field - meaning nothing changed, or the scan couldn't run - and you
+  still need to see the page.
+- Only interact with element ids from the most recent scan of the currently active tab — whether that scan came from
+  read_page or rode along with an action's result.
 - Be efficient: don't re-scan more than necessary, but never guess an id you haven't seen.
 - If the task is a question you can answer from the page text, you don't need to click anything — just read and call finish with the answer.
 - If you get stuck (element not found, page not changing, blocked by a login wall, etc.), explain the situation and call finish with success:false.
