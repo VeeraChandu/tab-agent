@@ -19,7 +19,14 @@ export const TOOLS = [
       "filter_images to actually look at it — and a list of real HTML tables each with a short id like 'tbl2' " +
       "(with row/column counts and a header preview) — pass a table id to extract_table for clean structured data. " +
       "Call this first, and again any time the page may have changed (after a click, navigation, or typing that " +
-      "triggers a page update). By default this reads the main page only — content inside an embedded iframe " +
+      "triggers a page update). Two kinds of content a plain DOM scan would miss are pulled in for you and included " +
+      "in the text snapshot. If the page hosts a code editor (Overleaf, a web IDE, any CodeMirror/Monaco/Ace surface) " +
+      "the result carries editor: {type, chars} and the snapshot holds the COMPLETE document, not just the lines " +
+      "scrolled into view — so never conclude a file is missing something because you can't see it, and never judge " +
+      "the file from what the editor pane happens to be showing. If the page is displaying a rendered PDF the result " +
+      "carries pdf: {pages} and the snapshot holds the rendered text page by page — that is how you check what a " +
+      "compiled/exported document actually says and how many pages it runs to, without a screenshot. " +
+      "By default this reads the main page only — content inside an embedded iframe " +
       "(a third-party video/ad/widget player, common on streaming and aggregator sites) is invisible to it. If the " +
       "content you need doesn't show up here, call list_frames to see what iframes exist, then pass frame_id to " +
       "target one directly. When the page has filter/sort-looking controls, the result includes filter_controls plus " +
@@ -82,10 +89,12 @@ export const TOOLS = [
       "attribute from the same set). Returns the same shape read_page would (visible_text, interactive_elements, " +
       "images, tables, filter_controls if present) plus captured_at, or a plain 'not cached' error if this exact " +
       "URL was never read this conversation or has since been evicted — in that case just fall back to a normal " +
-      "read_page/navigate. This is informational only: fine to use for answering questions about what a page showed, " +
-      "but its element ids are NOT valid for click/type_text on whatever is currently on screen — the page may have " +
-      "moved on, or isn't even the active tab anymore. Always call read_page for a fresh scan before interacting " +
-      "with anything, never act on a recalled id. Also prefer a fresh read over trusting a recalled one whenever the " +
+      "read_page/navigate. Its element IDS are the one thing you can't reuse: they're not valid for click/type_text " +
+      "on whatever is currently on screen (the page may have moved on, or isn't even the active tab), so call " +
+      "read_page for a fresh scan before interacting and never act on a recalled id. Everything ELSE it returns is " +
+      "fully usable — in particular each element's href, which is a real URL you can navigate to. That makes this " +
+      "the way to pick a list of items back up: recall the listing/feed page you gathered them from and navigate to " +
+      "the next item's href, instead of re-visiting that page live to re-derive a list you already had. Also prefer a fresh read over trusting a recalled one whenever the " +
       "question concerns something that could plausibly have changed since it was captured (price, availability, " +
       "stock, live status) — recall_page is for 'what did this page say,' not a guarantee of what it says now. " +
       "Before re-navigating or relaunching parallel_investigate/run_batch at a URL you've already checked earlier in " +
@@ -177,7 +186,9 @@ export const TOOLS = [
       "purchase, payment, unsubscribe, etc. — judged from the field's own text or its form's submit button), this " +
       "returns requires_confirmation: true instead of submitting — use ask_user to confirm with the user, then " +
       "retry the exact same call with confirmed: true. Like click, a result that changed the page also carries a " +
-      "full fresh scan in its 'page' field, so a submit and the search results it produced cost one step, not two.",
+      "full fresh scan in its 'page' field, so a submit and the search results it produced cost one step, not two. " +
+      "This also works on a range slider without any dragging: read_page reports its min/max/step, so pass a number " +
+      "within that range as the text. Filling 2+ fields of the same form? Use fill_form instead — one step, not one per field.",
     input_schema: {
       type: "object",
       properties: {
@@ -230,6 +241,92 @@ export const TOOLS = [
     },
   },
   {
+    name: "press_key",
+    description:
+      "Press a single key, on a specific element or on whatever currently has focus. Use it for keys no other tool " +
+      "covers: Escape (close a modal/dropdown/overlay that's blocking a click), ArrowUp/ArrowDown/Enter (drive an " +
+      "ARIA combobox or listbox that only builds its options on key events), Tab (move focus), PageDown/Home/End. " +
+      "Combos are written with '+': 'Control+a', 'Shift+Tab'. This does NOT insert text — a printable key fires key " +
+      "events but types nothing, so use type_text to fill a field, and type_text with submit: true to submit a form. " +
+      "Like click, the result carries page_changed plus a fresh scan in its 'page' field when something changed.",
+    input_schema: {
+      type: "object",
+      properties: {
+        key: {
+          type: "string",
+          description: "The key to press, e.g. 'Escape', 'ArrowDown', 'Enter', 'Tab', 'PageDown', or a combo like 'Control+a'.",
+        },
+        element_id: {
+          type: "string",
+          description: "Focus this element first and press the key on it. Omit to press it on whatever already has focus (the usual case for Escape).",
+        },
+        confirmed: {
+          type: "boolean",
+          description: "Set to true only after the user has confirmed a risky Enter-submission via ask_user. Omit otherwise.",
+        },
+        frame_id: {
+          type: "number",
+          description: "Press inside a specific iframe instead of the main page — a frame_id from list_frames. Omit for the main page (default).",
+        },
+      },
+      required: ["key"],
+    },
+  },
+  {
+    name: "hover",
+    description:
+      "Move the mouse onto an element without clicking it, to reveal content that only exists while hovered — " +
+      "mega-menus, tooltips holding the real value (a truncated cell, a chart point), row action buttons that render " +
+      "on mouseenter. Those elements aren't in the DOM until you hover, so read_page can't see them and clicking the " +
+      "parent often just navigates away instead. The result carries page_changed and, when something did appear, a " +
+      "fresh scan in its 'page' field with the new elements' ids. Menus built purely on CSS :hover can't be opened " +
+      "this way (the result says so) — click the element instead.",
+    input_schema: {
+      type: "object",
+      properties: {
+        element_id: { type: "string", description: "The id of the element to hover, e.g. 'e12'." },
+        frame_id: {
+          type: "number",
+          description: "Hover inside a specific iframe instead of the main page — a frame_id from list_frames. Omit for the main page (default).",
+        },
+      },
+      required: ["element_id"],
+    },
+  },
+  {
+    name: "fill_form",
+    description:
+      "Fill several fields on the page in ONE step instead of a type_text per field — use it whenever you're filling " +
+      "2+ fields of the same form (signup, checkout, search filters, an address block). Handles text inputs/" +
+      "textareas/contenteditable (value as text), checkboxes and switches (value 'true'/'false'), single-select " +
+      "dropdowns (value = the option's visible text) and sliders (value = a number within the min/max read_page " +
+      "reported). Each field reports its own ok/error, so one bad id doesn't lose the rest. It never submits: click " +
+      "the submit button (or type_text with submit: true on the last field) afterwards, which is also where the " +
+      "risky-action confirmation applies. A result that changed the page carries a fresh scan in its 'page' field.",
+    input_schema: {
+      type: "object",
+      properties: {
+        fields: {
+          type: "array",
+          description: "The fields to fill, in the order they should be filled.",
+          items: {
+            type: "object",
+            properties: {
+              element_id: { type: "string", description: "The id of the field, e.g. 'e5'." },
+              value: { type: "string", description: "Text to enter, 'true'/'false' for a checkbox, or the option's visible text for a dropdown." },
+            },
+            required: ["element_id", "value"],
+          },
+        },
+        frame_id: {
+          type: "number",
+          description: "Fill inside a specific iframe instead of the main page — a frame_id from list_frames, with ids from that frame's own scan. Omit for the main page (default).",
+        },
+      },
+      required: ["fields"],
+    },
+  },
+  {
     name: "scroll",
     description:
       "Scroll the page up or down. The result tells you whether it accomplished anything: page_changed (new content " +
@@ -237,11 +334,22 @@ export const TOOLS = [
       "reveal new content, a full fresh scan rides along in the 'page' field, so you don't need a separate read_page. " +
       "at_bottom: true together with page_changed: false means you have genuinely reached the end - stop scrolling. " +
       "Pass element_id to scroll a scrollable panel INSIDE the page (a chat pane, a virtualized list, a modal body, " +
-      "an embedded results panel) instead of the window - content in those never moves when the page itself scrolls.",
+      "an embedded results panel) instead of the window - content in those never moves when the page itself scrolls. " +
+      "For a page that loads more content as you scroll (a profile, a feed, an infinite listing), pass to: \"bottom\" " +
+      "instead of scrolling one screen at a time: it keeps scrolling and waiting for content until the page genuinely " +
+      "stops producing any, in ONE call. That is the right way to make a lazy-loading page reveal everything - never " +
+      "conclude a section isn't on a page until a to:\"bottom\" scroll has failed to bring it in.",
     input_schema: {
       type: "object",
       properties: {
         direction: { type: "string", enum: ["up", "down"] },
+        to: {
+          type: "string",
+          enum: ["bottom"],
+          description:
+            "Scroll repeatedly until the page stops loading new content or the end is reached, instead of a single " +
+            "screen. Use for lazy-loading pages. Ignores 'amount' beyond the per-step size; direction should be 'down'.",
+        },
         amount: { type: "number", description: "Pixels to scroll. Defaults to ~80% of viewport height." },
         element_id: {
           type: "string",
@@ -524,9 +632,12 @@ You act step by step using tools:
 - click: click an element by id
 - type_text: type into a field by id (can submit)
 - select_option: pick an option in a native <select> dropdown by id — the only thing that works on one
+- fill_form: fill several fields at once (text, checkboxes, dropdowns, sliders) — one step instead of one per field
+- press_key: press a key (Escape, ArrowDown, Enter, Tab, 'Control+a', ...) on an element or on whatever has focus
+- hover: reveal hover-only content (mega-menus, tooltips, row actions) without clicking
 - scroll: scroll up/down to reveal more content
 - navigate: go to a URL on the active tab, or go back
-- recall_page: look up a page you already read earlier this conversation, without a live re-read (informational only — never a basis for click/type_text ids)
+- recall_page: look up a page you already read earlier this conversation, without a live re-read — its element ids are dead, but its text and hrefs are still good to read from and navigate to
 - read_attachment_chunk: fetch chunk 2+ of a large file the user attached (chunk 1 already rides along with the message) — never assume chunk 1 alone is the whole file if a note says there's more
 - read_page_chunk: fetch chunk 2+ of a read_page result that didn't fit in one piece (rare — chunk 1 already rides along with read_page's result) — never assume chunk 1 alone is the whole page if a chunk_note says there's more
 - list_tabs: see every open tab across the whole browser, not just the active one
@@ -626,7 +737,8 @@ Other rules:
 - Action results already carry the fresh scan for you: when the action changed the page, the result
   has a "page" field holding exactly what read_page would have returned (url, title, visible_text,
   interactive_elements, ...), taken after any navigation finished loading. Use the ids in there directly — calling
-  read_page again right after is a wasted step. The same is true of select_option, scroll, switch_tab and open_tab.
+  read_page again right after is a wasted step. The same is true of select_option, fill_form, press_key, hover,
+  scroll, switch_tab and open_tab.
   Only re-read when the result has NO "page" field - meaning nothing changed, or the scan couldn't run - and you
   still need to see the page.
 - Only interact with element ids from the most recent scan of the currently active tab — whether that scan came from
@@ -634,9 +746,23 @@ Other rules:
 - Be efficient: don't re-scan more than necessary, but never guess an id you haven't seen.
 - If the task is a question you can answer from the page text, you don't need to click anything — just read and call finish with the answer.
 - If you get stuck (element not found, page not changing, blocked by a login wall, etc.), explain the situation and call finish with success:false.
-- Every click/type_text result includes page_changed: true/false — a real signal for whether that action actually did anything, not just whether the browser accepted it. If page_changed comes back false, treat that as strong evidence the action was a no-op: don't just retry the exact same click/type — re-read the page fresh (it may need a moment to load), try a visually or structurally different element (the icon you meant is often a different id than its clickable wrapper), use screenshot to see what's actually rendered, or use ask_user if you're unsure which element is right. If you do repeat the exact same click/type on the same element with no effect, the tool will eventually refuse and tell you to change approach — treat that refusal as a hard stop, not something to push past by retrying again.
+- Every click/type_text result includes page_changed: true/false — a real signal for whether that action actually did anything, not just whether the browser accepted it. If page_changed comes back false, treat that as strong evidence the action was a no-op: don't just retry the exact same click/type — re-read the page fresh (it may need a moment to load), try a visually or structurally different element (the icon you meant is often a different id than its clickable wrapper), use screenshot to see what's actually rendered, or use ask_user if you're unsure which element is right. If the result's note says an overlay/banner is covering the click point, clear that first — press_key with "Escape", or click the banner's own dismiss button — then retry. If you do repeat the exact same click/type on the same element with no effect, the tool will eventually refuse and tell you to change approach — treat that refusal as a hard stop, not something to push past by retrying again.
 - If a tool result says a page is "Chrome-restricted" (e.g. Chrome Web Store, chrome:// pages, browser-internal pages), that is a hard platform limitation — do not retry the same action. Call finish right away, explain that this specific page can't be read or automated, and suggest the user try a regular website instead.
-- Never fabricate information that isn't visible on the page. Quote or summarize what you actually see.
+- Never fabricate information that isn't visible on the page. Quote or summarize what you actually see. This applies
+  hardest to anything the user will send onward or act on — a document, a message, contact details, a total. A
+  plausible-looking placeholder you invented (a made-up email address or phone number, a figure you assumed) is worse
+  than an admitted gap: leave it visibly blank or ask_user, never fill it in with something that merely looks right.
+- Never report an outcome you have not observed since your last action. "It compiled", "it saved", "it's fixed", "0
+  errors" are claims about the CURRENT state, and a results panel, log pane or preview you read earlier is showing the
+  state BEFORE whatever you just did — it does not update just because you acted. Re-read the page and confirm the new
+  state before you describe it, in the finish answer above all. If you cannot confirm it, say what you did and that
+  you could not verify the result. Reporting a success that didn't happen is the single worst failure available to you:
+  it costs the user more than doing nothing, because they act on it.
+- Never navigate away from a page you are still loading content on. Scrolling a lazy-loading page is accumulated
+  progress that lives only in that page's current state, and navigate (including navigating "back" to it) throws all of
+  it away and returns you a cold page with nothing loaded. If a profile/feed/listing looks like it's missing sections,
+  scroll with to:"bottom" and re-read — do not go looking for a different URL that might show them, and never conclude
+  from a page you just reset that the content doesn't exist.
 - Don't restate a tool's raw output twice. The user already sees each tool call and its result rendered in the chat, so
   when you call finish, write a concise takeaway/answer — not a full re-listing of everything a tool already returned
   (e.g. after list_tabs, don't repeat every single tab again in the finish answer unless the user asked for a filtered
@@ -692,6 +818,25 @@ Search / filter / browse tasks (finding a set of results, not vision-related):
 - If the site has no filter for the specific attribute you need, check text first, not images: item titles, listing descriptions, and (by opening a couple of item pages) product spec/description text. Reserve filter_images for after you've checked and text genuinely doesn't answer it, or for traits that were never going to be named attributes in the first place (overall look, pattern, whether it'd match something).
 - If the request implies wanting a set of options ("find shirts", "look for", "show me some") rather than one specific named item, gather and present a reasonable set of matching results — don't call finish after the first match you happen to see.
 - Before calling finish on this kind of task, check that what's on screen actually reflects every constraint in the request (e.g. the right category/gender filter is visibly applied, not just searched-for in text). If it doesn't, go back and fix the filters rather than finishing with a mismatched or incomplete result.
+
+Working through a list of items — collect the list first, then check each one:
+- This covers any task shaped "find the X's in this feed/notifications/search results, then check something on each
+  of them". It has a specific trap: only the MOST RECENT page scan survives in your history in full. The read_page
+  result holding your list is cut down to a short placeholder as soon as you open the first item — so by item 3 the
+  list itself is gone, and going back to the source page to re-derive it is a step-burning loop that usually
+  re-shows the same first few entries you already had.
+- Your own reply text is never summarized away. So before you open the first item, write the complete list into
+  your reply — one line per item, name plus its URL (the href from that item's element). From then on, work from
+  that written list, not from the tool result. Do this even when the list is long; a hundred lines written once is
+  far cheaper than re-reading the source page a hundred times.
+- Gather it completely before you start checking. If the list lazy-loads or paginates (a feed, notifications,
+  search results), scroll to the end and capture everything first — coming back for the rest later usually can't
+  reach past the first slice again.
+- If you do lose the list anyway, call recall_page on that listing page's URL BEFORE re-visiting it live: the
+  cached scan still carries every item's href, which is all you need to navigate to the next one.
+- Once you have the list, opening more than roughly ten items one after another on the same site is run_batch's
+  job, not the main loop's — hand it the items you wrote down. The main loop's step budget is small enough that a
+  long list will otherwise stall on repeated step-limit check-ins.
 
 Multi-source and large repetitive tasks (parallel_investigate / run_batch):
 - If a later message in this same conversation asks for a DIFFERENT detail about sources you already checked (e.g. "check 10 profiles for X" earlier, now "what about Y for those same ones"), try recall_page on the URLs you already have (from the earlier findings/pages) before relaunching parallel_investigate/run_batch to re-visit them — often cheaper and faster than a full re-run, though it only has whatever the original read actually captured, so fall back to a real re-visit if recall comes back empty or the question needs something that requires a fresh interaction.

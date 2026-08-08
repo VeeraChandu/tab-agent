@@ -1246,6 +1246,9 @@ function toolIcon(name) {
     click: "🖱️",
     type_text: "⌨️",
     select_option: "🔽",
+    fill_form: "📝",
+    press_key: "🎹",
+    hover: "🖐️",
     scroll: "↕️",
     navigate: "🔗",
     list_tabs: "🗂️",
@@ -1270,6 +1273,9 @@ const TOOL_LABELS = {
   click: "Clicking",
   type_text: "Typing",
   select_option: "Choosing an option",
+  fill_form: "Filling in the form",
+  press_key: "Pressing a key",
+  hover: "Hovering",
   scroll: "Scrolling",
   navigate: "Navigating",
   list_tabs: "Listing open tabs",
@@ -1975,10 +1981,13 @@ function summarizeInput(name, input) {
   if (name === "type_text") return `"${input.text || ""}" → ${input.element_id || ""}`;
   if (name === "click") return input.element_id || "";
   if (name === "select_option") return `${(input.values || []).join(", ")} → ${input.element_id || ""}`;
+  if (name === "fill_form") return `${(input.fields || []).length} field${(input.fields || []).length === 1 ? "" : "s"}`;
+  if (name === "press_key") return `${input.key || ""}${input.element_id ? ` → ${input.element_id}` : ""}`;
+  if (name === "hover") return input.element_id || "";
   if (name === "navigate") return input.url || "";
   if (name === "recall_page") return input.url || "";
   if (name === "read_attachment_chunk") return `chunk ${input.chunk_index} of ${input.attachment_id || "attachment"}`;
-  if (name === "scroll") return input.direction || "";
+  if (name === "scroll") return input.to === "bottom" ? "to bottom" : input.direction || "";
   if (name === "switch_tab") return `tab ${input.tab_id}`;
   if (name === "open_tab") return input.url || "";
   if (name === "read_tabs") return `${(input.tab_ids || []).length} tabs`;
