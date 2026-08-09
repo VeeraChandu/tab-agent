@@ -1,4 +1,4 @@
-import { isMediaRequest, getMediaRequests, recordMediaRequest } from "../src/lib/mediaSniffer.js";
+import { isMediaRequest, getMediaRequests, recordMediaRequest, getFailedRequests, recordFailedRequest, drainFailedRequests } from "../src/lib/mediaSniffer.js";
 
 describe("isMediaRequest", () => {
   test("flags Chrome's own 'media' resource type regardless of URL", () => {
@@ -60,5 +60,41 @@ describe("recordMediaRequest eviction", () => {
     const urls = getMediaRequests(tabId).map((e) => e.url);
     expect(urls).not.toContain("https://cdn.example.com/plain-0.mp4"); // oldest, evicted
     expect(urls).toContain("https://cdn.example.com/plain-34.mp4"); // newest, kept
+  });
+});
+
+describe("failed requests", () => {
+  test("returns an empty array for a tab with nothing recorded", () => {
+    expect(getFailedRequests(999998)).toEqual([]);
+  });
+
+  test("records newest first and caps the buffer at 20", () => {
+    const tabId = 200001;
+    for (let i = 0; i < 25; i += 1) {
+      recordFailedRequest(tabId, { url: `https://api.example.com/req-${i}`, method: "GET", status: 500, seenAt: i });
+    }
+    const requests = getFailedRequests(tabId);
+    expect(requests.length).toBe(20);
+    expect(requests[0].url).toBe("https://api.example.com/req-24"); // most recent first
+    expect(requests.map((r) => r.url)).not.toContain("https://api.example.com/req-0"); // oldest, evicted
+  });
+});
+
+describe("drainFailedRequests", () => {
+  test("returns the buffer and clears it, unlike the plain getter", () => {
+    const tabId = 200002;
+    recordFailedRequest(tabId, { url: "https://api.example.com/one", method: "GET", status: 500, seenAt: 1 });
+
+    const drained = drainFailedRequests(tabId);
+    expect(drained.length).toBe(1);
+    expect(getFailedRequests(tabId)).toEqual([]); // gone after draining
+  });
+
+  test("a fresh failure after a drain is still recorded, not lost", () => {
+    const tabId = 200003;
+    recordFailedRequest(tabId, { url: "https://api.example.com/first", method: "GET", status: 429, seenAt: 1 });
+    drainFailedRequests(tabId);
+    recordFailedRequest(tabId, { url: "https://api.example.com/second", method: "GET", status: 429, seenAt: 2 });
+    expect(getFailedRequests(tabId).map((r) => r.url)).toEqual(["https://api.example.com/second"]);
   });
 });

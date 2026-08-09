@@ -1,4 +1,4 @@
-import { chunkText, recordAttachment, getChunk, deleteCacheForSession, CHUNK_CHARS } from "../src/lib/attachmentCache.js";
+import { chunkText, recordAttachment, getChunk, getFullAttachment, deleteCacheForSession, CHUNK_CHARS } from "../src/lib/attachmentCache.js";
 
 // Same minimal in-memory stand-in for chrome.storage.local used by
 // pageCache.test.js - reset before every test so entries from one test
@@ -135,6 +135,26 @@ describe("recordAttachment / getChunk", () => {
     const { totalChunks, firstChunkText } = await recordAttachment("s1", "att1", { name: "empty.txt", format: "text", text: "" });
     expect(totalChunks).toBe(1);
     expect(firstChunkText).toBe("");
+  });
+});
+
+describe("getFullAttachment", () => {
+  beforeEach(() => installFakeStorage());
+
+  test("reconstructs the exact original text across multiple chunks", async () => {
+    const lines = [];
+    const lineCount = Math.ceil((CHUNK_CHARS * 2.5) / 10);
+    for (let i = 0; i < lineCount; i += 1) lines.push(`line ${i}`);
+    const text = lines.join("\n");
+    await recordAttachment("s1", "att1", { name: "big.csv", format: "csv", text });
+
+    const full = await getFullAttachment("s1", "att1");
+    expect(full.name).toBe("big.csv");
+    expect(full.text).toBe(text);
+  });
+
+  test("returns null for an unknown attachment id", async () => {
+    expect(await getFullAttachment("s1", "att-does-not-exist")).toBeNull();
   });
 });
 

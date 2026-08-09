@@ -42,7 +42,7 @@ const DIST_DIR = path.join(ROOT, "dist");
 // relatively, so it needs to live inside src/ to be reachable both from a
 // local "Load unpacked" pointed at src/ and from this zip, even offline or
 // before GitHub Pages is set up.
-const INCLUDE = ["manifest.json", "background.js", "content.js", "options.html", "options.css", "options.js", "sidepanel.html", "sidepanel.css", "sidepanel.js", "icons", "lib", "docs"];
+const INCLUDE = ["manifest.json", "background.js", "content.js", "consoleCapture.js", "options.html", "options.css", "options.js", "sidepanel.html", "sidepanel.css", "sidepanel.js", "icons", "lib", "docs"];
 
 function toManifestVersion(semver) {
   // Chrome requires 1-4 dot-separated non-negative integers, no -/+ suffix.

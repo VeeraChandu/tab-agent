@@ -10,8 +10,10 @@ export const TOOLS = [
       "snapshot, a list of interactive elements (links, buttons, inputs, etc.) each with a short id like 'e12' — " +
       "link elements (<a> tags) also include their href, which is the actual URL to that specific item's page — " +
       "elements also carry whatever state they actually have: role (what a <div>-built control really is), " +
-      "disabled, checked, pressed, selected, expanded, and parent (the id of the enclosing tagged element, so you " +
-      "can tell which control belongs to which card/menu). Trust these: a disabled element won't respond to a " +
+      "disabled, checked, pressed, selected, expanded, parent (the id of the enclosing tagged element, so you " +
+      "can tell which control belongs to which card/menu), and box ([x, y, width, height], viewport-relative — " +
+      "spatial layout, and a ready-made point for click's x/y args on a canvas that has no element to target). " +
+      "Trust these: a disabled element won't respond to a " +
       "click, an expanded:false one is a collapsed section whose contents aren't in this scan yet, and a " +
       "checked/pressed:true one is ALREADY on — clicking it turns it off. " +
       "There's also a list of sizable on-page images " +
@@ -27,9 +29,10 @@ export const TOOLS = [
       "carries pdf: {pages} and the snapshot holds the rendered text page by page — that is how you check what a " +
       "compiled/exported document actually says and how many pages it runs to, without a screenshot. " +
       "By default this reads the main page only — content inside an embedded iframe " +
-      "(a third-party video/ad/widget player, common on streaming and aggregator sites) is invisible to it. If the " +
-      "content you need doesn't show up here, call list_frames to see what iframes exist, then pass frame_id to " +
-      "target one directly. When the page has filter/sort-looking controls, the result includes filter_controls plus " +
+      "(a third-party video/ad/widget player, common on streaming and aggregator sites) is invisible to it. If any " +
+      "visible iframes exist on the page at all, the result flags that upfront as iframes/iframe_note so you don't " +
+      "have to guess whether it's worth checking — call list_frames to see them with their frame_id, then pass " +
+      "frame_id to target one directly. When the page has filter/sort-looking controls, the result includes filter_controls plus " +
       "a filter_note flagging it — check these BEFORE opening individual results one at a time whenever the " +
       "objective names a specific value they might accept directly. Each entry is either a dropdown " +
       "({type:'dropdown', id, options: [...]}, pass id + the chosen option to type_text/click as the page requires), " +
@@ -46,7 +49,12 @@ export const TOOLS = [
       "The text snapshot is the complete rendered text of the page, not a preview — nothing is trimmed. On the rare " +
       "page whose text is too large for one result, you get chunk 1 plus a chunk_note giving you a chunk_id and " +
       "total_chunks — call read_page_chunk with that chunk_id and chunk_index 2, 3, ... for the rest BEFORE " +
-      "concluding something isn't on the page.",
+      "concluding something isn't on the page. If the page's own JS threw errors or a background request came back " +
+      "with a failure status, that shows up as console_note / failed_requests on the result — a page that 'looks " +
+      "unchanged' after an action is a different problem from a page that's actually broken, and these tell you which. " +
+      "If the page tried to show a native alert/confirm/prompt dialog, it's auto-resolved (so the run never freezes " +
+      "waiting for a human to click it) and reported as dialog_note — a confirm() is auto-accepted, so check this " +
+      "when the page's behavior looks unexpected after an action, since it may be why.",
     input_schema: {
       type: "object",
       properties: {
@@ -164,7 +172,34 @@ export const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
-        element_id: { type: "string", description: "The id of the element to click, e.g. 'e12'." },
+        element_id: { type: "string", description: "The id of the element to click, e.g. 'e12'. Provide this, element_text, or x+y — not more than one." },
+        element_text: {
+          type: "string",
+          description:
+            "Click by the element's exact visible text/label (as read_page showed it) instead of its id — useful when " +
+            "the id you had went stale (a re-render bumped it) but you still know what the element says. Errors if " +
+            "more than one currently-tagged element matches; narrow it with element_tag or use a fresh id instead.",
+        },
+        element_tag: { type: "string", description: "Only used with element_text: restrict the match to this tag (e.g. 'button', 'a') when the text alone is ambiguous." },
+        x: {
+          type: "number",
+          description:
+            "Click at this exact viewport-relative x coordinate instead of an element - the only way to reach canvas " +
+            "content (maps, drawing tools, games) that has no element read_page could tag. Use a box from a read_page " +
+            "element entry ([x, y, width, height]) to compute a point, or a coordinate you inferred from screenshot. " +
+            "Requires y too; provide this pair OR element_id OR element_text, not more than one.",
+        },
+        y: { type: "number", description: "Viewport-relative y coordinate — see x." },
+        click_type: {
+          type: "string",
+          enum: ["double", "right"],
+          description: "Double-click or right-click instead of a normal single left click. Omit for a normal click.",
+        },
+        modifiers: {
+          type: "array",
+          items: { type: "string", enum: ["Alt", "Ctrl", "Meta", "Shift"] },
+          description: "Hold these modifier keys during the click (e.g. ['Shift'] for a range-select, ['Ctrl'] or ['Meta'] for a multi-select). Omit for none.",
+        },
         confirmed: {
           type: "boolean",
           description: "Set to true only after the user has confirmed this specific risky action via ask_user. Omit otherwise.",
@@ -174,7 +209,7 @@ export const TOOLS = [
           description: "Click inside a specific iframe instead of the main page — a frame_id from list_frames, and the id must be from that same frame's own read_page scan. Omit for the main page (default).",
         },
       },
-      required: ["element_id"],
+      required: [],
     },
   },
   {
@@ -192,7 +227,15 @@ export const TOOLS = [
     input_schema: {
       type: "object",
       properties: {
-        element_id: { type: "string", description: "The id of the field to type into, e.g. 'e5'." },
+        element_id: { type: "string", description: "The id of the field to type into, e.g. 'e5'. Provide this OR element_text, not both." },
+        element_text: {
+          type: "string",
+          description:
+            "Target the field by its exact visible text/label (as read_page showed it) instead of its id — same as " +
+            "click's element_text, for when the id you had went stale. Errors if more than one currently-tagged " +
+            "element matches; narrow it with element_tag or use a fresh id instead.",
+        },
+        element_tag: { type: "string", description: "Only used with element_text: restrict the match to this tag (e.g. 'input', 'textarea') when the text alone is ambiguous." },
         text: { type: "string", description: "Text to enter into the field." },
         submit: { type: "boolean", description: "If true, press Enter / submit the form after typing." },
         per_key: {
@@ -211,7 +254,7 @@ export const TOOLS = [
           description: "Type inside a specific iframe instead of the main page — a frame_id from list_frames, and the id must be from that same frame's own read_page scan. Omit for the main page (default).",
         },
       },
-      required: ["element_id", "text"],
+      required: ["text"],
     },
   },
   {
@@ -327,6 +370,89 @@ export const TOOLS = [
     },
   },
   {
+    name: "wait_for",
+    description:
+      "Wait for text to appear or disappear on the page before continuing — use this instead of polling with repeated " +
+      "read_page calls after an action whose result loads asynchronously (a spinner, a 'Load More' click, a search that " +
+      "takes a moment). Returns as soon as the condition is met, or after the wait ceiling (max 10 seconds) if not — " +
+      "found: false / timed_out: true tells you which. A result that changed the page carries a fresh scan in its " +
+      "'page' field, same as click/type_text.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Wait until this text appears on the page. Provide this OR text_gone, not both." },
+        text_gone: { type: "string", description: "Wait until this text disappears from the page (e.g. a 'Loading...' spinner's own text). Provide this OR text, not both." },
+        seconds: { type: "number", description: "How long to wait, in seconds. Capped at 10 regardless of what's passed. Defaults to 10." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "find_in_page",
+    description:
+      "Search the current page for text or a regex pattern, without spending a full read_page scan just to locate one " +
+      "thing on a huge page. Checks tagged interactive elements first (a match returns its id, ready to click/type_text " +
+      "directly) then falls back to the page's plain text (returned with ~80 characters of surrounding context on each " +
+      "side, and no id — read_page or scroll to that area if you need to interact with it, not just read it). Returns " +
+      "up to 50 matches.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "Plain substring to search for, case-insensitive. Provide this OR regex, not both." },
+        regex: { type: "string", description: "A JavaScript-syntax regular expression to search for instead of a plain substring. Provide this OR text, not both." },
+      },
+      required: [],
+    },
+  },
+  {
+    name: "upload_file",
+    description:
+      "Upload a file into an <input type=\"file\"> element, using a file the user already attached to this " +
+      "conversation — pass its attachment_id from the note shown when it was attached, or from a prior " +
+      "read_attachment_chunk result. Currently only works for text-based attachments (.txt/.md/.csv/.tsv/.json/.log/" +
+      ".yaml/.xml/.html/code files) — PDFs and images can't be uploaded this way, since only their extracted text/ " +
+      "description is retained here, not the original file bytes; say so if that's what's needed. Clicking a file " +
+      "input directly refuses with an error steering here instead — a synthetic click can't open (or drive/dismiss) " +
+      "the native OS chooser it would normally trigger, so this is the only way to get a file INTO a page.",
+    input_schema: {
+      type: "object",
+      properties: {
+        element_id: { type: "string", description: "The id of the <input type=\"file\"> element, e.g. 'e9'." },
+        attachment_id: { type: "string", description: "The attachment_id given in the note when the file was attached, or in a previous read_attachment_chunk result." },
+        frame_id: {
+          type: "number",
+          description: "Upload inside a specific iframe instead of the main page — a frame_id from list_frames. Omit for the main page (default).",
+        },
+      },
+      required: ["element_id", "attachment_id"],
+    },
+  },
+  {
+    name: "drag",
+    description:
+      "Drag one element onto another — price-range slider thumbs, sortable/reorderable list items, kanban cards, " +
+      "drag-to-select calendars. Dispatches both a pointer/mouse move-between-press-and-release sequence and the " +
+      "native HTML5 drag-and-drop event family, since libraries split between the two — covers the JS-library " +
+      "majority (interact.js, SortableJS, dnd-kit, native draggable=\"true\" elements), not every possible page. " +
+      "The result includes page_changed, same as click — a signal for whether anything actually moved. For a plain " +
+      "range slider, type_text with a numeric value is usually simpler than dragging. If the drop target looks risky " +
+      "or hard-to-undo (e.g. a kanban 'Delete'/'Cancelled' column, a trash dropzone), this returns " +
+      "requires_confirmation: true instead of dragging — use ask_user to confirm with the user, then retry the exact " +
+      "same call with confirmed: true.",
+    input_schema: {
+      type: "object",
+      properties: {
+        from_element_id: { type: "string", description: "The id of the element to pick up and drag, e.g. 'e12'." },
+        to_element_id: { type: "string", description: "The id of the element to drop it onto, e.g. 'e20'." },
+        confirmed: {
+          type: "boolean",
+          description: "Set to true only after the user has confirmed this specific risky drop via ask_user. Omit otherwise.",
+        },
+      },
+      required: ["from_element_id", "to_element_id"],
+    },
+  },
+  {
     name: "scroll",
     description:
       "Scroll the page up or down. The result tells you whether it accomplished anything: page_changed (new content " +
@@ -427,15 +553,36 @@ export const TOOLS = [
   {
     name: "open_tab",
     description:
-      "Open a new browser tab at a URL and make it the active tab for subsequent actions. The result includes " +
-      "tab_id (the new tab) and previous_tab_id (whatever tab was active before this call) — capture previous_tab_id " +
-      "if you'll want to switch back to it later, rather than trying to recall or reconstruct its id afterward.",
+      "Open a new browser tab at a URL. Read/click/type_text on it right away by default — this makes it the active " +
+      "tab for subsequent actions (and switches the browser's own foreground tab to it too, so the user sees what " +
+      "you're doing). The result includes tab_id (the new tab) and previous_tab_id (whatever tab was active before " +
+      "this call) — capture previous_tab_id if you'll want to switch back to it later, rather than trying to recall " +
+      "or reconstruct its id afterward. Pass background: true to open it without stealing the browser's foreground " +
+      "tab (useful when opening several tabs in a row so focus doesn't flicker between them) — it's still made this " +
+      "run's active tab for read_page/click/etc, just not the visibly foregrounded one; switch to it with switch_tab " +
+      "first if you need screenshot to work on it (screenshot requires the tab to be visibly active).",
     input_schema: {
       type: "object",
       properties: {
         url: { type: "string", description: "Absolute URL to open in a new tab." },
+        background: { type: "boolean", description: "Open without switching the browser's foreground tab to it. Defaults to false (opens in the foreground)." },
       },
       required: ["url"],
+    },
+  },
+  {
+    name: "close_tab",
+    description:
+      "Close a tab THIS run opened earlier with open_tab — use this to clean up a tab you're done with mid-task " +
+      "instead of leaving it open until the whole run ends. Refuses to close anything else (a tab you didn't open " +
+      "via open_tab, or the tab you're currently acting on) — switch_tab away from a tab first if you need to close " +
+      "it. You don't have to close tabs you opened; any left open get offered for cleanup once the task finishes.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tab_id: { type: "number", description: "The id of the tab to close, from an earlier open_tab result." },
+      },
+      required: ["tab_id"],
     },
   },
   {
@@ -499,11 +646,13 @@ export const TOOLS = [
   {
     name: "screenshot",
     description:
-      "Capture what's actually visible in the current viewport right now and get a detailed description of it. " +
-      "Unlike view_image/filter_images (which only see <img> elements), this captures EVERYTHING rendered — canvas " +
-      "content, CSS background images, complex layouts, or anything else that isn't a plain <img> tag. Use this " +
-      "when view_image/filter_images can't see what you need, or to sanity-check the overall visual layout of a " +
-      "page. The tab must currently be the active/visible one. Requires a Vision model configured in Settings.",
+      "Capture what's actually visible in the current viewport right now. Unlike view_image/filter_images (which " +
+      "only see <img> elements), this captures EVERYTHING rendered — canvas content, CSS background images, complex " +
+      "layouts, or anything else that isn't a plain <img> tag. Use this when view_image/filter_images can't see what " +
+      "you need, or to sanity-check the overall visual layout of a page. If you (the model answering right now) can " +
+      "see images directly, the actual screenshot is attached to this result for you to look at. Otherwise it falls " +
+      "back to a text description from a separately-configured Vision model in Settings — if neither is available, " +
+      "this returns an error instead. The tab must currently be the active/visible one.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
   {
@@ -635,6 +784,10 @@ You act step by step using tools:
 - fill_form: fill several fields at once (text, checkboxes, dropdowns, sliders) — one step instead of one per field
 - press_key: press a key (Escape, ArrowDown, Enter, Tab, 'Control+a', ...) on an element or on whatever has focus
 - hover: reveal hover-only content (mega-menus, tooltips, row actions) without clicking
+- wait_for: wait for text to appear/disappear instead of polling read_page after an async update
+- find_in_page: search the page for text/regex without a full read_page scan
+- upload_file: put a text-based file already attached to this conversation into a page's file input
+- drag: drag one element onto another (sliders, sortable lists, kanban cards)
 - scroll: scroll up/down to reveal more content
 - navigate: go to a URL on the active tab, or go back
 - recall_page: look up a page you already read earlier this conversation, without a live re-read — its element ids are dead, but its text and hrefs are still good to read from and navigate to
@@ -643,7 +796,8 @@ You act step by step using tools:
 - list_tabs: see every open tab across the whole browser, not just the active one
 - read_tabs: read several open tabs at once (title/text/elements/images), for comparison-style tasks
 - switch_tab: make a different open tab active for read/act
-- open_tab: open a brand new tab at a URL and make it active
+- open_tab: open a brand new tab at a URL and make it active (background: true to not steal the browser's foreground tab)
+- close_tab: close a tab this run opened earlier via open_tab
 - list_frames: list every frame on the page (main page + iframes), each with a frame_id and URL
 - list_media_requests: list recent network requests that look like a direct media stream (video/audio files, HLS/DASH manifests/segments)
 - view_image: look closely at one on-page image (by id) and get a detailed description
@@ -742,7 +896,10 @@ Other rules:
   Only re-read when the result has NO "page" field - meaning nothing changed, or the scan couldn't run - and you
   still need to see the page.
 - Only interact with element ids from the most recent scan of the currently active tab — whether that scan came from
-  read_page or rode along with an action's result.
+  read_page or rode along with an action's result. If a click/type_text fails because the id went stale (the page
+  re-rendered since your last scan) and read_page hasn't run again yet, click/type_text also accept element_text (the
+  element's exact visible text/label, optionally narrowed with element_tag) as an alternative to element_id — but a
+  fresh read_page is still the more reliable fix when you have the option.
 - Be efficient: don't re-scan more than necessary, but never guess an id you haven't seen.
 - If the task is a question you can answer from the page text, you don't need to click anything — just read and call finish with the answer.
 - If you get stuck (element not found, page not changing, blocked by a login wall, etc.), explain the situation and call finish with success:false.

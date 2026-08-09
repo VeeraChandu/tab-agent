@@ -1249,11 +1249,16 @@ function toolIcon(name) {
     fill_form: "📝",
     press_key: "🎹",
     hover: "🖐️",
+    wait_for: "⏳",
+    find_in_page: "🔎",
+    drag: "🫳",
+    upload_file: "📎",
     scroll: "↕️",
     navigate: "🔗",
     list_tabs: "🗂️",
     switch_tab: "↪️",
     open_tab: "➕",
+    close_tab: "✖️",
     view_image: "👁️",
     filter_images: "🖼️",
     screenshot: "📸",
@@ -1276,11 +1281,16 @@ const TOOL_LABELS = {
   fill_form: "Filling in the form",
   press_key: "Pressing a key",
   hover: "Hovering",
+  wait_for: "Waiting",
+  find_in_page: "Searching the page",
+  drag: "Dragging",
+  upload_file: "Uploading a file",
   scroll: "Scrolling",
   navigate: "Navigating",
   list_tabs: "Listing open tabs",
   switch_tab: "Switching tabs",
   open_tab: "Opening a new tab",
+  close_tab: "Closing a tab",
   read_tabs: "Reading tabs",
   extract_table: "Extracting a table",
   view_image: "Looking at an image",
@@ -1978,18 +1988,27 @@ function handleBatchDone(event, isReplay = false) {
 
 function summarizeInput(name, input) {
   if (!input || Object.keys(input).length === 0) return "";
-  if (name === "type_text") return `"${input.text || ""}" → ${input.element_id || ""}`;
-  if (name === "click") return input.element_id || "";
+  if (name === "type_text") return `"${input.text || ""}" → ${input.element_id || input.element_text || ""}`;
+  if (name === "click") {
+    const target = input.element_id || input.element_text || (typeof input.x === "number" ? `(${input.x}, ${input.y})` : "");
+    const prefix = input.click_type === "double" ? "double-click " : input.click_type === "right" ? "right-click " : "";
+    return prefix ? `${prefix}${target}` : target;
+  }
   if (name === "select_option") return `${(input.values || []).join(", ")} → ${input.element_id || ""}`;
   if (name === "fill_form") return `${(input.fields || []).length} field${(input.fields || []).length === 1 ? "" : "s"}`;
   if (name === "press_key") return `${input.key || ""}${input.element_id ? ` → ${input.element_id}` : ""}`;
   if (name === "hover") return input.element_id || "";
+  if (name === "wait_for") return input.text ? `"${input.text}" appears` : input.text_gone ? `"${input.text_gone}" gone` : "";
+  if (name === "find_in_page") return input.text || input.regex || "";
+  if (name === "drag") return `${input.from_element_id || ""} → ${input.to_element_id || ""}`;
+  if (name === "upload_file") return `${input.attachment_id || ""} → ${input.element_id || ""}`;
   if (name === "navigate") return input.url || "";
   if (name === "recall_page") return input.url || "";
   if (name === "read_attachment_chunk") return `chunk ${input.chunk_index} of ${input.attachment_id || "attachment"}`;
   if (name === "scroll") return input.to === "bottom" ? "to bottom" : input.direction || "";
   if (name === "switch_tab") return `tab ${input.tab_id}`;
   if (name === "open_tab") return input.url || "";
+  if (name === "close_tab") return `tab ${input.tab_id}`;
   if (name === "read_tabs") return `${(input.tab_ids || []).length} tabs`;
   if (name === "extract_table") return input.table_id || "";
   if (name === "view_image") return input.image_id || "";
@@ -2025,6 +2044,12 @@ function summarizeResult(name, result, input) {
   }
   if (name === "extract_table" && result.rows) {
     return `Extracted ${result.row_count} row${result.row_count === 1 ? "" : "s"}${result.truncated ? ` (of ${result.total_rows} total, truncated)` : ""}.`;
+  }
+  if (name === "find_in_page" && result.matches) {
+    return `Found ${result.matches.length} match${result.matches.length === 1 ? "" : "es"}${result.truncated ? " (truncated)" : ""}.`;
+  }
+  if (name === "wait_for") {
+    return result.found ? "Condition met." : "Timed out waiting.";
   }
   if ((name === "view_image" || name === "screenshot") && result.description) {
     return result.description;

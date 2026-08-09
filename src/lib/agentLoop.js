@@ -6,9 +6,12 @@
 import { callProvider, describeImage, classifyImages } from "./providers.js";
 import { buildSystemPrompt } from "./tools.js";
 import { detectSiteCategory, hostnameOf } from "./siteCategories.js";
-import { getMediaRequests } from "./mediaSniffer.js";
+import { getMediaRequests, drainFailedRequests } from "./mediaSniffer.js";
+import { getLastNavError } from "./navErrors.js";
+import { looksVisionCapable } from "./vision.js";
+import { dispatchTrustedClick } from "./trustedInput.js";
 import { recordPageRead, recallPage, isUrlCached } from "./pageCache.js";
-import { getChunk, recordAttachment, chunkText } from "./attachmentCache.js";
+import { getChunk, getFullAttachment, recordAttachment, chunkText } from "./attachmentCache.js";
 
 const MAX_STEPS = 20;
 const TAB_LOAD_TIMEOUT_MS = 15000;
@@ -104,7 +107,7 @@ const COMPACTABLE_TOOLS = new Set(["read_page", "list_tabs", "read_attachment_ch
 // scan" slot and are tracked under one key. Without this, the most frequently
 // called tools in the loop would be the ones never compacted.
 const PAGE_EMBEDDING_TOOLS = new Set([
-  "click", "type_text", "navigate", "select_option", "fill_form", "press_key", "hover", "scroll", "switch_tab", "open_tab",
+  "click", "type_text", "navigate", "select_option", "fill_form", "press_key", "hover", "wait_for", "drag", "upload_file", "scroll", "switch_tab", "open_tab",
 ]);
 const PAGE_SCAN_KEY = "read_page";
 const COMPACT_MIN_LENGTH = 200;
@@ -213,6 +216,24 @@ export function compactHistory(history, cacheEnabled) {
       }
       block.content = JSON.stringify({ ok: true, note: `[Earlier ${name} result omitted to save context - ${pointer}.]` });
     });
+  });
+
+  // screenshot's image rides alongside its tool_result as a bare `image`
+  // block (see runAgentTask), not inside block.content, so the passes above
+  // never touch it. Same "keep only the freshest" treatment as everything
+  // else here — the model's own next turn of text already captured whatever
+  // it concluded from looking at it, so the raw pixels aren't needed again.
+  // Never touches a real user-attached image (no `ephemeral` flag on those).
+  let lastEphemeralImageKey = null;
+  history.forEach((turn, ti) => {
+    if (turn.role !== "user") return;
+    (turn.content || []).forEach((block, bi) => {
+      if (block.type === "image" && block.ephemeral) lastEphemeralImageKey = `${ti}:${bi}`;
+    });
+  });
+  history.forEach((turn, ti) => {
+    if (turn.role !== "user") return;
+    turn.content = (turn.content || []).filter((block, bi) => !block.ephemeral || `${ti}:${bi}` === lastEphemeralImageKey);
   });
 }
 
@@ -448,6 +469,30 @@ async function readEditorText(tabId, frameId) {
   }
 }
 
+// console.error/warn/onerror/unhandledrejection AND alert/confirm/prompt are
+// wrapped in the page's MAIN world by consoleCapture.js - same world:"MAIN"
+// bridge readEditorText above uses, for the same reason (see its comment).
+// Drains (not just reads) both buffers, so an event isn't re-reported on
+// every subsequent read_page once already seen; one round trip covers both.
+async function readCapturedEvents(tabId, frameId) {
+  try {
+    const [injected] = await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [frameId] },
+      world: "MAIN",
+      func: () => {
+        const consoleEntries = window.__tabAgentConsoleBuffer || [];
+        const dialogEntries = window.__tabAgentDialogBuffer || [];
+        window.__tabAgentConsoleBuffer = [];
+        window.__tabAgentDialogBuffer = [];
+        return { consoleEntries, dialogEntries };
+      },
+    });
+    return injected?.result || { consoleEntries: [], dialogEntries: [] };
+  } catch {
+    return { consoleEntries: [], dialogEntries: [] }; // restricted page, frame gone, no scripting access — the normal scan still stands
+  }
+}
+
 async function readPage(ctx, tabId, frameId = 0, shouldStop) {
   let tab;
   try {
@@ -461,20 +506,28 @@ async function readPage(ctx, tabId, frameId = 0, shouldStop) {
 
   const inject = await ensureContentScript(tabId, frameId, shouldStop);
   if (!inject.ok) {
+    // See lib/navErrors.js for why this exists. It only ever tracks the
+    // TOP-LEVEL frame (frameId 0) - for an iframe-targeted read (frame_id
+    // from list_frames), a stale top-level error would misattribute an
+    // unrelated iframe failure to it, so this only applies to the main frame.
+    const navError = frameId === 0 ? getLastNavError(tabId) : null;
     return {
       ok: false,
-      error: `Could not run on this page: ${inject.error}. This usually means the page/frame is restricted (Chrome Web Store, chrome://, a PDF viewer, etc.), no longer exists, or hasn't finished loading yet.`,
+      error: navError
+        ? `Navigation to this page failed (${navError.error}) — the browser's own network-error page is showing instead of real content. Don't retry the same URL; try a different one or ask the user.`
+        : `Could not run on this page: ${inject.error}. This usually means the page/frame is restricted (Chrome Web Store, chrome://, a PDF viewer, etc.), no longer exists, or hasn't finished loading yet.`,
     };
   }
 
   const res = await sendToTab(tabId, { type: "SCAN" }, frameId, shouldStop);
   if (!res.ok) return { ok: false, error: res.error || "Failed to read page." };
 
-  const { url, title, elements, images, tables, bodyText, metaCategory, pdf, editorHint } = res.data;
+  const { url, title, elements, images, tables, iframes, bodyText, metaCategory, pdf, editorHint } = res.data;
 
   // Only pay the extra round trip on a page that actually has an editor -
   // content.js reports that from its class name, which IS plain DOM.
   const editor = editorHint ? await readEditorText(tabId, frameId) : null;
+  const { consoleEntries, dialogEntries } = await readCapturedEvents(tabId, frameId);
   // Appended rather than returned separately so it flows through the existing
   // chunk/recall/compaction machinery unchanged.
   const pageText = editor
@@ -554,6 +607,30 @@ async function readPage(ctx, tabId, frameId = 0, shouldStop) {
   }
   if (notes.length) out.filter_note = notes.join(" ");
   if (metaCategory) out.meta_category = metaCategory;
+  // Turns "remember to check list_frames on every page just in case" into an
+  // in-result signal, same philosophy as filter_note/collapsed_filter_sections.
+  if (iframes?.length) {
+    out.iframes = iframes;
+    out.iframe_note = `This page has ${iframes.length} iframe${iframes.length === 1 ? "" : "s"} (see iframes) that may hold content this scan can't see — call list_frames to get its frame_id, then pass that to read_page/click/type_text to target it directly.`;
+  }
+  // A page whose SPA threw and died looks "unchanged" (page_changed: false
+  // forever) with nothing to distinguish it from a click that genuinely did
+  // nothing — this and the one below are what turn "my click did nothing"
+  // into "the page is actually broken."
+  if (consoleEntries.length) {
+    out.console_note = `Recent console errors/warnings on this page: ${consoleEntries.map((e) => `[${e.level}] ${e.message}`).join(" | ")}`;
+  }
+  // A page's alert()/confirm()/prompt() is auto-resolved (confirm→OK,
+  // prompt→cancelled) before it can freeze the run — see consoleCapture.js.
+  // Telling the model this happened matters: an auto-accepted confirm may
+  // have just triggered something (a delete, a leave-page) it didn't intend.
+  if (dialogEntries.length) {
+    out.dialog_note = `This page showed ${dialogEntries.length} native dialog(s), auto-resolved so the run wouldn't freeze waiting for a human to click them: ${dialogEntries.map((d) => `${d.kind}("${d.message}")`).join(" | ")}. A confirm() was auto-accepted (OK) and a prompt() was auto-cancelled — if the page's behavior now looks unexpected, this is likely why.`;
+  }
+  const failedRequests = drainFailedRequests(tabId);
+  if (failedRequests.length) {
+    out.failed_requests = failedRequests.map((r) => ({ url: r.url, method: r.method, status: r.status }));
+  }
 
   // Record this hostname for parallel_investigate's dedup, so a site the main
   // loop already worked through by hand can't be handed to a branch that redoes
@@ -722,10 +799,6 @@ async function fetchImageAsAttachment(url) {
 // part of the conversation, so only the vision model's text description is
 // kept around, not the pixels themselves.
 async function takeScreenshot(ctx) {
-  if (!ctx.visionConfig) {
-    return { ok: false, error: "No vision model is configured. Open Settings → Vision model to pick one, then try again." };
-  }
-
   let tab;
   try {
     tab = await chrome.tabs.get(ctx.tabId);
@@ -734,6 +807,17 @@ async function takeScreenshot(ctx) {
   }
   if (!tab.active) {
     return { ok: false, error: "This tab isn't the active/visible one right now, so it can't be captured - switch to it first." };
+  }
+
+  // Checked before capturing (not after) so a run with neither a
+  // vision-capable main model nor a configured Vision fallback errors out
+  // without wasting a captureVisibleTab call on a screenshot nobody can use.
+  const visionCapable = looksVisionCapable(ctx.config?.model);
+  if (!visionCapable && !ctx.visionConfig) {
+    return {
+      ok: false,
+      error: "The active model can't see images directly, and no separate Vision model is configured as a fallback. Open Settings → Vision model to pick one, then try again.",
+    };
   }
 
   let dataUrl;
@@ -745,6 +829,16 @@ async function takeScreenshot(ctx) {
   const match = (dataUrl || "").match(/^data:([^;]+);base64,(.*)$/);
   if (!match) return { ok: false, error: "Screenshot capture returned an unexpected format." };
   const [, mediaType, data] = match;
+
+  // When the model actually driving this run can see images itself, hand it
+  // the real pixels instead of a description from a separately-configured
+  // vision model — no detail lost in translation, and no extra config
+  // needed. _screenshotImage is a signal to the main loop only (see
+  // runAgentTask for what it does with it) — never round-trips through
+  // JSON.stringify itself.
+  if (visionCapable) {
+    return { ok: true, note: "Screenshot captured — see the attached image.", _screenshotImage: { mediaType, data } };
+  }
 
   try {
     const description = await describeImage(ctx.visionConfig, { mediaType, data }, ctx.shouldStop);
@@ -888,20 +982,23 @@ async function readTabs(ctx, input) {
   return { ok: true, tabs: results };
 }
 
+// Resolves { timedOut } instead of nothing — callers used to report ok: true
+// on a page that never finished loading, indistinguishable from a real
+// success. See navigate/openTab below, which fold timedOut into their note.
 function waitForTabLoad(tabId, timeoutMs = TAB_LOAD_TIMEOUT_MS) {
   return new Promise((resolve) => {
     let done = false;
-    const finish = () => {
+    const finish = (timedOut) => {
       if (done) return;
       done = true;
       chrome.tabs.onUpdated.removeListener(listener);
-      resolve();
+      resolve({ timedOut });
     };
     const listener = (id, changeInfo) => {
-      if (id === tabId && changeInfo.status === "complete") finish();
+      if (id === tabId && changeInfo.status === "complete") finish(false);
     };
     chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(finish, timeoutMs);
+    setTimeout(() => finish(true), timeoutMs);
   });
 }
 
@@ -982,39 +1079,64 @@ async function switchTab(ctx, input) {
   return attachPageState(ctx, { ok: true, tab_id: tabId, previous_tab_id: previousTabId }, 0, true);
 }
 
+// Shared by openTab and the navigate case below: both wait out the load,
+// then diagnose the same three ways (still loading, landed on a restricted
+// page, landed on a real net-error page) and only differ in whose tab it is,
+// what extra fields go in the result, and how the note is worded. A
+// duplicate copy of this exact merge logic (navError > inject-failure >
+// loadNote, filter+join) is what these replaced.
+async function landedOnPage(ctx, tabId, restrictedPrefix, injectFailPrefix, extraFields) {
+  const loadResult = await waitForTabLoad(tabId);
+  const loadNote = loadResult.timedOut ? "Page was still loading after 15s — content may be incomplete." : null;
+
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  const restricted = restrictedReason(tab?.url);
+  if (restricted) {
+    return { ok: true, ...extraFields, note: [`${restrictedPrefix}: ${restricted}`, loadNote].filter(Boolean).join(" ") };
+  }
+  const inject = await ensureContentScript(tabId, 0, ctx.shouldStop);
+  const navError = !inject.ok ? getLastNavError(tabId) : null;
+  return attachPageState(
+    ctx,
+    {
+      ok: true,
+      ...extraFields,
+      note:
+        [
+          navError
+            ? `Navigation failed: ${navError.error} — the browser's own network-error page is showing, not real content.`
+            : inject.ok ? null : `${injectFailPrefix}: ${inject.error}`,
+          loadNote,
+        ]
+          .filter(Boolean)
+          .join(" ") || undefined,
+    },
+    0,
+    inject.ok
+  );
+}
+
 async function openTab(ctx, input) {
   if (!input.url) return { ok: false, error: "url is required." };
   const previousTabId = ctx.tabId;
   let tab;
   try {
-    tab = await chrome.tabs.create({ url: input.url, active: true });
+    tab = await chrome.tabs.create({ url: input.url, active: !input.background });
   } catch (err) {
     return { ok: false, error: `Could not open tab: ${err.message || err}` };
   }
-  await waitForTabLoad(tab.id);
   ctx.tabId = tab.id;
   // Tracked so the main loop can offer to close these once the whole task
   // genuinely ends (see runAgentTask's openedTabIds return + background.js's
   // drive()) — mirrors the same "only close tabs we opened" safeguard
   // parallel_investigate branches already use, just scoped to the main loop.
   ctx.openedTabIds?.add(tab.id);
-
-  const refreshed = await chrome.tabs.get(tab.id).catch(() => tab);
-  const restricted = restrictedReason(refreshed?.url);
-  if (restricted) {
-    return { ok: true, tab_id: tab.id, previous_tab_id: previousTabId, note: `Opened, but landed on a restricted page: ${restricted}` };
-  }
-  const inject = await ensureContentScript(tab.id, 0, ctx.shouldStop);
-  return attachPageState(
+  return landedOnPage(
     ctx,
-    {
-      ok: true,
-      tab_id: tab.id,
-      previous_tab_id: previousTabId,
-      note: inject.ok ? undefined : `Opened, but couldn't run on this page: ${inject.error}`,
-    },
-    0,
-    inject.ok
+    tab.id,
+    "Opened, but landed on a restricted page",
+    "Opened, but couldn't run on this page",
+    { tab_id: tab.id, previous_tab_id: previousTabId }
   );
 }
 
@@ -1110,8 +1232,8 @@ function isRiskyText(text) {
 // A missing elementId is meaningful, not a skip: press_key without one fires
 // at the focused element, so content.js resolves that (and answers "no
 // element" when nothing is focused, which lands on the !res.ok path below).
-async function checkRiskyAction(ctx, elementId, frameId = 0) {
-  const res = await sendToTab(ctx.tabId, { type: "GET_ELEMENT_TEXT", id: elementId }, frameId, ctx.shouldStop);
+async function checkRiskyAction(ctx, elementId, frameId = 0, targetText, targetTag, x, y) {
+  const res = await sendToTab(ctx.tabId, { type: "GET_ELEMENT_TEXT", id: elementId, targetText, targetTag, x, y }, frameId, ctx.shouldStop);
   if (!res.ok) return null; // can't resolve the element — let the normal click path surface that error instead
   const text = res.data?.text || "";
   return isRiskyText(text) ? text : null;
@@ -1122,12 +1244,64 @@ async function checkRiskyAction(ctx, elementId, frameId = 0) {
 // the form's submit button text too, alongside the field's own text above,
 // so a risky form submission via Enter/requestSubmit doesn't slip past the
 // same confirm gate that already covers risky clicks.
-async function checkRiskySubmitContext(ctx, elementId, frameId = 0) {
+async function checkRiskySubmitContext(ctx, elementId, frameId = 0, targetText, targetTag) {
   // Missing elementId falls back to the focused element — see checkRiskyAction.
-  const res = await sendToTab(ctx.tabId, { type: "GET_SUBMIT_CONTEXT", id: elementId }, frameId, ctx.shouldStop);
+  const res = await sendToTab(ctx.tabId, { type: "GET_SUBMIT_CONTEXT", id: elementId, targetText, targetTag }, frameId, ctx.shouldStop);
   if (!res.ok) return null;
   const text = res.data?.text || "";
   return isRiskyText(text) ? text : null;
+}
+
+// Shared refusal shape for the risky-action confirmation gate - click,
+// type_text (on submit), press_key (on Enter), and drag (on its drop
+// target) each detect risk their own way, but all refuse identically.
+function riskyActionRefusal(leadIn, riskyText, retryAs) {
+  return {
+    ok: false,
+    requires_confirmation: true,
+    error: `${leadIn} ("${riskyText.slice(0, 80)}"). Use ask_user to confirm with the user first, then retry this exact ${retryAs} with confirmed: true.`,
+  };
+}
+
+// See lib/trustedInput.js for why this exists. Only called once the normal
+// click already came back page_changed: false AND the user opted in via
+// Settings — and only for the main frame (frameId 0), since CDP's
+// coordinates are main-frame-viewport-relative and retrying an
+// iframe-targeted click here would dispatch at the wrong point.
+async function retryClickTrusted(ctx, elementId, targetText, targetTag) {
+  const tabBefore = await chrome.tabs.get(ctx.tabId).catch(() => null);
+  const rectRes = await sendToTab(ctx.tabId, { type: "GET_ELEMENT_RECT", id: elementId, targetText, targetTag }, 0, ctx.shouldStop);
+  if (!rectRes.ok) return null; // element vanished/ambiguous between the two calls — let the original result stand
+  const beforeRes = await sendToTab(ctx.tabId, { type: "PAGE_SIGNATURE" }, 0, ctx.shouldStop);
+  if (!beforeRes.ok) return null;
+
+  // rectRes's (cx, cy) were resolved against whatever page was loaded a
+  // moment ago - if something navigated the tab in between (unrelated to
+  // this retry), they now point at unrelated content on a different page.
+  // Dispatching a TRUSTED click there is worse than a no-op would be, so
+  // bail rather than risk it landing on something real but unintended.
+  const tabNow = await chrome.tabs.get(ctx.tabId).catch(() => null);
+  if (!tabNow || !tabBefore || tabNow.url !== tabBefore.url) return null;
+
+  const dispatch = await dispatchTrustedClick(ctx.tabId, rectRes.cx, rectRes.cy);
+  if (!dispatch.ok) {
+    return { page_changed: false, note: `Also tried a trusted-input retry (chrome.debugger), which failed: ${dispatch.error}` };
+  }
+  // Same settle-poll machinery doClick uses for its own before/after check
+  // (not a flat sleep) - a fixed wait here previously mis-reported a page
+  // that genuinely takes 500ms+ to render (the exact bug class
+  // SETTLE_FIRST_CHANGE_MS exists to catch) as "trusted click also had no
+  // effect."
+  const afterRes = await sendToTab(ctx.tabId, { type: "WAIT_FOR_SETTLE", baseline: beforeRes.signature }, 0, ctx.shouldStop);
+  if (!afterRes.ok) return null;
+
+  const changed = beforeRes.signature !== afterRes.signature;
+  return {
+    page_changed: changed,
+    note: changed
+      ? "The normal click had no effect, but a trusted-input retry (chrome.debugger) did — this site likely checks event.isTrusted."
+      : "Also retried with trusted input (chrome.debugger) — still no effect. This element genuinely isn't responding.",
+  };
 }
 
 // Guards against the model clicking/typing into the exact same element
@@ -1188,9 +1362,21 @@ function checkRepeatedAction(ctx, name, input) {
   const noProgress = checkNoProgress(ctx);
   if (noProgress) return noProgress;
 
+  // A text-targeted click/type_text (see resolveTarget in content.js) has no
+  // element_id, and a coordinate click (click only) has neither — falling
+  // back to just element_id here would collapse every DIFFERENT text- or
+  // coordinate-targeted call into the same signature and false-positive the
+  // repeat guard on the very first two unrelated calls.
+  const target = input.element_id
+    ? `id:${input.element_id}`
+    : input.element_text
+      ? `text:${input.element_text}:${input.element_tag || ""}`
+      : typeof input.x === "number"
+        ? `xy:${input.x},${input.y}`
+        : "unknown";
   const sig =
-    name === "click" ? `click:${input.element_id}`
-    : name === "type_text" ? `type:${input.element_id}:${input.text}:${input.per_key ? "perkey" : ""}`
+    name === "click" ? `click:${target}:${input.click_type || "left"}`
+    : name === "type_text" ? `type:${target}:${input.text}:${input.per_key ? "perkey" : ""}`
     : name === "select_option" ? `select:${input.element_id}:${(input.values || []).join(",")}`
     : null;
 
@@ -1213,11 +1399,18 @@ function checkRepeatedAction(ctx, name, input) {
   }
 
   const verb = name === "click" ? "clicked" : name === "select_option" ? "selected in" : "typed into";
+  const targetDesc = input.element_id
+    ? `element ${input.element_id}`
+    : input.element_text
+      ? `the element matching "${input.element_text}"`
+      : typeof input.x === "number"
+        ? `the point (${input.x}, ${input.y})`
+        : "that element";
   if (ctx._lastActionNoChangeStreak >= NO_CHANGE_REPEAT_LIMIT) {
     return {
       ok: false,
       error:
-        `You've ${verb} element ${input.element_id} ${ctx._lastActionNoChangeStreak + 1} times in a row and the page ` +
+        `You've ${verb} ${targetDesc} ${ctx._lastActionNoChangeStreak + 1} times in a row and the page ` +
         `hasn't changed at all (page_changed: false each time) - this action is not working, and repeating it again ` +
         `won't help. Re-read the page fresh (it may need a moment to load, or you may have the wrong element - an ` +
         `icon's clickable wrapper is often a different id than the icon itself), try a different element, use ` +
@@ -1227,7 +1420,7 @@ function checkRepeatedAction(ctx, name, input) {
   if (ctx._lastActionRawStreak >= RAW_REPEAT_LIMIT) {
     return {
       ok: false,
-      error: `You've ${verb} element ${input.element_id} ${ctx._lastActionRawStreak + 1} times in a row. Stop repeating this exact action - re-read the page, try something different, or ask_user for guidance.`,
+      error: `You've ${verb} ${targetDesc} ${ctx._lastActionRawStreak + 1} times in a row. Stop repeating this exact action - re-read the page, try something different, or ask_user for guidance.`,
     };
   }
   return null;
@@ -1384,6 +1577,9 @@ const SUB_AGENT_ALLOWED_TOOLS = new Set([
   "fill_form",
   "press_key",
   "hover",
+  "wait_for",
+  "find_in_page",
+  "drag",
   "scroll",
   "navigate",
   "extract_table",
@@ -1403,10 +1599,19 @@ const SUB_AGENT_ALLOWED_TOOLS = new Set([
 // leak tabs silently.
 const TAB_TOOLS = new Set(["open_tab", "switch_tab"]);
 
+// Single source for "what can a sub-agent call, spelled out as names" - used
+// both in its own system prompt (so it's actually told these tools exist,
+// not just able to see their schemas) and in the "you called something
+// disallowed, here's what IS available" error below. A hardcoded copy of
+// this list drifted out of sync with SUB_AGENT_ALLOWED_TOOLS three times in
+// one sitting before this existed - deriving it removes that failure mode
+// entirely rather than relying on remembering to update every copy.
+function subAgentToolNames(allowTabTools) {
+  return [...SUB_AGENT_ALLOWED_TOOLS, ...(allowTabTools ? TAB_TOOLS : [])];
+}
+
 function subAgentSystemPrompt(objective, roleDescription, allowTabTools = false) {
-  const toolsList = allowTabTools
-    ? "read_page, click, type_text, scroll, navigate, extract_table, view_image, filter_images, open_tab, switch_tab, and finish"
-    : "read_page, click, type_text, scroll, navigate, extract_table, view_image, filter_images, and finish";
+  const toolsList = `${subAgentToolNames(allowTabTools).join(", ")}, and finish`;
   const tabToolsGuidance = allowTabTools
     ? `If you've applied filters/search on a listing page and now need to check several individual results one at a ` +
       `time, use open_tab to open each result in a NEW tab rather than clicking into it on this same tab — clicking ` +
@@ -1606,9 +1811,7 @@ async function runSubLoop({ ctx, objective, maxSteps, config, system, onStep, ga
       const isAllowedHere = SUB_AGENT_ALLOWED_TOOLS.has(call.name) || (ctx.allowTabTools && TAB_TOOLS.has(call.name));
       if (!isAllowedHere) {
         const isFanOut = call.name === "parallel_investigate" || call.name === "run_batch";
-        const allowedList = ctx.allowTabTools
-          ? "read_page/click/type_text/scroll/navigate/extract_table/view_image/filter_images/open_tab/switch_tab/recall_page/read_attachment_chunk/read_page_chunk"
-          : "read_page/click/type_text/scroll/navigate/extract_table/view_image/filter_images/recall_page/read_attachment_chunk/read_page_chunk";
+        const allowedList = subAgentToolNames(ctx.allowTabTools).join("/");
         toolResult = {
           ok: false,
           error: isFanOut
@@ -1693,7 +1896,10 @@ async function runOneBranch(ctx, task, label, config, callId) {
     }
     tabId = tab.id;
     openedByUs = true;
-    await waitForTabLoad(tabId);
+    const loadResult = await waitForTabLoad(tabId);
+    if (loadResult.timedOut && ctx.onEvent) {
+      ctx.onEvent({ type: "info", message: `${label ? `"${label}"` : "A branch"}'s tab was still loading after 15s — it may see an incomplete page.` });
+    }
   } else {
     return { ok: false, label, error: "Each task needs a url or tab_id." };
   }
@@ -2230,25 +2436,54 @@ async function executeTool(ctx, name, input, callId) {
       const repeatBlock = checkRepeatedAction(ctx, "click", input);
       if (repeatBlock) return repeatBlock;
 
+      const hasCoords = typeof input.x === "number" && typeof input.y === "number";
       if (!input.confirmed) {
-        const riskyText = await checkRiskyAction(ctx, input.element_id, input.frame_id ?? 0);
-        if (riskyText) {
-          return {
-            ok: false,
-            requires_confirmation: true,
-            error: `This looks like a risky/hard-to-undo action ("${riskyText.slice(0, 80)}"). Use ask_user to confirm with the user first, then retry this exact click with confirmed: true.`,
-          };
-        }
+        const riskyText = await checkRiskyAction(ctx, input.element_id, input.frame_id ?? 0, input.element_text, input.element_tag, input.x, input.y);
+        if (riskyText) return riskyActionRefusal("This looks like a risky/hard-to-undo action", riskyText, "click");
       }
       // content.js's doClick already waits for the page to settle and
       // compares a before/after fingerprint before responding, so no extra
       // delay is needed here — page_changed rides along on the response.
       const frameId = input.frame_id ?? 0;
-      const res = await sendToTab(ctx.tabId, { type: "CLICK", id: input.element_id }, frameId, ctx.shouldStop);
+      const res = await sendToTab(
+        ctx.tabId,
+        {
+          type: "CLICK",
+          id: input.element_id,
+          targetText: input.element_text,
+          targetTag: input.element_tag,
+          clickType: input.click_type,
+          modifiers: input.modifiers,
+          x: input.x,
+          y: input.y,
+        },
+        frameId,
+        ctx.shouldStop
+      );
+      // Opt-in fallback tier (see retryClickTrusted) - only for the plain
+      // default left click (not double/right/coordinate - the retry always
+      // dispatches a single trusted left click at resolved element
+      // coordinates, which isn't equivalent to any of those), only on the
+      // main frame, and only once the synthetic click already came back
+      // genuinely inert.
+      if (res.ok && res.page_changed === false && ctx.trustedInputEnabled && frameId === 0 && !input.click_type && !hasCoords) {
+        const retried = await retryClickTrusted(ctx, input.element_id, input.element_text, input.element_tag);
+        if (retried) {
+          res.page_changed = retried.page_changed;
+          res.note = [res.note, retried.note].filter(Boolean).join(" ");
+        }
+      }
       ctx._lastActionNoChange = res.ok && res.page_changed === false;
       if (!res.ok) return { ok: false, error: res.error };
-      // res.note diagnoses a click that did nothing — don't drop it here.
-      return attachPageState(ctx, { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed, note: res.note }, frameId, res.page_changed === true);
+      // res.note diagnoses a click that did nothing; res.element_id (only on
+      // a coordinate click that landed on an already-tagged element) tells
+      // the model what it can address directly next time — don't drop either.
+      return attachPageState(
+        ctx,
+        { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed, note: res.note, element_id: res.element_id },
+        frameId,
+        res.page_changed === true
+      );
     }
 
     case "type_text": {
@@ -2263,15 +2498,9 @@ async function executeTool(ctx, name, input, callId) {
       // form's submit button text before letting a risky submission through.
       if (input.submit && !input.confirmed) {
         const riskyText =
-          (await checkRiskyAction(ctx, input.element_id, input.frame_id ?? 0)) ||
-          (await checkRiskySubmitContext(ctx, input.element_id, input.frame_id ?? 0));
-        if (riskyText) {
-          return {
-            ok: false,
-            requires_confirmation: true,
-            error: `Submitting this looks like a risky/hard-to-undo action ("${riskyText.slice(0, 80)}"). Use ask_user to confirm with the user first, then retry this exact call with confirmed: true.`,
-          };
-        }
+          (await checkRiskyAction(ctx, input.element_id, input.frame_id ?? 0, input.element_text, input.element_tag)) ||
+          (await checkRiskySubmitContext(ctx, input.element_id, input.frame_id ?? 0, input.element_text, input.element_tag));
+        if (riskyText) return riskyActionRefusal("Submitting this looks like a risky/hard-to-undo action", riskyText, "call");
       }
 
       const frameId = input.frame_id ?? 0;
@@ -2283,6 +2512,8 @@ async function executeTool(ctx, name, input, callId) {
           text: input.text,
           submit: !!input.submit,
           perKey: !!input.per_key,
+          targetText: input.element_text,
+          targetTag: input.element_tag,
         },
         frameId,
         ctx.shouldStop
@@ -2332,13 +2563,7 @@ async function executeTool(ctx, name, input, callId) {
         const riskyText =
           (await checkRiskyAction(ctx, input.element_id, frameId)) ||
           (await checkRiskySubmitContext(ctx, input.element_id, frameId));
-        if (riskyText) {
-          return {
-            ok: false,
-            requires_confirmation: true,
-            error: `Pressing Enter here looks like it triggers a risky/hard-to-undo action ("${riskyText.slice(0, 80)}"). Use ask_user to confirm with the user first, then retry this exact call with confirmed: true.`,
-          };
-        }
+        if (riskyText) return riskyActionRefusal("Pressing Enter here looks like it triggers a risky/hard-to-undo action", riskyText, "call");
       }
       const message =
         name === "press_key" ? { type: "PRESS_KEY", key: input.key, id: input.element_id }
@@ -2350,6 +2575,69 @@ async function executeTool(ctx, name, input, callId) {
       // fields are each only set by the tool that produces them.
       const { ok, page_changed, ...rest } = res;
       return attachPageState(ctx, { ok, tab_id: ctx.tabId, page_changed, ...rest }, frameId, page_changed === true);
+    }
+
+    case "wait_for": {
+      const noProgress = checkNoProgress(ctx);
+      if (noProgress) return noProgress;
+      const res = await sendToTab(ctx.tabId, { type: "WAIT_FOR", text: input.text, textGone: input.text_gone, seconds: input.seconds }, 0, ctx.shouldStop);
+      if (!res.ok) return { ok: false, error: res.error };
+      return attachPageState(
+        ctx,
+        { ok: true, tab_id: ctx.tabId, found: res.found, timed_out: res.timed_out, page_changed: res.page_changed },
+        0,
+        res.page_changed === true
+      );
+    }
+
+    case "find_in_page": {
+      const res = await sendToTab(ctx.tabId, { type: "FIND_IN_PAGE", text: input.text, regex: input.regex }, 0, ctx.shouldStop);
+      if (!res.ok) return { ok: false, error: res.error };
+      return { ok: true, tab_id: ctx.tabId, matches: res.matches, truncated: res.truncated };
+    }
+
+    case "upload_file": {
+      // Dormant today (upload_file isn't in SUB_AGENT_ALLOWED_TOOLS, so
+      // ctx.explorationGuard is never true here) but kept consistent with
+      // every other mutating tool so it's already correct if that changes.
+      resetExplorationStreak(ctx);
+      if (!input.element_id || !input.attachment_id) {
+        return { ok: false, error: "element_id and attachment_id are both required." };
+      }
+      if (!ctx.sessionId) {
+        return { ok: false, error: "Attachment lookup isn't available in this run — no session to look it up in." };
+      }
+      const attachment = await getFullAttachment(ctx.sessionId, input.attachment_id).catch(() => null);
+      if (!attachment) {
+        return {
+          ok: false,
+          error: "No cached attachment with that attachment_id — double check it against the note from when the file was attached, or a read_attachment_chunk result. Only text-based attachments (.txt/.md/.csv/.json/etc) can be uploaded this way; PDFs and images can't (only their extracted text/description is retained, not the original file).",
+        };
+      }
+      const frameId = input.frame_id ?? 0;
+      const res = await sendToTab(
+        ctx.tabId,
+        { type: "SET_FILES", id: input.element_id, name: attachment.name, text: attachment.text },
+        frameId,
+        ctx.shouldStop
+      );
+      if (!res.ok) return { ok: false, error: res.error };
+      return attachPageState(ctx, { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed }, frameId, res.page_changed === true);
+    }
+
+    case "drag": {
+      resetExplorationStreak(ctx);
+      if (!input.confirmed) {
+        // Picking something up is safe by itself - the risk lives in where
+        // it LANDS (a kanban "Delete"/"Cancelled" column, a trash dropzone),
+        // so this checks the TO element the same way click checks its own
+        // target, not the element being dragged.
+        const riskyText = await checkRiskyAction(ctx, input.to_element_id, 0);
+        if (riskyText) return riskyActionRefusal("Dropping onto this target looks like a risky/hard-to-undo action", riskyText, "drag");
+      }
+      const res = await sendToTab(ctx.tabId, { type: "DRAG", fromId: input.from_element_id, toId: input.to_element_id }, 0, ctx.shouldStop);
+      if (!res.ok) return { ok: false, error: res.error };
+      return attachPageState(ctx, { ok: true, tab_id: ctx.tabId, page_changed: res.page_changed }, 0, res.page_changed === true);
     }
 
     case "scroll": {
@@ -2409,23 +2697,12 @@ async function executeTool(ctx, name, input, callId) {
       } else {
         await chrome.tabs.update(ctx.tabId, { url: input.url });
       }
-      await waitForTabLoad(ctx.tabId);
-
-      const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
-      const restricted = restrictedReason(tab?.url);
-      if (restricted) {
-        return { ok: true, tab_id: ctx.tabId, note: `Navigated, but landed on a restricted page: ${restricted}` };
-      }
-      const inject = await ensureContentScript(ctx.tabId, 0, ctx.shouldStop);
-      const result = await attachPageState(
+      const result = await landedOnPage(
         ctx,
-        {
-          ok: true,
-          tab_id: ctx.tabId,
-          note: inject.ok ? undefined : `Navigated, but couldn't run on the new page: ${inject.error}`,
-        },
-        0,
-        inject.ok
+        ctx.tabId,
+        "Navigated, but landed on a restricted page",
+        "Navigated, but couldn't run on the new page",
+        { tab_id: ctx.tabId }
       );
       // Proactive cache-hit surfacing (see lib/pageCache.js) — don't rely on
       // the model remembering a prompt rule to check before re-visiting
@@ -2578,6 +2855,28 @@ async function executeTool(ctx, name, input, callId) {
     case "open_tab":
       return openTab(ctx, input);
 
+    case "close_tab": {
+      const closeId = input.tab_id;
+      if (typeof closeId !== "number") return { ok: false, error: "tab_id must be a number from an earlier open_tab result." };
+      // Never a tab the user already had open, and never a branch's own side
+      // tab (ctx.openedTabIds only exists on the main loop's ctx — see its
+      // own comment) — the same "only close tabs we opened" invariant
+      // parallel_investigate branches already enforce for their side tabs.
+      if (!ctx.openedTabIds?.has(closeId)) {
+        return { ok: false, error: `Refused - tab ${closeId} wasn't opened by this run via open_tab (or was already closed). close_tab can never close the user's own tabs.` };
+      }
+      if (closeId === ctx.tabId) {
+        return { ok: false, error: `Refused - tab ${closeId} is the one you're currently acting on. switch_tab to a different tab first, then close this one.` };
+      }
+      try {
+        await chrome.tabs.remove(closeId);
+      } catch (err) {
+        return { ok: false, error: `Could not close tab ${closeId}: ${err.message || err}` };
+      }
+      ctx.openedTabIds.delete(closeId);
+      return { ok: true, closed_tab_id: closeId };
+    }
+
     case "list_frames":
       return listFrames(ctx);
 
@@ -2670,6 +2969,7 @@ export async function runAgentTask({
   initialIncompleteBranchTabIds,
   sessionId,
   pageCacheConfig,
+  trustedInputEnabled,
 }) {
   const system = buildSystemPrompt(agentContext);
   const granted = grantedDomains || new Set();
@@ -2738,6 +3038,12 @@ export async function runAgentTask({
     // cached copy — the whole point of running it again.
     sessionId,
     pageCacheConfig,
+    // Deliberately main-loop only (never set on branchCtx/batchCtx) - the
+    // chrome.debugger retry tier (see retryClickTrusted) is an opt-in extra,
+    // not something branches need to function; scoping it here keeps its
+    // footprint (and the visible "being debugged" infobar risk) as narrow
+    // as possible.
+    trustedInputEnabled: !!trustedInputEnabled,
   };
   let history;
 
@@ -2807,7 +3113,13 @@ export async function runAgentTask({
   // one assignment here covers every step this run adds tokens for.
   const usage = { inputTokens: 0, outputTokens: 0, model: config.model, provider: config.provider };
 
-  for (let step = 1; step <= maxSteps; step += 1) {
+  // Declared outside the loop (not `for (let step ...)`) so the normal-finish
+  // return below can report the real step count instead of history.length,
+  // which counts conversation turns (~2x steps + 1) — every other return
+  // path in this function already uses `step`/`step - 1`; this was the one
+  // that didn't.
+  let step;
+  for (step = 1; step <= maxSteps; step += 1) {
     if (shouldStop()) {
       await onEvent({ type: "stopped" });
       return { finalAnswer: finalAnswer ?? "Stopped by user.", success: false, stepsUsed: step - 1, history, alreadyShown: true, usage, tabId: ctx.tabId, openedTabIds: Array.from(openedTabIds), incompleteBranchTabIds: Array.from(incompleteBranchTabIds.values()) };
@@ -2950,12 +3262,28 @@ export async function runAgentTask({
       } catch (err) {
         toolResult = { ok: false, error: String(err.message || err) };
       }
+      // screenshot's raw pixels (see takeScreenshot) are pulled out before
+      // stringifying, so the base64 bytes aren't ALSO duplicated inside the
+      // JSON tool_result content — they go in as their own image block in
+      // this same turn instead. Both provider adapters already know how to
+      // place a bare image block alongside tool_results in one user turn
+      // (toOpenAIMessages splits it into a trailing message; Anthropic's API
+      // accepts it inline after the tool_result blocks).
+      const screenshotImage = toolResult._screenshotImage;
+      if (screenshotImage) delete toolResult._screenshotImage;
       await onEvent({ type: "tool_result", step, id: call.id, name: call.name, input: call.input, result: toolResult });
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: call.id,
         content: JSON.stringify(toolResult),
       });
+      if (screenshotImage) {
+        toolResultBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: screenshotImage.mediaType, data: screenshotImage.data },
+          ephemeral: true, // compactHistory keeps only the newest of these — see its own comment
+        });
+      }
 
       // Gate check #2: the URL-based check above didn't catch this site, but
       // its own read_page scan just revealed a self-rating (RTA meta tag).
@@ -3039,5 +3367,5 @@ export async function runAgentTask({
     };
   }
 
-  return { finalAnswer, success, stepsUsed: history.length, history, alreadyShown, usage, tabId: ctx.tabId, openedTabIds: Array.from(openedTabIds), incompleteBranchTabIds: Array.from(incompleteBranchTabIds.values()) };
+  return { finalAnswer, success, stepsUsed: step, history, alreadyShown, usage, tabId: ctx.tabId, openedTabIds: Array.from(openedTabIds), incompleteBranchTabIds: Array.from(incompleteBranchTabIds.values()) };
 }

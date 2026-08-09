@@ -13,6 +13,7 @@ import { runAgentTask, resumeBranch } from "./lib/agentLoop.js";
 import { describeImage, summarizeHistory } from "./lib/providers.js";
 import { looksVisionCapable } from "./lib/vision.js";
 import { startMediaSniffer } from "./lib/mediaSniffer.js";
+import { startNavErrorTracking } from "./lib/navErrors.js";
 import { deleteCacheForSession, DEFAULT_MAX_ENTRIES as PAGE_CACHE_DEFAULT_MAX_ENTRIES } from "./lib/pageCache.js";
 import { recordAttachment, deleteCacheForSession as deleteAttachmentCacheForSession } from "./lib/attachmentCache.js";
 
@@ -20,6 +21,7 @@ import { recordAttachment, deleteCacheForSession as deleteAttachmentCacheForSess
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
 // to be registered during the worker's initial evaluation.
 startMediaSniffer();
+startNavErrorTracking();
 
 const MAX_SESSIONS = 30;
 
@@ -236,6 +238,24 @@ const DEFAULT_PAGE_CACHE = { enabled: true, maxEntries: PAGE_CACHE_DEFAULT_MAX_E
 async function getPageCacheConfig() {
   const { pageCache = {} } = await chrome.storage.local.get(["pageCache"]);
   return { ...DEFAULT_PAGE_CACHE, ...pageCache };
+}
+
+// Off by default - the chrome.debugger trusted-input fallback (see
+// lib/trustedInput.js) shows Chrome's own "being debugged" infobar on the
+// tab while it's attached, so this is opt-in only. options.js requests/
+// removes the actual "debugger" optional permission when this toggle is
+// flipped; this just reads the user's stated preference.
+async function getTrustedInputEnabled() {
+  const { trustedInputFallback } = await chrome.storage.local.get(["trustedInputFallback"]);
+  if (!trustedInputFallback?.enabled) return false;
+  // The user can revoke the optional "debugger" permission directly from
+  // chrome://extensions without ever touching the Settings toggle -
+  // options.js only reconciles storage back to false when Options happens
+  // to be reopened, so check the ACTUAL grant here too. Otherwise every
+  // click retry after a revoke attempts (and fails) a doomed attach until
+  // then, instead of just skipping the retry like it would if storage were
+  // accurate.
+  return chrome.permissions.contains({ permissions: ["debugger"] });
 }
 
 // --- vision fallback -----------------------------------------------------
@@ -1067,6 +1087,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const grantedDomains = await getGrantedDomains();
       const limits = await getLimits();
       const pageCacheConfig = await getPageCacheConfig();
+      const trustedInputEnabled = await getTrustedInputEnabled();
 
       await drive(session, newNode, {
         tabId,
@@ -1079,6 +1100,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         grantedDomains,
         limits,
         pageCacheConfig,
+        trustedInputEnabled,
         onEvent: (event) => persistAgentEvent(session, newNode, event),
       });
     })();
@@ -1122,6 +1144,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const grantedDomains = await getGrantedDomains();
       const limits = await getLimits();
       const pageCacheConfig = await getPageCacheConfig();
+      const trustedInputEnabled = await getTrustedInputEnabled();
 
       await drive(session, node, {
         tabId,
@@ -1133,6 +1156,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         grantedDomains,
         limits,
         pageCacheConfig,
+        trustedInputEnabled,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();
@@ -1252,6 +1276,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const grantedDomains = await getGrantedDomains();
       const limits = await getLimits();
       const pageCacheConfig = await getPageCacheConfig();
+      const trustedInputEnabled = await getTrustedInputEnabled();
 
       await drive(session, node, {
         tabId,
@@ -1263,6 +1288,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         grantedDomains,
         limits,
         pageCacheConfig,
+        trustedInputEnabled,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();
@@ -1318,6 +1344,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
       const limits = await getLimits();
       const pageCacheConfig = await getPageCacheConfig();
+      const trustedInputEnabled = await getTrustedInputEnabled();
 
       // Both the pre-run and mid-run gate already left history in a clean,
       // nothing-pending state (see lib/agentLoop.js) — resuming either one is
@@ -1332,6 +1359,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         grantedDomains,
         limits,
         pageCacheConfig,
+        trustedInputEnabled,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();

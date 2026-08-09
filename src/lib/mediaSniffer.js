@@ -58,6 +58,45 @@ function getContentType(responseHeaders) {
 // stale links from before the restart.
 const buffersByTab = new Map();
 
+// A separate small ring buffer of failed/non-2xx XHR/fetch requests per tab —
+// "the filter XHR returned 500", "the search API 429'd" today surface as
+// nothing but "page didn't change". webRequest only gives status-level facts
+// (no response bodies without chrome.debugger), which is enough to tell the
+// model WHY nothing happened instead of leaving it to guess.
+const MAX_FAILED_PER_TAB = 20;
+const failedRequestsByTab = new Map();
+
+export function recordFailedRequest(tabId, entry) {
+  if (typeof tabId !== "number" || tabId < 0) return;
+  let list = failedRequestsByTab.get(tabId);
+  if (!list) {
+    list = [];
+    failedRequestsByTab.set(tabId, list);
+  }
+  list.unshift(entry);
+  if (list.length > MAX_FAILED_PER_TAB) list.pop();
+}
+
+/**
+ * @param {number} tabId
+ * @returns {Array<{url: string, method: string, status: number, seenAt: number}>}
+ */
+export function getFailedRequests(tabId) {
+  return failedRequestsByTab.get(tabId) || [];
+}
+
+// Same shape as getFailedRequests, but clears the buffer after reading it -
+// readPage uses this (not the plain getter above) so a failure the model has
+// already seen once isn't re-surfaced on every subsequent read_page of the
+// same page, matching how consoleCapture.js's console/dialog buffers are
+// drained. Doesn't lose the "still failing" signal: a genuinely still-broken
+// endpoint generates a fresh entry on its next hit regardless.
+export function drainFailedRequests(tabId) {
+  const list = failedRequestsByTab.get(tabId) || [];
+  failedRequestsByTab.delete(tabId);
+  return list;
+}
+
 // tabId -> hostname of the last top-level navigation we saw. Used to only
 // clear a tab's buffer when it genuinely leaves a site, not on every
 // onCommitted — an agent retrying the same player URL, re-navigating after
@@ -117,6 +156,7 @@ export function getMediaRequests(tabId) {
 
 function clearTabBuffer(tabId) {
   buffersByTab.delete(tabId);
+  failedRequestsByTab.delete(tabId);
   lastHostByTab.delete(tabId);
 }
 
@@ -134,13 +174,16 @@ export function startMediaSniffer() {
 
   chrome.webRequest.onHeadersReceived.addListener(
     (details) => {
-      if (!isMediaRequest({ url: details.url, type: details.type, contentType: getContentType(details.responseHeaders) })) return;
-      recordMediaRequest(details.tabId, {
-        url: details.url,
-        contentType: getContentType(details.responseHeaders),
-        resourceType: details.type,
-        seenAt: Date.now(),
-      });
+      const contentType = getContentType(details.responseHeaders);
+      if (isMediaRequest({ url: details.url, type: details.type, contentType })) {
+        recordMediaRequest(details.tabId, { url: details.url, contentType, resourceType: details.type, seenAt: Date.now() });
+      }
+      // Scoped to xmlhttprequest (covers fetch() too, per Chrome's own
+      // classification) so a normal failed image/script/stylesheet load
+      // doesn't drown out the API-call failures this actually exists to catch.
+      if (details.type === "xmlhttprequest" && details.statusCode >= 400) {
+        recordFailedRequest(details.tabId, { url: details.url, method: details.method, status: details.statusCode, seenAt: Date.now() });
+      }
     },
     { urls: ["<all_urls>"] },
     ["responseHeaders"]
@@ -157,6 +200,7 @@ export function startMediaSniffer() {
     const lastHost = lastHostByTab.get(details.tabId);
     if (host && lastHost && host !== lastHost) {
       buffersByTab.delete(details.tabId);
+      failedRequestsByTab.delete(details.tabId);
     }
     if (host) lastHostByTab.set(details.tabId, host);
     else lastHostByTab.delete(details.tabId);

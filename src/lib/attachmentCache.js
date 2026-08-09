@@ -122,6 +122,19 @@ async function getChunk(sessionId, attachmentId, chunkIndex) {
   };
 }
 
+// Full reconstructed text for a cached attachment — used by the upload_file
+// tool (see lib/agentLoop.js), which needs the WHOLE file to write into a
+// page's <input type="file">, not one chunk at a time the way the model
+// reads it via read_attachment_chunk. Reuses the same storage entry (one
+// read, not a loop of getChunk calls).
+async function getFullAttachment(sessionId, attachmentId) {
+  if (!sessionId || !attachmentId) return null;
+  const key = entryStorageKey(sessionId, attachmentId);
+  const { [key]: content } = await chrome.storage.local.get([key]);
+  if (!content || !Array.isArray(content.chunks)) return null;
+  return { name: content.name, format: content.format, text: content.chunks.join("") };
+}
+
 // Removes every cached attachment for a session - called (alongside
 // pageCache's own deleteCacheForSession) when the chat itself is deleted, so
 // clearing a chat doesn't leave its attachments' full text orphaned in
@@ -133,4 +146,4 @@ async function deleteCacheForSession(sessionId) {
   await chrome.storage.local.remove([storageIndexKey, ...entryKeys]);
 }
 
-export { chunkText, recordAttachment, getChunk, deleteCacheForSession, CHUNK_CHARS, INDEX_PREFIX, ENTRY_PREFIX };
+export { chunkText, recordAttachment, getChunk, getFullAttachment, deleteCacheForSession, CHUNK_CHARS, INDEX_PREFIX, ENTRY_PREFIX };

@@ -132,6 +132,20 @@
         <input id="pageCacheMaxEntries" type="number" min="3" max="100" step="1" />
       </label>
       <p class="hint" id="pageCacheSavedHint"></p>
+
+      <hr />
+      <h2>
+        Trusted input fallback
+        <button type="button" class="info-icon" data-tooltip="When a click's synthetic event gets silently ignored by a site (payment widgets and anti-bot form guards sometimes check event.isTrusted and drop anything else), the agent normally has no way around that. Turning this on lets it retry ONCE through chrome.debugger's real input pipeline, which the page can't tell apart from an actual click - but Chrome shows its own 'being debugged' banner on the tab while that's happening, and this requires granting the debugger permission. Off by default; only turn it on if you're hitting sites where clicks seem to do nothing.">ⓘ</button>
+      </h2>
+      <div class="field-row toggle-row">
+        <span>Enable trusted-input retry (chrome.debugger)</span>
+        <label class="switch">
+          <input id="trustedInputEnabled" type="checkbox" />
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+      <p class="hint" id="trustedInputSavedHint"></p>
     </section>
 
     <section id="tab-privacy" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-privacy" tabindex="0">

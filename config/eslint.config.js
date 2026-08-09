@@ -18,7 +18,7 @@ module.exports = [
 
   // ES module source files (service worker + lib modules that use import/export).
   {
-    files: ["src/background.js", "src/options.js", "src/lib/agentLoop.js", "src/lib/providers.js", "src/lib/tools.js", "src/lib/vision.js", "src/lib/siteCategories.js", "src/lib/mediaSniffer.js", "src/lib/pageCache.js", "src/lib/attachmentCache.js"],
+    files: ["src/background.js", "src/options.js", "src/lib/agentLoop.js", "src/lib/providers.js", "src/lib/tools.js", "src/lib/vision.js", "src/lib/siteCategories.js", "src/lib/mediaSniffer.js", "src/lib/navErrors.js", "src/lib/trustedInput.js", "src/lib/pageCache.js", "src/lib/attachmentCache.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",
@@ -31,7 +31,7 @@ module.exports = [
 
   // Classic (non-module) scripts loaded directly by sidepanel.html/options.html.
   {
-    files: ["src/content.js", "src/sidepanel.js", "src/lib/markdown.js", "src/lib/pricing.js"],
+    files: ["src/content.js", "src/consoleCapture.js", "src/sidepanel.js", "src/lib/markdown.js", "src/lib/pricing.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "script",

@@ -83,3 +83,32 @@ describe("compactHistory with page scans embedded in actions", () => {
     expect(resultAt(h, 2).page).toEqual(PAGE);
   });
 });
+
+describe("compactHistory with screenshot's ephemeral image blocks", () => {
+  const imageBlock = (n, ephemeral = true) => ({ type: "image", source: { type: "base64", media_type: "image/png", data: `img${n}` }, ephemeral });
+
+  test("only the newest ephemeral image block survives", () => {
+    const h = [
+      { role: "assistant", content: [{ type: "tool_use", id: "t0", name: "screenshot" }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t0", content: "{}" }, imageBlock(1)] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t1", name: "screenshot" }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "{}" }, imageBlock(2)] },
+    ];
+    compactHistory(h, false);
+
+    expect(h[1].content.some((b) => b.type === "image")).toBe(false);
+    expect(h[3].content.find((b) => b.type === "image")?.source.data).toBe("img2");
+  });
+
+  test("a real user-attached image (no ephemeral flag) is never stripped", () => {
+    const h = [
+      { role: "user", content: [{ type: "text", text: "look at this" }, imageBlock("attached", false)] },
+      { role: "assistant", content: [{ type: "tool_use", id: "t0", name: "screenshot" }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "t0", content: "{}" }, imageBlock(1)] },
+    ];
+    compactHistory(h, false);
+
+    expect(h[0].content.some((b) => b.type === "image")).toBe(true); // untouched
+    expect(h[2].content.some((b) => b.type === "image")).toBe(true); // the only screenshot so far, kept
+  });
+});

@@ -105,10 +105,6 @@
     return false;
   }
 
-  function clearTags() {
-    document.querySelectorAll(`[${AGENT_ATTR}]`).forEach((el) => el.removeAttribute(AGENT_ATTR));
-  }
-
   // Minimum rendered size (px, either dimension) for an <img> to be worth
   // tagging — filters out icons, avatars-as-decoration, tracking pixels, and
   // other small graphics that are never what a "look at this image" or
@@ -126,9 +122,39 @@
   // (signed/tokenized links); this is a pathological ceiling, not a budget.
   const MAX_HREF_CHARS = 4096;
 
+  // querySelectorAll never descends into shadow roots - a site built on web
+  // components (Salesforce Lightning, many design systems, parts of YouTube/
+  // Reddit) renders controls that would otherwise be invisible to every pass
+  // below, and the model concludes the content simply doesn't exist. Closed
+  // shadow roots stay invisible regardless (.shadowRoot is null for those,
+  // nothing to pierce) - same as Playwright without special handling.
+  // Includes `root` itself (not just its descendants) - the old
+  // document.querySelectorAll("body, body *") this replaced matched body
+  // itself via the "body" branch, so a body with onclick/tabindex was
+  // taggable; dropping it here would have silently stopped that working.
+  function allDescendants(root) {
+    const out = [root];
+    const stack = [root];
+    while (stack.length) {
+      const node = stack.pop();
+      for (const child of node.children) {
+        out.push(child);
+        stack.push(child);
+        if (child.shadowRoot) stack.push(child.shadowRoot);
+      }
+    }
+    return out;
+  }
+
   function scanPage() {
-    clearTags();
-    const nodes = Array.from(document.querySelectorAll("body, body *"));
+    // One walk, reused for both clearing last scan's tags and this scan's
+    // own passes below - clearTags() used to do its own separate
+    // allDescendants() walk here, doubling the shadow-DOM tree-walk cost of
+    // every single read_page call for no benefit.
+    const nodes = allDescendants(document.body);
+    for (const el of nodes) {
+      if (el.hasAttribute(AGENT_ATTR)) el.removeAttribute(AGENT_ATTR);
+    }
     const elements = [];
 
     for (const el of nodes) {
@@ -140,10 +166,16 @@
       el.setAttribute(AGENT_ATTR, id);
 
       const tag = el.tagName.toLowerCase();
+      const rect = el.getBoundingClientRect();
       const entry = {
         id,
         tag,
         text: shortText(el),
+        // Viewport-relative [x, y, width, height], rounded - spatial signal
+        // ("the X next to the cart icon") and a ready-made target for a
+        // coordinate click (see the click tool's x/y args) without a second
+        // round trip to work out where something actually is.
+        box: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
       };
       // For a <div>-built control the tag says nothing; the role is the description.
       const role = el.getAttribute("role");
@@ -227,7 +259,8 @@
     // an <a>) can be tagged both ways — "eN" to click it, "imgN" to view it —
     // without either tagging pass clobbering the other's attribute.
     const images = [];
-    for (const el of document.querySelectorAll("img")) {
+    for (const el of nodes) {
+      if (el.tagName !== "IMG") continue;
       if (!isVisible(el)) continue;
       const rect = el.getBoundingClientRect();
       if (rect.width < MIN_IMAGE_DIM || rect.height < MIN_IMAGE_DIM) continue;
@@ -248,7 +281,8 @@
     // markup only (thead/tbody/tr/td), since that's the case extract_table
     // can parse reliably. Non-table "card grid" layouts aren't covered.
     const tables = [];
-    for (const el of document.querySelectorAll("table")) {
+    for (const el of nodes) {
+      if (el.tagName !== "TABLE") continue;
       if (!isVisible(el)) continue;
       tableCounter += 1;
       const id = `tbl${tableCounter}`;
@@ -263,6 +297,20 @@
         header_preview: headerCells,
       });
       if (tables.length >= 100) break; // pathological-safety cap, see MAX_IMAGES above
+    }
+
+    // Third-party embeds (video/ad/widget players) are almost always their own
+    // iframe, invisible to the scan above no matter how thorough it looks —
+    // this doesn't reach INTO the iframe (that's list_frames/frame_id's job),
+    // it just tells the model one exists here at all, so it isn't left to
+    // remember to check on every page on the chance one might be hiding.
+    const iframes = [];
+    for (const el of nodes) {
+      if (el.tagName !== "IFRAME") continue;
+      if (!isVisible(el)) continue;
+      const rect = el.getBoundingClientRect();
+      iframes.push({ src: (el.src || "").slice(0, MAX_HREF_CHARS), width: Math.round(rect.width), height: Math.round(rect.height) });
+      if (iframes.length >= 20) break; // pathological-safety cap, see MAX_IMAGES above
     }
 
     // No token-budget trim here — the agent should read the complete text
@@ -283,6 +331,7 @@
       elements,
       images,
       tables,
+      iframes,
       bodyText: bodyText.slice(0, MAX_BODY_TEXT_CHARS),
       metaCategory: detectMetaCategory(),
       pdf: pdf ? { pages: pdf.pages } : null,
@@ -336,7 +385,61 @@
   }
 
   function findByAgentId(id) {
-    return document.querySelector(`[${AGENT_ATTR}="${CSS.escape(id)}"]`);
+    // Fast path: native querySelector, which covers the vast majority of
+    // pages (no shadow DOM at all) at native speed. querySelector doesn't
+    // pierce shadow roots, so a tag set inside one is otherwise unreachable
+    // no matter how it's queried — allDescendants already walks those (see
+    // its own comment), so a plain scan of that list is the correct fallback.
+    return (
+      document.querySelector(`[${AGENT_ATTR}="${CSS.escape(id)}"]`) ||
+      allDescendants(document.body).find((el) => el.getAttribute(AGENT_ATTR) === id) ||
+      null
+    );
+  }
+
+  function normalizeLabel(s) {
+    return String(s).replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  // Same shadow-DOM-piercing need as findByAgentId above — a plain
+  // querySelectorAll(`[${AGENT_ATTR}]`) misses anything tagged inside an
+  // open shadow root.
+  function taggedElements() {
+    return allDescendants(document.body).filter((el) => el.hasAttribute(AGENT_ATTR));
+  }
+
+  // Lets click/type_text target an element by the visible text read_page
+  // showed for it, instead of its scan id — useful when the id went stale
+  // (a re-render bumped the counter) but the model still knows what the
+  // element SAYS. Only matches against currently tagged (already-scanned)
+  // elements — this is an alternate address for something read_page already
+  // showed, not a general page search (that's find_in_page's job).
+  function resolveTarget(id, targetText, targetTag) {
+    if (id) {
+      const el = findByAgentId(id);
+      return el ? { el } : { error: `No element with id ${id}. Re-scan the page.` };
+    }
+    if (!targetText) return { error: "Pass element_id or element_text." };
+    const wanted = normalizeLabel(targetText);
+    const tagWanted = targetTag ? String(targetTag).toLowerCase() : null;
+    const candidates = [];
+    for (const el of taggedElements()) {
+      if (tagWanted && el.tagName.toLowerCase() !== tagWanted) continue;
+      const label = shortText(el);
+      if (label && normalizeLabel(label) === wanted) candidates.push(el);
+    }
+    if (!candidates.length) {
+      return {
+        error: `No currently-tagged element with text "${targetText}"${tagWanted ? ` and tag ${tagWanted}` : ""} was found. Call read_page for a fresh scan and use its element ids instead.`,
+      };
+    }
+    if (candidates.length > 1) {
+      const ids = candidates.slice(0, 10).map((el) => el.getAttribute(AGENT_ATTR));
+      return {
+        error: `${candidates.length} elements match text "${targetText}" — ambiguous. Use one of these ids instead: ${ids.join(", ")}${tagWanted ? "" : ", or narrow it with element_tag"}.`,
+      };
+    }
+    return { el: candidates[0] };
   }
 
   // The risky-action confirm gate (agentLoop.js's checkRiskyAction) reads an
@@ -355,9 +458,15 @@
   // GET_ELEMENT_TEXT / GET_SUBMIT_CONTEXT accept a missing id: that's press_key's
   // risk gate asking about whatever has focus, since Enter fires there. <body>
   // means nothing is focused, which is no target at all — resolving it would
-  // feed the whole page's text to the risky-text matcher.
-  function resolveForLookup(id) {
-    if (id) return findByAgentId(id);
+  // feed the whole page's text to the risky-text matcher. A text-targeted
+  // click/type_text (see resolveTarget) needs the SAME resolution here too —
+  // otherwise the risky-action gate would check document.activeElement
+  // instead of the element that's actually about to be acted on, silently
+  // skipping the confirmation it exists to enforce. A coordinate click (see
+  // doClick) needs it a third way, via elementFromPoint.
+  function resolveForLookup(id, targetText, targetTag, x, y) {
+    if (id || targetText) return resolveTarget(id, targetText, targetTag).el || null;
+    if (typeof x === "number" && typeof y === "number") return document.elementFromPoint(x, y);
     const active = document.activeElement;
     return active && active !== document.body ? active : null;
   }
@@ -432,7 +541,15 @@
   // insertions/removals that don't change visible text.
   function pageSignature() {
     const text = document.body?.innerText || "";
-    return `${location.href}|${document.title}|${text.length}|${document.querySelectorAll("body *").length}`;
+    // Node count and text length miss attribute-only changes (an accordion
+    // toggling aria-expanded, a checkbox's checked state) that add/remove no
+    // text or elements - those clicks were reporting page_changed: false even
+    // though they genuinely worked. A cheap count of the states that matter
+    // closes that gap without a real diff.
+    const stateCount = document.querySelectorAll(
+      '[aria-expanded="true"], [open], input:checked, [aria-checked="true"], [aria-pressed="true"], [aria-selected="true"]'
+    ).length;
+    return `${location.href}|${document.title}|${text.length}|${document.querySelectorAll("body *").length}|${stateCount}`;
   }
 
   function settle(ms) {
@@ -474,6 +591,29 @@
       if (changed || elapsed >= SETTLE_FIRST_CHANGE_MS) return cur;
     }
     return prev;
+  }
+
+  // Hard ceiling regardless of what's requested - the whole point is to
+  // bound a poll the model could otherwise ask to run indefinitely.
+  const WAIT_FOR_CEILING_MS = 10000;
+  const WAIT_FOR_POLL_MS = 200;
+
+  async function doWaitFor(text, textGone, seconds) {
+    if (!text && !textGone) {
+      return { ok: false, error: "Pass text (wait for it to appear) or text_gone (wait for it to disappear)." };
+    }
+    const ceiling = Math.min(Math.max(Number(seconds) || 10, 1) * 1000, WAIT_FOR_CEILING_MS);
+    const needle = String(text || textGone).toLowerCase();
+    const before = pageSignature();
+    const start = Date.now();
+    let found;
+    for (;;) {
+      const has = (document.body?.innerText || "").toLowerCase().includes(needle);
+      found = text ? has : !has;
+      if (found || Date.now() - start >= ceiling) break;
+      await settle(WAIT_FOR_POLL_MS);
+    }
+    return { ok: true, found, timed_out: !found, page_changed: pageSignature() !== before };
   }
 
   function describeEl(el) {
@@ -568,37 +708,115 @@
     return result;
   }
 
-  async function doClick(id) {
-    const el = findByAgentId(id);
-    if (!el) return { ok: false, error: `No element with id ${id}. Re-scan the page.` };
-    const blocked = notActionable(el, id);
+  // Shared alias table for modifier names - used by both click's `modifiers`
+  // array and press_key's `Control+a`-style combo specs (see parseKeySpec
+  // below), so an alias added to one (e.g. "option" for alt) can't silently
+  // fail to apply to the other.
+  function modifierFlagsFromNames(names) {
+    const has = (name) => names.includes(name);
+    return {
+      ctrlKey: has("ctrl") || has("control"),
+      shiftKey: has("shift"),
+      altKey: has("alt") || has("option"),
+      metaKey: has("meta") || has("cmd") || has("command"),
+    };
+  }
+
+  function modifierFlags(modifiers) {
+    return modifierFlagsFromNames((modifiers || []).map((m) => String(m).toLowerCase()));
+  }
+
+  // PointerEvent isn't guaranteed available in every context; the matching
+  // MouseEvent always fires regardless and covers the vast majority of
+  // handlers on its own, so a missing PointerEvent constructor is silently
+  // ignored rather than treated as a failure. `kind` is "down"|"up"|"move".
+  function dispatchPointerAndMouse(el, kind, opts) {
+    try {
+      el.dispatchEvent(new PointerEvent(`pointer${kind}`, opts));
+    } catch { /* unsupported here - the mouse event below still covers most handlers */ }
+    el.dispatchEvent(new MouseEvent(`mouse${kind}`, opts));
+  }
+
+  // One full press+release+activation for the left button - factored out so
+  // a double-click can run it twice (matching a real double-click, which
+  // really does fire two complete clicks - see the dblclick branch below).
+  function fireLeftClick(el, opts, detail) {
+    const clickOpts = { ...opts, detail };
+    dispatchPointerAndMouse(el, "down", clickOpts);
+    dispatchPointerAndMouse(el, "up", clickOpts);
+    // Exactly ONE click activation per press - firing both el.click() and a
+    // synthetic click delivered two click events per agent click, so
+    // anything toggling netted back to where it started. Only el.click()
+    // runs native activation behaviour (checkbox/radio, form submit, link);
+    // the dispatched event carries the real clientX/clientY that el.click()
+    // reports as 0.
+    if (NATIVE_ACTIVATION_TAGS.has(el.tagName.toLowerCase())) el.click();
+    else el.dispatchEvent(new MouseEvent("click", clickOpts));
+  }
+
+  async function doClick(msg) {
+    const { id, targetText, targetTag, clickType, modifiers, x, y } = msg;
+    const hasCoords = typeof x === "number" && typeof y === "number";
+
+    let el;
+    let resolvedId;
+    if (hasCoords) {
+      // Coordinate targeting is the only way to reach canvas content (maps,
+      // drawing apps, games) - there's no element the scan could have tagged.
+      el = document.elementFromPoint(x, y);
+      if (!el) {
+        return { ok: false, error: `No element at viewport coordinates (${x}, ${y}) - they must be within the visible viewport. Scroll the target into view first.` };
+      }
+      resolvedId = el.getAttribute(AGENT_ATTR) || null;
+    } else {
+      const resolved = resolveTarget(id, targetText, targetTag);
+      if (resolved.error) return { ok: false, error: resolved.error };
+      el = resolved.el;
+      resolvedId = el.getAttribute(AGENT_ATTR) || id;
+    }
+    const label = resolvedId || `(${x}, ${y})`;
+
+    // A synthetic click on a file input can't open (or drive/dismiss) the
+    // native OS chooser it would normally trigger — that's a dead end the
+    // model has no recovery from except waiting out the 12s timeout. Refuse
+    // up front and point at the one thing that actually works instead.
+    if (el.tagName === "INPUT" && el.type === "file") {
+      return { ok: false, error: `Element ${label} ${describeEl(el)} is a file upload input — clicking it would open a native OS file chooser nothing can drive or dismiss. Use upload_file instead (it needs a file already attached to this conversation).` };
+    }
+    const blocked = notActionable(el, label);
     if (blocked) return { ok: false, error: blocked };
-    el.scrollIntoView({ block: "center", behavior: "instant" });
+    // A coordinate click already resolved to a point that must be in the
+    // current viewport (see the error above) - scrolling now would move the
+    // page under it and invalidate the exact (x, y) the model computed.
+    if (!hasCoords) el.scrollIntoView({ block: "center", behavior: "instant" });
     flashHighlight(el);
-    const covering = occludedBy(el);
+    // A coordinate click resolved el via elementFromPoint at that exact
+    // point, so by definition nothing else is "covering" it - the check
+    // only means something for an id/text-resolved target.
+    const covering = hasCoords ? "" : occludedBy(el);
 
     const before = pageSignature();
-    const opts = centerOpts(el, { button: 0, buttons: 1 });
-    // Some widgets (custom dropdowns, icon buttons, component libraries) key
-    // off pointer events rather than mouse events, or read clientX/Y off the
-    // event instead of trusting el.click() alone. Dispatch a fuller,
-    // coordinate-bearing sequence so more real-world handlers actually fire.
-    hoverEvents(el, { ...opts, buttons: 0 });
-    try {
-      el.dispatchEvent(new PointerEvent("pointerdown", opts));
-    } catch { /* PointerEvent unsupported in this context — mouse events below still cover most cases */ }
-    el.dispatchEvent(new MouseEvent("mousedown", opts));
-    try {
-      el.dispatchEvent(new PointerEvent("pointerup", opts));
-    } catch { /* see above */ }
-    el.dispatchEvent(new MouseEvent("mouseup", opts));
-    // Exactly ONE click activation - firing both el.click() and a synthetic
-    // click delivered two click events per agent click, so anything toggling
-    // netted back to where it started. Only el.click() runs native activation
-    // behaviour (checkbox/radio, form submit, link); the dispatched event
-    // carries the real clientX/clientY that el.click() reports as 0.
-    if (NATIVE_ACTIVATION_TAGS.has(el.tagName.toLowerCase())) el.click();
-    else el.dispatchEvent(new MouseEvent("click", opts));
+    const mods = modifierFlags(modifiers);
+    // Coordinate clicks use the EXACT point given (meaningful on a canvas -
+    // different points mean different things), not el's bounding-box center.
+    const point = hasCoords ? { clientX: x, clientY: y } : {};
+
+    if (clickType === "right") {
+      const opts = centerOpts(el, { button: 2, buttons: 2, ...mods, ...point });
+      hoverEvents(el, { ...opts, buttons: 0 });
+      dispatchPointerAndMouse(el, "down", opts);
+      dispatchPointerAndMouse(el, "up", opts);
+      // A real right-click never fires "click" - only contextmenu.
+      el.dispatchEvent(new MouseEvent("contextmenu", opts));
+    } else {
+      const opts = centerOpts(el, { button: 0, buttons: 1, ...mods, ...point });
+      hoverEvents(el, { ...opts, buttons: 0 });
+      fireLeftClick(el, opts, 1);
+      if (clickType === "double") {
+        fireLeftClick(el, opts, 2);
+        el.dispatchEvent(new MouseEvent("dblclick", { ...opts, detail: 2 }));
+      }
+    }
 
     const after = await waitForSettled(CLICK_SETTLE_CEILING_MS, before);
     // page_changed is a heuristic, not proof either way: a false page can
@@ -611,6 +829,10 @@
     if (!changed && covering) {
       result.note = `Nothing changed, and the click point is covered by ${covering} — likely an overlay, cookie banner or sticky header intercepting it. Dismiss that first, or click it instead if it's what you actually wanted.`;
     }
+    // A coordinate click may have landed on an already-tagged element -
+    // surface its id so the model can address it directly next time
+    // instead of guessing coordinates again.
+    if (hasCoords && resolvedId) result.element_id = resolvedId;
     return result;
   }
 
@@ -715,23 +937,25 @@
     el.dispatchEvent(new InputEvent("input", { bubbles: true, data: text, inputType: "insertText" }));
   }
 
-  async function doType(id, text, submit, perKey) {
-    const el = findByAgentId(id);
-    if (!el) return { ok: false, error: `No element with id ${id}. Re-scan the page.` };
+  async function doType(id, text, submit, perKey, targetText, targetTag) {
+    const resolved = resolveTarget(id, targetText, targetTag);
+    if (resolved.error) return { ok: false, error: resolved.error };
+    const el = resolved.el;
+    const resolvedId = el.getAttribute(AGENT_ATTR) || id;
     if (el.tagName === "SELECT") {
-      return { ok: false, error: `Element ${id} is a <select> dropdown, not a text field - use select_option with the option's visible text instead.` };
+      return { ok: false, error: `Element ${resolvedId} is a <select> dropdown, not a text field - use select_option with the option's visible text instead.` };
     }
     // Everything else has no value setter to call, and reaching for one throws
     // an opaque "Illegal invocation" instead of saying what's wrong.
     if (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && !el.isContentEditable) {
       return {
         ok: false,
-        error: `Element ${id} ${describeEl(el)} isn't a text field, so there's nothing to type into. If it opens one (a search icon, a combobox), click it first and re-scan; the field itself will be a separate id.`,
+        error: `Element ${resolvedId} ${describeEl(el)} isn't a text field, so there's nothing to type into. If it opens one (a search icon, a combobox), click it first and re-scan; the field itself will be a separate id.`,
       };
     }
-    const blocked = notActionable(el, id);
+    const blocked = notActionable(el, resolvedId);
     if (blocked) return { ok: false, error: blocked };
-    if (el.readOnly) return { ok: false, error: `Element ${id} ${describeEl(el)} is read-only — typed text won't stick. It's probably filled by picking from a widget (date picker, dropdown) instead.` };
+    if (el.readOnly) return { ok: false, error: `Element ${resolvedId} ${describeEl(el)} is read-only — typed text won't stick. It's probably filled by picking from a widget (date picker, dropdown) instead.` };
     el.scrollIntoView({ block: "center", behavior: "instant" });
     flashHighlight(el);
     el.focus();
@@ -782,10 +1006,7 @@
       key,
       code: key.length === 1 ? codeForChar(key) : key,
       keyCode: KEY_CODES[key] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0),
-      ctrlKey: mods.includes("control") || mods.includes("ctrl"),
-      shiftKey: mods.includes("shift"),
-      altKey: mods.includes("alt") || mods.includes("option"),
-      metaKey: mods.includes("meta") || mods.includes("cmd") || mods.includes("command"),
+      ...modifierFlagsFromNames(mods),
     };
   }
 
@@ -886,6 +1107,158 @@
     };
   }
 
+  const FIND_IN_PAGE_MAX_MATCHES = 50;
+  const FIND_CONTEXT_CHARS = 80;
+  // A pathological regex (catastrophic backtracking) run synchronously
+  // against a huge page can hang the tab for a very long time - JS has no
+  // way to time out or abort a regex exec once it's started. Input LENGTH is
+  // what backtracking cost scales with, so bounding it bounds the worst
+  // case; the plain-substring path below (native String.indexOf, no
+  // backtracking) doesn't need this.
+  const FIND_IN_PAGE_REGEX_SEARCH_CHARS = 200000;
+
+  function findTextEntry(body, at, len) {
+    const start = Math.max(0, at - FIND_CONTEXT_CHARS);
+    const end = Math.min(body.length, at + len + FIND_CONTEXT_CHARS);
+    return { id: null, tag: "text", text: body.slice(start, end).replace(/\s+/g, " ").trim() };
+  }
+
+  // Checks tagged elements' labels first (a match there gives the model a
+  // clickable id directly) then falls back to raw page text for content
+  // that isn't a tagged interactive element - a plain paragraph, a price,
+  // an error message. Reuses the existing scan's tagging; no new scan pass.
+  function findInPage(text, regexSource) {
+    if (!text && !regexSource) return { ok: false, error: "Pass either text (plain substring, case-insensitive) or regex to search for." };
+    let regex;
+    if (regexSource) {
+      try {
+        regex = new RegExp(regexSource, "gi");
+      } catch (err) {
+        return { ok: false, error: `Invalid regex: ${err.message}` };
+      }
+    }
+    const matchesLabel = (s) => (regex ? new RegExp(regex.source, "i").test(s) : s.toLowerCase().includes(String(text).toLowerCase()));
+
+    const matches = [];
+    for (const el of taggedElements()) {
+      const label = shortText(el);
+      if (!label || !matchesLabel(label)) continue;
+      const entry = { id: el.getAttribute(AGENT_ATTR), tag: el.tagName.toLowerCase(), text: label };
+      if (el.tagName === "A" && el.href) entry.href = el.href.slice(0, MAX_HREF_CHARS);
+      matches.push(entry);
+      if (matches.length >= FIND_IN_PAGE_MAX_MATCHES) break;
+    }
+
+    if (matches.length < FIND_IN_PAGE_MAX_MATCHES) {
+      const body = document.body?.innerText || "";
+      if (regex) {
+        const searchText = body.length > FIND_IN_PAGE_REGEX_SEARCH_CHARS ? body.slice(0, FIND_IN_PAGE_REGEX_SEARCH_CHARS) : body;
+        let m;
+        while (matches.length < FIND_IN_PAGE_MAX_MATCHES && (m = regex.exec(searchText))) {
+          matches.push(findTextEntry(searchText, m.index, m[0].length));
+          if (m[0].length === 0) regex.lastIndex += 1; // don't spin forever on a zero-width match
+        }
+      } else {
+        const needle = String(text).toLowerCase();
+        const haystack = body.toLowerCase();
+        let from = 0;
+        let at;
+        while (matches.length < FIND_IN_PAGE_MAX_MATCHES && (at = haystack.indexOf(needle, from)) !== -1) {
+          matches.push(findTextEntry(body, at, needle.length));
+          from = at + needle.length;
+        }
+      }
+    }
+    return { ok: true, matches, truncated: matches.length >= FIND_IN_PAGE_MAX_MATCHES };
+  }
+
+  // Two independent sequences, since drag libraries split between them: a
+  // pointer/mouse move-between-press-and-release (interact.js, SortableJS,
+  // dnd-kit) and the native HTML5 DnD event family (draggable="true"
+  // elements), sharing one DataTransfer the way a real drag would. Like
+  // trusted-input-required clicks (see doClick), some native drag
+  // implementations only respond to real OS-level drag input — this covers
+  // the JS-library majority, not every possible page.
+  async function doDrag(fromId, toId) {
+    const fromEl = findByAgentId(fromId);
+    if (!fromEl) return { ok: false, error: `No element with id ${fromId}. Re-scan the page.` };
+    const toEl = findByAgentId(toId);
+    if (!toEl) return { ok: false, error: `No element with id ${toId}. Re-scan the page.` };
+    const blockedFrom = notActionable(fromEl, fromId);
+    if (blockedFrom) return { ok: false, error: blockedFrom };
+    const blockedTo = notRendered(toEl, toId);
+    if (blockedTo) return { ok: false, error: blockedTo };
+
+    fromEl.scrollIntoView({ block: "center", behavior: "instant" });
+    toEl.scrollIntoView({ block: "center", behavior: "instant" });
+    flashHighlight(fromEl);
+    const before = pageSignature();
+
+    const fromRect = fromEl.getBoundingClientRect();
+    const toRect = toEl.getBoundingClientRect();
+    const start = { x: fromRect.left + fromRect.width / 2, y: fromRect.top + fromRect.height / 2 };
+    const end = { x: toRect.left + toRect.width / 2, y: toRect.top + toRect.height / 2 };
+    const pointOpts = (p, extra) => ({ bubbles: true, cancelable: true, view: window, clientX: p.x, clientY: p.y, ...extra });
+
+    const dt = new DataTransfer();
+    hoverEvents(fromEl, pointOpts(start, { button: 0, buttons: 0 }));
+    dispatchPointerAndMouse(fromEl, "down", pointOpts(start, { button: 0, buttons: 1 }));
+    fromEl.dispatchEvent(new DragEvent("dragstart", { ...pointOpts(start), dataTransfer: dt }));
+
+    const DRAG_STEPS = 6;
+    for (let i = 1; i <= DRAG_STEPS; i += 1) {
+      const p = { x: start.x + (end.x - start.x) * (i / DRAG_STEPS), y: start.y + (end.y - start.y) * (i / DRAG_STEPS) };
+      dispatchPointerAndMouse(document, "move", pointOpts(p, { button: 0, buttons: 1 }));
+      await settle(20);
+    }
+
+    toEl.dispatchEvent(new DragEvent("dragenter", { ...pointOpts(end), dataTransfer: dt }));
+    toEl.dispatchEvent(new DragEvent("dragover", { ...pointOpts(end), dataTransfer: dt }));
+    toEl.dispatchEvent(new DragEvent("drop", { ...pointOpts(end), dataTransfer: dt }));
+    dispatchPointerAndMouse(toEl, "up", pointOpts(end, { button: 0, buttons: 0 }));
+    fromEl.dispatchEvent(new DragEvent("dragend", { ...pointOpts(end), dataTransfer: dt }));
+
+    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS, before);
+    return { ok: true, page_changed: before !== after };
+  }
+
+  const MIME_TYPES_BY_EXT = {
+    txt: "text/plain", md: "text/markdown", csv: "text/csv", tsv: "text/tab-separated-values",
+    json: "application/json", log: "text/plain", yaml: "application/x-yaml", yml: "application/x-yaml",
+    xml: "application/xml", html: "text/html",
+  };
+  function mimeTypeForName(name) {
+    const ext = String(name || "").toLowerCase().split(".").pop();
+    return MIME_TYPES_BY_EXT[ext] || "text/plain";
+  }
+
+  // Only text-based attachments are reachable this way — lib/attachmentCache.js
+  // only ever stores extracted TEXT (see its own comment), never the original
+  // file bytes, so a PDF/image attachment has nothing to reconstruct here.
+  // upload_file's tool description says so; agentLoop.js is what actually
+  // fetches `text` from the cache before sending this message.
+  async function doSetFiles(id, name, text) {
+    const el = findByAgentId(id);
+    if (!el) return { ok: false, error: `No element with id ${id}. Re-scan the page.` };
+    if (el.tagName !== "INPUT" || el.type !== "file") {
+      return { ok: false, error: `Element ${id} ${describeEl(el)} isn't a file upload input. upload_file only works on <input type="file">.` };
+    }
+    const blocked = notActionable(el, id);
+    if (blocked) return { ok: false, error: blocked };
+
+    const file = new File([text ?? ""], name || "attachment.txt", { type: mimeTypeForName(name) });
+    const dt = new DataTransfer();
+    dt.items.add(file);
+    el.scrollIntoView({ block: "center", behavior: "instant" });
+    flashHighlight(el);
+    const before = pageSignature();
+    el.files = dt.files;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    const after = await waitForSettled(CLICK_SETTLE_CEILING_MS, before);
+    return { ok: true, page_changed: before !== after };
+  }
+
   const MAX_TABLE_ROWS = 5000; // pathological-safety cap, see MAX_IMAGES above
 
   function extractTable(id) {
@@ -959,6 +1332,26 @@
     };
   }
 
+  // Backgrounded tabs (e.g. a parallel_investigate branch) get
+  // requestAnimationFrame fully paused and IntersectionObserver-gated
+  // lazy-loading may simply never fire — a scroll that "did nothing" here
+  // looks identical to genuinely having reached the end of the page. Only
+  // worth flagging when scrolling actually looks stuck, not on every scroll
+  // of a background tab that's working fine.
+  function withBackgroundHint(result) {
+    if (document.hidden && result.page_changed === false) {
+      result.note = [
+        result.note,
+        "This tab is currently backgrounded (not the visible/focused tab) - scroll-triggered lazy-loading may be " +
+          "paused rather than genuinely finished. If content seems to be missing, switch_tab to foreground this tab " +
+          "briefly and try again.",
+      ]
+        .filter(Boolean)
+        .join(" ");
+    }
+    return result;
+  }
+
   async function doScroll(direction, amount, elementId, to) {
     let container;
     if (elementId) {
@@ -979,7 +1372,7 @@
 
     if (to !== "bottom") {
       // at_bottom with page_changed false is the honest "stop scrolling" signal.
-      return { ok: true, ...(await scrollOnce(container, delta)) };
+      return withBackgroundHint({ ok: true, ...(await scrollOnce(container, delta)) });
     }
 
     // A lazy-loading page needs many scrolls to reveal its content; running
@@ -996,7 +1389,7 @@
       if (last.at_bottom && !last.page_changed) break;
       if (last.scrolled_by === 0 && !last.page_changed) break;
     }
-    return {
+    return withBackgroundHint({
       ok: true,
       page_changed: scrolled !== 0 || last.page_changed,
       scrolled_by: scrolled,
@@ -1006,19 +1399,25 @@
         steps >= MAX_SCROLL_STEPS
           ? `Stopped after ${steps} scrolls without reaching the end - this page may load endlessly. Read what's here; scroll again with to:"bottom" only if you specifically need more.`
           : undefined,
-    };
+    });
   }
 
   // Every action settles before it answers, so they all reply asynchronously
   // and all fail the same way — one table beats seven copies of .then/.catch.
   const ACTIONS = {
-    CLICK: (m) => doClick(m.id),
-    TYPE: (m) => doType(m.id, m.text, m.submit, m.perKey),
+    CLICK: (m) => doClick(m),
+    TYPE: (m) => doType(m.id, m.text, m.submit, m.perKey, m.targetText, m.targetTag),
     SELECT_OPTION: (m) => doSelect(m.id, m.values),
     HOVER: (m) => doHover(m.id),
     PRESS_KEY: (m) => doPressKey(m.key, m.id),
     FILL_FORM: (m) => doFillForm(m.fields),
     SCROLL: (m) => doScroll(m.direction, m.amount, m.elementId, m.to),
+    WAIT_FOR: (m) => doWaitFor(m.text, m.textGone, m.seconds),
+    DRAG: (m) => doDrag(m.fromId, m.toId),
+    SET_FILES: (m) => doSetFiles(m.id, m.name, m.text),
+    // Used only by retryClickTrusted (agentLoop.js) - see its own comment
+    // for why a flat sleep isn't good enough here.
+    WAIT_FOR_SETTLE: async (m) => ({ ok: true, signature: await waitForSettled(CLICK_SETTLE_CEILING_MS, m.baseline) }),
   };
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
@@ -1043,8 +1442,11 @@
         case "EXTRACT_TABLE":
           sendResponse(extractTable(msg.id));
           break;
+        case "FIND_IN_PAGE":
+          sendResponse(findInPage(msg.text, msg.regex));
+          break;
         case "GET_ELEMENT_TEXT": {
-          const el = resolveForLookup(msg.id);
+          const el = resolveForLookup(msg.id, msg.targetText, msg.targetTag, msg.x, msg.y);
           if (!el) {
             sendResponse({ ok: false, error: `No element with id ${msg.id}. Re-scan the page.` });
           } else {
@@ -1053,7 +1455,7 @@
           break;
         }
         case "GET_SUBMIT_CONTEXT": {
-          const el = resolveForLookup(msg.id);
+          const el = resolveForLookup(msg.id, msg.targetText, msg.targetTag, msg.x, msg.y);
           if (!el) {
             sendResponse({ ok: false, error: `No element with id ${msg.id}. Re-scan the page.` });
           } else {
@@ -1061,6 +1463,23 @@
           }
           break;
         }
+        // Both only ever used by the chrome.debugger trusted-input retry
+        // (see lib/trustedInput.js / agentLoop.js) — the coordinates and
+        // before/after signature it needs to dispatch and verify a real
+        // trusted click at the same target the normal click already tried.
+        case "GET_ELEMENT_RECT": {
+          const resolved = resolveTarget(msg.id, msg.targetText, msg.targetTag);
+          if (resolved.error) {
+            sendResponse({ ok: false, error: resolved.error });
+          } else {
+            const rect = resolved.el.getBoundingClientRect();
+            sendResponse({ ok: true, cx: rect.left + rect.width / 2, cy: rect.top + rect.height / 2 });
+          }
+          break;
+        }
+        case "PAGE_SIGNATURE":
+          sendResponse({ ok: true, signature: pageSignature() });
+          break;
         default:
           sendResponse({ ok: false, error: "Unknown message type" });
       }
