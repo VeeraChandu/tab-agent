@@ -67,9 +67,16 @@ jobs:
       # auto-discover it; the path is spelled out from the repo root because
       # `run:` steps execute with cwd = the repo root, not this file's own
       # directory.
+      # GITHUB_TOKEN here is MAIN_PUSH_TOKEN, not the default secrets.GITHUB_TOKEN —
+      # @semantic-release/git pushes the version-bump commit and tag straight to
+      # main using this same env var, and main's ruleset only lists the repo-Admin
+      # role as a bypass actor (see promote-to-main.yml's own comment on this same
+      # constraint). The default Actions bot identity isn't an Admin, so that push
+      # was rejected (GH013 rule violation) until this used the same bypass-capable
+      # token promote-to-main.yml already relies on for its own push to main.
       - run: npx semantic-release --extends ./.github/workflows/.releaserc.json
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.MAIN_PUSH_TOKEN }}
           CHROME_CLIENT_ID: ${{ secrets.CHROME_CLIENT_ID }}
           CHROME_CLIENT_SECRET: ${{ secrets.CHROME_CLIENT_SECRET }}
           CHROME_REFRESH_TOKEN: ${{ secrets.CHROME_REFRESH_TOKEN }}
