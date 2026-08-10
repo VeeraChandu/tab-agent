@@ -85,13 +85,25 @@ jobs:
       - name: Back-merge main into dev
         # Runs even if the semantic-release step above failed (e.g. Chrome Web
         # Store publish rejected) or partially succeeded, since the tag and
-        # version-bump commit are pushed to main unconditionally before any
-        # publish-step plugin runs - by the time this step is reached there's
-        # almost always something on main worth folding back into dev. Only
-        # skipped if the job was cancelled outright.
+        # version-bump commit are USUALLY pushed to main unconditionally before
+        # any publish-step plugin runs - by the time this step is reached
+        # there's almost always something on main worth folding back into dev.
+        # Only skipped if the job was cancelled outright.
         if: ${{ !cancelled() }}
         run: |
           git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # The one case the "usually" above doesn't cover: @semantic-release/git's
+          # own push to main can itself fail (e.g. a ruleset rejection) - when that
+          # happens, HEAD here is a version-bump commit that only ever existed in
+          # this runner's local checkout, never actually landed on origin/main.
+          # Back-merging it to dev would leak a commit that looks like a real
+          # release (a real "chore(release): x.y.z" message, real changelog text)
+          # but has no tag, no GitHub Release, and no Chrome Store publish behind
+          # it anywhere - confirm HEAD actually matches origin/main first.
+          if [ "$(git rev-parse HEAD)" != "$(git ls-remote origin main | cut -f1)" ]; then
+            echo "HEAD was never actually pushed to origin/main (semantic-release's own push likely failed) - nothing real to back-merge, skipping."
+            exit 0
+          fi
           git fetch origin dev
           if git push origin HEAD:dev; then
             echo "Fast-forwarded dev to main."
