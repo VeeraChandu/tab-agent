@@ -258,6 +258,37 @@ export function compactHistory(history, cacheEnabled) {
 // deliberate Stop click resolve this immediately instead of waiting it out.
 const SEND_TO_TAB_TIMEOUT_MS = 12000;
 
+// create_file: a pathological-safety ceiling, not a real budget — a model's
+// own max-output-tokens per turn already keeps any single generated file far
+// below this in practice (same reasoning as content.js's MAX_BODY_TEXT_CHARS).
+const MAX_CREATED_FILE_BYTES = 2 * 1024 * 1024;
+// Overlaps but isn't a strict mirror of the composer's own attachment-upload
+// accept list (see sidepanel.js) — this is for the model GENERATING a file,
+// so it also covers types with no reason to ever be uploaded, like .tex.
+// Falls back to plain text for anything unrecognized.
+const CREATED_FILE_MIME_TYPES = {
+  txt: "text/plain",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  json: "application/json",
+  html: "text/html",
+  htm: "text/html",
+  xml: "application/xml",
+  yaml: "application/yaml",
+  yml: "application/yaml",
+  log: "text/plain",
+  css: "text/css",
+  js: "text/javascript",
+  ts: "text/typescript",
+  tex: "text/x-tex",
+};
+function guessCreatedFileMimeType(filename) {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  return CREATED_FILE_MIME_TYPES[ext] || "text/plain";
+}
+
 // Fired when the target frame is torn down mid-flight by a real navigation
 // before content.js calls sendResponse (most often the tab entering the
 // back/forward cache as an <a href> click navigates). Unlike other lastError
@@ -2594,6 +2625,38 @@ async function executeTool(ctx, name, input, callId) {
       const res = await sendToTab(ctx.tabId, { type: "FIND_IN_PAGE", text: input.text, regex: input.regex }, 0, ctx.shouldStop);
       if (!res.ok) return { ok: false, error: res.error };
       return { ok: true, tab_id: ctx.tabId, matches: res.matches, truncated: res.truncated };
+    }
+
+    // Never changes the page, so no attachPageState — same shape as find_in_page above.
+    case "copy_to_clipboard": {
+      const res = await sendToTab(ctx.tabId, { type: "CLIPBOARD_WRITE", text: input.text }, 0, ctx.shouldStop);
+      if (!res.ok) return { ok: false, error: res.error };
+      return { ok: true, tab_id: ctx.tabId };
+    }
+
+    case "read_clipboard": {
+      const res = await sendToTab(ctx.tabId, { type: "CLIPBOARD_READ" }, 0, ctx.shouldStop);
+      if (!res.ok) return { ok: false, error: res.error };
+      return { ok: true, tab_id: ctx.tabId, text: res.text };
+    }
+
+    // Doesn't touch the tab at all — sidepanel.js renders the actual
+    // download card straight from this call's own persisted input (the
+    // content), so the result just confirms success rather than echoing
+    // potentially-large content back into the model's own context a second
+    // time (the input already carries it once, same as any other tool call).
+    case "create_file": {
+      const filename = (input.filename || "").trim();
+      if (!filename) return { ok: false, error: "filename is required." };
+      const content = input.content ?? "";
+      const size = new TextEncoder().encode(content).length;
+      if (size > MAX_CREATED_FILE_BYTES) {
+        return {
+          ok: false,
+          error: `That file is too large (${(size / (1024 * 1024)).toFixed(1)}MB, max ${MAX_CREATED_FILE_BYTES / (1024 * 1024)}MB) - split it into smaller files.`,
+        };
+      }
+      return { ok: true, filename, mime_type: guessCreatedFileMimeType(filename), size };
     }
 
     case "upload_file": {

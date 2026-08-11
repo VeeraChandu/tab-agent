@@ -337,6 +337,32 @@ export const TOOLS = [
     },
   },
   {
+    name: "copy_to_clipboard",
+    description:
+      "Write text to the OS clipboard, exactly like a user pressing Ctrl+C would. Use this to hand a value found on " +
+      "one page (an order number, an address, a generated password) to something the agent itself can't type — a " +
+      "native OS dialog, a different application — or as a fast way to move a value into a field on another tab via " +
+      "paste. Only works while this tab is the focused/active one — a background tab (e.g. a parallel_investigate " +
+      "branch) will report an error.",
+    input_schema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The exact text to copy." },
+      },
+      required: ["text"],
+    },
+  },
+  {
+    name: "read_clipboard",
+    description:
+      "Read whatever text is currently on the OS clipboard, exactly like a user pressing Ctrl+V would show. Use this " +
+      "to pick up something the user copied outside the browser (from another app, a password manager) before you " +
+      "started, or a value you asked them to copy via ask_user. Only works while this tab is the focused/active " +
+      "one, and Chrome may withhold clipboard contents without an explicit permission grant — either shows up as an " +
+      "error on the result rather than silently returning nothing.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "fill_form",
     description:
       "Fill several fields on the page in ONE step instead of a type_text per field — use it whenever you're filling " +
@@ -641,6 +667,25 @@ export const TOOLS = [
         table_id: { type: "string", description: "The id of the table to extract, e.g. 'tbl1', from the most recent read_page scan." },
       },
       required: ["table_id"],
+    },
+  },
+  {
+    name: "create_file",
+    description:
+      "Generate a downloadable file from text content YOU produce, and offer it to the user right in the chat with a " +
+      "Download button — a CSV/JSON export, a converted or reformatted document, a written report, meeting notes, " +
+      "whatever the task calls for. This is for content you generate yourself, not for saving a file that already " +
+      "exists on a page (there is no tool for that). The file type is inferred from the filename's extension, so " +
+      "always include one (e.g. 'report.md', 'data.csv', 'summary.json') — unrecognized extensions fall back to " +
+      "plain text. Keep each file to a reasonable size for a single generated document; split unusually large output " +
+      "across a few calls with different filenames rather than one huge one.",
+    input_schema: {
+      type: "object",
+      properties: {
+        filename: { type: "string", description: "e.g. 'report.md', 'data.csv', 'summary.json' — include the extension." },
+        content: { type: "string", description: "The complete file content, as plain text." },
+      },
+      required: ["filename", "content"],
     },
   },
   {

@@ -16,6 +16,7 @@ import { startMediaSniffer } from "./lib/mediaSniffer.js";
 import { startNavErrorTracking } from "./lib/navErrors.js";
 import { deleteCacheForSession, DEFAULT_MAX_ENTRIES as PAGE_CACHE_DEFAULT_MAX_ENTRIES } from "./lib/pageCache.js";
 import { recordAttachment, deleteCacheForSession as deleteAttachmentCacheForSession } from "./lib/attachmentCache.js";
+import { startRunningBadge, stopRunningBadge } from "./lib/statusBadge.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
@@ -102,6 +103,10 @@ function beginKeepAlive() {
   if (!keepAliveTimer) {
     keepAliveTimer = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
     chrome.power.requestKeepAwake("system");
+    // Same 0→1 transition as the keep-alive above — the one moment any run
+    // (interactive, resumed branch, or scheduled) starts — so the icon shows
+    // "a task is running" even with the side panel closed.
+    startRunningBadge();
   }
 }
 function endKeepAlive() {
@@ -110,6 +115,7 @@ function endKeepAlive() {
     clearInterval(keepAliveTimer);
     keepAliveTimer = null;
     chrome.power.releaseKeepAwake();
+    stopRunningBadge();
   }
 }
 
@@ -242,20 +248,15 @@ async function getPageCacheConfig() {
 
 // Off by default - the chrome.debugger trusted-input fallback (see
 // lib/trustedInput.js) shows Chrome's own "being debugged" infobar on the
-// tab while it's attached, so this is opt-in only. options.js requests/
-// removes the actual "debugger" optional permission when this toggle is
-// flipped; this just reads the user's stated preference.
+// tab while it's attached, so this is opt-in only via the Settings toggle.
+// "debugger" itself is a required permission (Chrome doesn't allow it to be
+// requested/revoked at runtime via chrome.permissions - see manifest.json),
+// so unlike other toggles there's no separate grant to reconcile here: it's
+// always present once the extension is installed, and this toggle only
+// controls whether the code path is used at all.
 async function getTrustedInputEnabled() {
   const { trustedInputFallback } = await chrome.storage.local.get(["trustedInputFallback"]);
-  if (!trustedInputFallback?.enabled) return false;
-  // The user can revoke the optional "debugger" permission directly from
-  // chrome://extensions without ever touching the Settings toggle -
-  // options.js only reconciles storage back to false when Options happens
-  // to be reopened, so check the ACTUAL grant here too. Otherwise every
-  // click retry after a revoke attempts (and fails) a doomed attach until
-  // then, instead of just skipping the retry like it would if storage were
-  // accurate.
-  return chrome.permissions.contains({ permissions: ["debugger"] });
+  return !!trustedInputFallback?.enabled;
 }
 
 // --- vision fallback -----------------------------------------------------
@@ -631,7 +632,10 @@ async function drive(session, node, runOpts) {
   // accidentally read a DIFFERENT run's state even if activeRuns.set(id, ...)
   // gets overwritten by something else for this same session id before this
   // run finishes.
-  const runState = { stop: false, skipSubtasks: false };
+  // nodeId rides along so a reopened side panel (see GET_RUNNING_SESSION
+  // below) can find and re-attach to the exact node that's live right now,
+  // not just the session.
+  const runState = { stop: false, skipSubtasks: false, nodeId: node.id };
   activeRuns.set(session.id, runState);
   beginKeepAlive();
   try {
@@ -997,6 +1001,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // --- message routing -----------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  // Lets a freshly (re)opened side panel re-attach to a task that's still
+  // running from before it was closed, instead of defaulting to a blank new
+  // chat with no sign anything is in progress. Only answers when exactly one
+  // interactive run is active — same "don't guess which one" reasoning as
+  // findRunState's own fallback above: with two windows each running their
+  // own chat, this panel has no way to know which one it used to be showing.
+  if (msg.type === "GET_RUNNING_SESSION") {
+    if (activeRuns.size === 1) {
+      const [sessionId, runState] = activeRuns.entries().next().value;
+      sendResponse({ sessionId, nodeId: runState.nodeId });
+    } else {
+      sendResponse({ sessionId: null });
+    }
+    return;
+  }
+
   if (msg.type === "RUN_TASK") {
     (async () => {
       const config = await getConfig(msg.providerId, msg.modelId);
@@ -1412,10 +1432,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // it immediately and skip itself before doing anything.
       let runState = activeRuns.get(session.id);
       if (!runState) {
-        runState = { stop: false, skipSubtasks: false };
+        runState = { stop: false, skipSubtasks: false, nodeId: node.id };
         activeRuns.set(session.id, runState);
       } else {
         runState.skipSubtasks = false;
+        runState.nodeId = node.id;
       }
       beginKeepAlive();
 

@@ -1009,6 +1009,28 @@ main {
 .filter-image-cell.no-match { opacity: 0.45; }
 .filter-image-cell.uncertain { border-style: dashed; opacity: 0.7; }
 
+/* --- create_file tool result --------------------------------------------- */
+
+.tool-body.create-file-result {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.download-file-btn {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.download-file-btn:hover { background: var(--accent-light); border-color: var(--accent); color: var(--accent-dark); }
+
 /* --- parallel_investigate / run_batch live status cards ------------------ */
 
 .entry.investigate-card, .entry.batch-card {

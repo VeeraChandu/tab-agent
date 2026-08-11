@@ -20,8 +20,8 @@ whatever provider the user configured in Settings.
 ## Repo layout
 
 `src/` is the loadable extension - every file `chrome://extensions` → Load unpacked needs
-(`manifest.json`, `background.js`, `content.js`, `options.*`, `sidepanel.*`, `lib/`, `icons/`) and
-nothing else. Everything at the repo root is dev tooling, config, or docs: `test/`, `scripts/`,
+(`manifest.json`, `background.js`, `content.js`, `consoleCapture.js`, `options.*`, `sidepanel.*`,
+`lib/`, `icons/`) and nothing else. Everything at the repo root is dev tooling, config, or docs: `test/`, `scripts/`,
 `config/` (`eslint.config.js`, `jest.config.js`), `babel.config.js` (stays at the repo root - it's
 Jest-only and auto-discovery finding it there just works, not worth wiring a `configFile` override
 for), `.github/workflows/` (the two workflow files plus `.releaserc.json`/`release.alpha.config.json`,
@@ -80,18 +80,74 @@ Chrome extension pages don't share a JS runtime, so the pieces talk over `chrome
   session/chat persistence (`chrome.storage.local`), agent presets, the vision-fallback decision, and
   every `chrome.runtime.onMessage` handler (`RUN_TASK`, `ANSWER_QUESTION`, `COMPACT_SESSION`,
   `STEP_LIMIT_RESPONSE`, `SITE_GATE_RESPONSE`, `RESUME_BRANCH`, `SKIP_SUBTASKS`, `STOP_TASK`,
-  `RUN_SCHEDULED_TASK_NOW`, `FOCUS_TAB`, `REOPEN_TAB`, `DELETE_SESSION_CACHE`). It does not touch the DOM of any page directly,
+  `RUN_SCHEDULED_TASK_NOW`, `FOCUS_TAB`, `REOPEN_TAB`, `DELETE_SESSION_CACHE`, `GET_RUNNING_SESSION`). It
+  does not touch the DOM of any page directly,
   instead it drives `lib/agentLoop.js`, which in turn messages `content.js` on the target tab.
 - **`content.js`** - injected into every frame of every page (`document_idle`, `all_frames: true` -
   including cross-origin iframes, since third-party embeds like video players are almost always their
   own iframe). Scans interactive elements and tags each with a short id (`e12`, `e5`, ...) and sizable
-  on-page images (`img3`, ...), and exposes the primitive actions the agent loop calls: click, type,
-  scroll, extract table. Runs once per page/frame load, so ids are only valid until the next scan (see
-  stale-element recovery below) and are scoped to the frame they came from. `lib/agentLoop.js`'s
-  `sendToTab()` always targets an explicit `frameId` (default `0`, the main frame) so a broadcast-style
-  `chrome.tabs.sendMessage` never has to guess which of several frames' content.js instances should
-  answer - `read_page`/`click`/`type_text` accept an optional `frame_id` (from the `list_frames` tool) to
-  deliberately target a specific iframe instead.
+  on-page images (`img3`, ...), and exposes the primitive actions the agent loop calls: `click`,
+  `type_text`, `select_option`, `press_key`, `hover`, `fill_form`, `drag`, `upload_file`, `scroll`,
+  `find_in_page`, `wait_for`, `extract_table`, `copy_to_clipboard`/`read_clipboard` (via
+  `navigator.clipboard`, only reliable while the tab is focused/active). Runs once per page/frame load, so ids are only valid
+  until the next scan (see stale-element recovery below) and are scoped to the frame they came from.
+  `lib/agentLoop.js`'s `sendToTab()` always targets an explicit `frameId` (default `0`, the main frame)
+  so a broadcast-style `chrome.tabs.sendMessage` never has to guess which of several frames' content.js
+  instances should answer - `read_page`/`click`/`type_text` accept an optional `frame_id` (from the
+  `list_frames` tool) to deliberately target a specific iframe instead. `click`/`type_text` also accept
+  `element_text` (+ optional `element_tag`) as a fallback target when a scanned id has gone stale -
+  matched against the current page's own tagged elements, erroring if more than one matches. Element
+  scanning, `findByAgentId`, and click/type targeting all walk into **open shadow roots** (a manual
+  stack-based traversal since `querySelectorAll`/`querySelector` never descend into them) - this is what
+  makes web-component UIs (Salesforce Lightning, most design systems) scannable at all; closed shadow
+  roots stay invisible, the same limitation Playwright has. Every scanned element also carries
+  `box: [x, y, width, height]` (viewport-relative), which `click` accepts directly as `x`/`y` in place of
+  `element_id` for canvas/map content with nothing to tag. `click` additionally takes `click_type`
+  (`"double"`/`"right"`) and `modifiers` (`Alt`/`Ctrl`/`Meta`/`Shift`). Two content sources a plain DOM
+  scan can't see are folded into `read_page`'s text: a rendered PDF's `.textLayer` spans (`scanPdfViewer()`
+  in content.js) and, via a separate `world: "MAIN"` `chrome.scripting.executeScript` call
+  (`readEditorText()` in `lib/agentLoop.js`, since the document lives in the page's own JS heap, not the
+  DOM), a code editor's complete document - CodeMirror 6/5, Monaco, or Ace - rather than just whatever
+  lines its virtualized viewport happens to have rendered.
+- **`consoleCapture.js`** - a second, separate content script registered in `manifest.json` with
+  `"world": "MAIN"` and `run_at: "document_start"` (`content.js` itself runs in the isolated world, which
+  shares the DOM but not the JS heap - `window.console`/`window.alert` there are different objects than
+  the page's own, so wrapping them from `content.js` would never see the page's real calls). Wraps
+  `console.error`/`console.warn` and the `error`/`unhandledrejection` window events into an in-page ring
+  buffer (`window.__tabAgentConsoleBuffer`, capped at 50 entries), and replaces `window.alert`/`confirm`/
+  `prompt` outright (not forwarded) so a native dialog can never block the page's JS thread waiting for a
+  human click - which would otherwise also block `content.js`'s response to whatever action triggered it,
+  freezing the run at the `sendToTab` timeout with no way for an extension to dismiss a native dialog.
+  `confirm()` auto-accepts, `prompt()` auto-cancels, both logged to `window.__tabAgentDialogBuffer` -
+  the same auto-accept default Playwright and Chrome DevTools use. `readCapturedEvents()` in
+  `lib/agentLoop.js` drains both buffers via its own `world: "MAIN"` `chrome.scripting.executeScript` call
+  (same isolated/MAIN-world split, same reason) and folds them into `read_page`'s `console_note`/
+  `dialog_note`; failed XHR/fetch requests captured separately via `chrome.webRequest` surface as
+  `failed_requests`. Together these mean a page that "looks unchanged" after an action and a page that's
+  actually erroring are no longer indistinguishable to the model.
+- **`lib/navErrors.js`** - `chrome.webNavigation`-based per-tab tracking of the actual network failure
+  (DNS failure, connection refused, ...) behind a failed top-level navigation. A `navigate`/`click` that
+  lands on Chrome's own net-error page looks identical to a genuinely extension-restricted page from
+  `ensureContentScript()`'s point of view (content scripts can't run on either), so without this
+  `lib/agentLoop.js` misreports a real network failure as "restricted page" - a wrong diagnosis pointing
+  the model away from the actual problem. `startNavErrorTracking()` must be called synchronously at
+  service worker load (background.js does this at module top level), same MV3 listener-registration
+  constraint as `mediaSniffer.js` above.
+- **`lib/trustedInput.js`** - a `chrome.debugger` + CDP `Input.*` fallback for dispatching a real,
+  OS-level trusted click, for sites whose own listeners check `event.isTrusted` and silently ignore every
+  synthetic DOM event `content.js` normally dispatches (payment widgets, anti-bot form guards) - reported
+  back as an inert `page_changed: false` with no diagnosis of why. `debugger` is a required permission
+  (in manifest.json's `permissions`, granted at install) because Chrome does not allow it to be listed as
+  optional at all - it's rejected from `optional_permissions` at load with a console warning and silently
+  dropped, so `chrome.permissions.request`/`remove` were never viable for it the way they are for other
+  toggleable features. Actually USING it is still gated behind a Settings → Limits toggle (off by
+  default), since it shows Chrome's own "being debugged" infobar on the tab while attached regardless of
+  when the underlying permission was granted; `getTrustedInputEnabled()` in background.js just reads that
+  stored preference; there's no permission-revocation check to reconcile since a required permission
+  can't be individually revoked from `chrome://extensions` the way an optional one can. Only ever retried
+  once, only from the main loop, only main-frame, only for `click` when the normal dispatch reported
+  `page_changed: false` (see the one call site in `lib/agentLoop.js`'s `"click"` case) - always detaches
+  in a `finally`, even on failure, so a rejected attach/command never leaves the infobar stuck on.
 - **`lib/mediaSniffer.js`** - passive `chrome.webRequest`-based capture of network requests that look
   like a direct media stream (HLS/DASH manifests/segments, or a plain video/audio file), per tab, cleared
   on every top-level navigation. Exists because some players never put their stream URL anywhere in the
@@ -136,6 +192,18 @@ Chrome extension pages don't share a JS runtime, so the pieces talk over `chrome
   synthetic session's attachment-cache entries are deleted in the same function's `finally` block after
   every run (recomputing the same id, rather than a separate `DELETE_SESSION_CACHE` message - there's no
   session/node tree entry to key off here) so they don't pile up.
+- **`lib/statusBadge.js`** - draws a small pulsing green dot in the toolbar icon's bottom-right corner
+  for as long as any task is running, via `chrome.action.setIcon` + `OffscreenCanvas` redrawn on a
+  200ms interval, not `chrome.action.setBadgeText` - the text-badge API draws a colored box sized to
+  fit its text, which covers roughly a third of the icon for even one character and can't animate at
+  all. `startRunningBadge()`/`stopRunningBadge()` are called from `background.js`'s
+  `beginKeepAlive`/`endKeepAlive` (the existing 0→1/1→0 reference-counted choke point already shared by
+  every run - interactive, resumed branch, and scheduled), so it needed no new state of its own. Guards
+  against one specific race: `startRunningBadge()` is async (awaits fetching/decoding the icon PNGs
+  before it can start the interval) but called fire-and-forget, so a task fast enough to finish before
+  that load resolves could otherwise leave the dot stuck on forever - a `running` flag set synchronously
+  (unlike `pulseTimer`, only set after the await) lets a stop that lands mid-load cancel the pending
+  start instead.
 - **`sidepanel.js`** / **`options.js`** - the two UI surfaces. Side panel is the chat; Options is
   provider/agent/limits/scheduled-task configuration. Both are plain scripts driven by
   `chrome.runtime.sendMessage` round-trips to background.js - neither talks to a provider API or a tab
@@ -184,7 +252,7 @@ sharing `runSubLoop()`:
   and reset at the start of every `parallel_investigate`/`run_batch` call so a stale flag can't bleed
   into a later, unrelated call.
 
-Two independent stuck-loop guards exist and must stay independent:
+Three independent stuck-loop guards exist and must stay independent:
 
 - `checkRepeatedAction()` - global (main loop + sub-loops), catches identical click/type_text calls
   producing no page change.
@@ -194,6 +262,14 @@ Two independent stuck-loop guards exist and must stay independent:
   filter_images with no click/navigate in between (nudges at 7 consecutive steps, hard-stops at 12).
   It must **not** apply to `run_batch`, whose entire purpose is long uninterrupted scroll/extract
   sequences that this guard would otherwise false-positive on.
+- `checkNoProgress()` - global, and independent of the identity-based streak above on purpose: a fresh
+  scan rides along with every action result (`attachPageState`), so clicking the *same* button ten times
+  produces ten distinct signatures in `checkRepeatedAction()` and never trips it. This one tracks
+  *outcomes* instead of identity via `noteActionProgress()`/`didSomethingHappen()` - it resets the streak
+  counter (`ctx._noProgressStreak`) whenever an action actually changed something (`page_changed`,
+  `navigated`, or `scrolled_by`) and fails the call with a re-orient message once 5 actions in a row did
+  nothing, regardless of whether those 5 actions were all identical or all different. Exported for tests
+  (`test/noProgress.test.js`), same as `compactHistory`.
 
 Three unrelated things can pause a run mid-task (`result.paused` from `runAgentTask()`), and all three
 resume through the same path - background.js's `drive()` (see its `if (result.paused)` branch) saves
@@ -214,6 +290,20 @@ response message to call `drive()` again on the same node:
   resumed via `STEP_LIMIT_RESPONSE`. Unlike the other two, this also sets a 10-minute
   `chrome.alarms` reminder (`stepLimitAlarmName()`) in case the user never comes back to it.
 
+The side panel is a page, not a persistent background surface - closing it destroys its whole JS state,
+so `sidepanel.js` has no memory of what it was showing on its own. On every fresh load it asks
+background.js's `GET_RUNNING_SESSION` handler whether exactly one interactive run is currently in
+`activeRuns` (deliberately silent if zero or more than one - with two windows each mid-task, there's no
+way to know which one this panel used to be showing) and, if so, loads that session and flips the UI
+into "running" state, the same way clicking "Continue" on a step-limit prompt already resumes a known
+node. A **paused** run is the other half of this: it's removed from `activeRuns` the instant it pauses
+(same moment the icon badge below goes dark), so there's no live state to ask for - instead
+`findMostRecentPausedSession()` in `sidepanel.js` reads `sessions` straight from storage and walks each
+one's active path for a `node.pendingQuestion` still sitting unresolved, tie-breaking on `updatedAt`.
+Either way, no special "paused" rendering is needed - `loadSessionIntoView()`'s normal replay of
+`node.uiEvents` already reconstructs the exact `ask_user`/`confirm_continue`/`confirm_site_category` form
+a manual History visit would show.
+
 Separately (not a pause), `isRiskyText()` in `lib/agentLoop.js` pattern-matches a `click`/`type_text`
 target's visible text against `RISKY_ACTION_PATTERNS`/`RISKY_ACTION_KEYWORDS_INTL` (submit/delete/pay/
 confirm-order-style wording, English and a few other languages) *before* executing the action. A match
@@ -224,8 +314,9 @@ running loop, not a `result.paused` pause like the three above.
 Other things worth knowing before touching this file:
 - `ctx` is a single mutable object threaded through the whole run and into every sub-loop - it carries
   `tabId`, `config`, `limits`, `grantedDomains`, `visionConfig`, `sessionId`, `pageCacheConfig`,
-  `turnIndex`, and the abort-signal closures above. `lockedHostname` is set only in branch/batch `ctx`s
-  (never the main loop's), and hard-blocks `navigate`/`recall_page` from leaving that domain.
+  `trustedInputEnabled`, `turnIndex`, and the abort-signal closures above. `lockedHostname` is set only in
+  branch/batch `ctx`s (never the main loop's), and hard-blocks `navigate`/`recall_page` from leaving that
+  domain.
 - Stale element ids after a page re-render are handled by `recoverStaleElement()`: a failed
   click/type_text automatically triggers a fresh `read_page` scan so the model gets corrected ids on
   its very next turn instead of burning a whole extra turn on error → re-scan → retry.
@@ -239,19 +330,29 @@ Other things worth knowing before touching this file:
   points at `read_page_chunk` (with its `chunk_id`/`total_chunks`) alongside the `recall_page` pointer,
   since the chunk store is always on regardless of whether the recall cache is enabled.
 - `attachPageState()` folds a full fresh `readPage()` scan into the *action's own* result (`page`) for
-  `click`/`type_text`/`navigate` whenever the action changed the page, after waiting out any navigation
-  it triggered — so acting and observing cost one step instead of the act-then-`read_page` pair the
-  system prompt used to require (the prompt's "Other rules" now say to use the scan that rode along).
-  It also stamps `url`/`title` (and `navigated: true`) on every one of those results. Because of this,
-  `compactHistory` tracks those three tools under the same freshest-scan key as `read_page`
-  (`PAGE_EMBEDDING_TOOLS`/`PAGE_SCAN_KEY`): a scan riding along with a click makes an earlier
-  `read_page` just as stale as a new `read_page` would, and only the newest survives in full — a
-  superseded one has just its `page` field replaced (the action's own `ok`/`page_changed`/`url` stay).
-  An action that changed nothing carries no scan and so can never evict a real `read_page` result.
-  `compactHistory` is the one function here exported purely for tests (`test/compactHistory.test.js`).
-- `recall_page`, `read_attachment_chunk`, and `read_page_chunk` are all in `SUB_AGENT_ALLOWED_TOOLS`, so
-  a `parallel_investigate` branch can use content the main loop (or another branch) already read/was
-  given even though the branch's own sub-loop history is discarded once it finishes.
+  every tool in `PAGE_EMBEDDING_TOOLS` (`click`, `type_text`, `navigate`, `select_option`, `fill_form`,
+  `press_key`, `hover`, `wait_for`, `drag`, `upload_file`, `scroll`, `switch_tab`, `open_tab`) whenever
+  the action changed the page, after waiting out any navigation it triggered — so acting and observing
+  cost one step instead of the act-then-`read_page` pair the system prompt used to require (the prompt's
+  "Other rules" now say to use the scan that rode along). It also stamps `url`/`title` (and
+  `navigated: true`) on every one of those results. Because of this, `compactHistory` tracks all of
+  `PAGE_EMBEDDING_TOOLS` under the same freshest-scan key as `read_page` (`PAGE_SCAN_KEY`): a scan riding
+  along with any of them makes an earlier `read_page` just as stale as a new `read_page` would, and only
+  the newest survives in full — a superseded one has just its `page` field replaced (the action's own
+  `ok`/`page_changed`/`url` stay). An action that changed nothing carries no scan and so can never evict
+  a real `read_page` result. `compactHistory` is the one function here exported purely for tests
+  (`test/compactHistory.test.js`).
+- `SUB_AGENT_ALLOWED_TOOLS` (a `parallel_investigate`/`run_batch` sub-loop's full tool set) is `read_page`,
+  `click`, `type_text`, `select_option`, `fill_form`, `press_key`, `hover`, `wait_for`, `find_in_page`,
+  `drag`, `scroll`, `navigate`, `extract_table`, `view_image`, `filter_images`, `recall_page`,
+  `read_attachment_chunk`, and `read_page_chunk`, plus `open_tab`/`switch_tab` gated separately via
+  `ctx.allowTabTools` (granted to `parallel_investigate` branches, withheld from `run_batch` since
+  `batchCtx` has no `openedTabIds` to auto-close what it opens - see the comment above `TAB_TOOLS` in
+  `lib/agentLoop.js`). `upload_file`, `close_tab`, `copy_to_clipboard`, `read_clipboard`, and
+  `create_file` are deliberately absent - anything outside this set gets a clear refusal instead of
+  being silently ignored. `recall_page`, `read_attachment_chunk`, and
+  `read_page_chunk` being in this set is what lets a branch use content the main loop (or another branch)
+  already read/was given even though the branch's own sub-loop history is discarded once it finishes.
 - `callProviderRetryingEmpty()` wraps `callProvider()` in the main loop and in `runSubLoop()`: some
   OpenAI-compatible backends occasionally return a genuinely empty completion (no text, no tool calls,
   normal "stop" finish reason - not a `max_tokens`/`length` truncation) most often right after a tool
@@ -309,14 +410,19 @@ over `TOOLS` generically (see the two `TOOLS.map` calls) and need no per-tool ed
 ### Module system is intentionally mixed - don't "fix" it
 
 `background.js`, `lib/agentLoop.js`, `lib/providers.js`, `lib/tools.js`, `lib/vision.js`,
-`lib/siteCategories.js`, `lib/mediaSniffer.js`, `lib/pageCache.js`, `lib/attachmentCache.js`, and
-`options.js` are ES modules (`import`/`export`). `content.js`,
-`sidepanel.js`, `lib/markdown.js`, and `lib/pricing.js` are classic scripts loaded via plain
-`<script src=...>` tags (no `type="module"`) and attach their API to `window` via an IIFE
+`lib/siteCategories.js`, `lib/mediaSniffer.js`, `lib/navErrors.js`, `lib/trustedInput.js`,
+`lib/pageCache.js`, `lib/attachmentCache.js`, `lib/statusBadge.js`, and `options.js` are ES modules
+(`import`/`export`).
+`content.js`, `sidepanel.js`, `lib/markdown.js`, and `lib/pricing.js` are classic scripts loaded via
+plain `<script src=...>` tags (no `type="module"`) and attach their API to `window` via an IIFE
 (`window.TabAgentMarkdown`, `window.TabAgentPricing`) instead of `export`. This split exists because
 `sidepanel.html` loads `lib/markdown.js`/`lib/pricing.js`/`sidepanel.js` as plain scripts, not modules;
 see the comment at the top of `lib/pricing.js`. Match whichever pattern the file you're editing
-already uses.
+already uses. `consoleCapture.js` is also a classic script (declared directly in `manifest.json`'s
+`content_scripts`, not loaded via `<script>` at all) but attaches nothing to `window.TabAgent*` - its
+job is done entirely by its side effects on `window.console`/`alert`/`confirm`/`prompt` in the page's
+MAIN world, read back by `lib/agentLoop.js` via `chrome.scripting.executeScript`, not by any exported
+function.
 
 ### Data model
 
@@ -336,11 +442,15 @@ Jest runs under `jest-environment-jsdom` with Babel transforming ES modules for 
 (source files are untouched - Chrome loads them as raw ESM/classic scripts, unaffected by Babel).
 Classic-script `lib/` files (`markdown.js`, `pricing.js`) are tested by `require()`-ing them for their
 side effect of setting `window.TabAgent*`, since they don't use `export`. There's no meaningful way to
-unit-test `content.js`'s DOM scanning, `background.js`'s message routing, or `lib/agentLoop.js`'s tab
-orchestration without a real Chrome environment - tests here are limited to the pure-logic `lib/`
-modules (pricing, markdown rendering, vision-capability heuristic, site-category detection, tool
-schema shape, page/attachment cache chunking and eviction logic - the latter two fake
-`chrome.storage.local` with an in-memory `Map` rather than mocking the whole extension).
+unit-test `content.js`'s DOM scanning, `consoleCapture.js`'s MAIN-world wrapping, `background.js`'s
+message routing, or `lib/agentLoop.js`'s tab orchestration (including `lib/navErrors.js`'s
+`chrome.webNavigation` listeners and `lib/trustedInput.js`'s `chrome.debugger` calls) without a real
+Chrome environment - tests here are limited to the pure-logic `lib/` modules (pricing, markdown
+rendering, vision-capability heuristic, site-category detection, tool schema shape, page/attachment
+cache chunking and eviction logic - the latter two fake `chrome.storage.local` with an in-memory `Map`
+rather than mocking the whole extension) plus the two exported-for-tests pieces of `lib/agentLoop.js`
+noted above: `compactHistory` (`test/compactHistory.test.js`) and the no-progress guard
+(`test/noProgress.test.js`).
 
 ### Release pipeline: one-time manual setup required
 
@@ -355,17 +465,23 @@ check this list before assuming it's a bug:
 1. **`dev` branch must exist.** `main` doesn't exist yet as of this writing either - bootstrap both
    manually (e.g. `git checkout -b dev && git push -u origin dev`, then `git checkout -b main && git
    push -u origin main` once dev has real history worth releasing).
-2. **`main` needs ruleset protection with a bypass actor.** `promote-to-main.yml` fast-forwards main
-   using the `MAIN_PUSH_TOKEN` secret (see below) specifically so a PAT/App with bypass rights - not
-   the default `GITHUB_TOKEN` - performs the push. Set this up under Settings → Rules → Rulesets:
-   protect `main` (require PRs, block force-pushes/deletions as desired), then add the identity that
-   owns `MAIN_PUSH_TOKEN` as a bypass actor. **Confirm the exact bypass mechanism directly in the
-   ruleset UI when setting this up** - whether a fine-grained PAT's own identity can be listed as a
-   bypass actor, or whether a dedicated GitHub App is required instead, was not verified from this
-   environment.
+2. **`main` needs ruleset protection with a bypass actor.** Two separate pushes need to get past it,
+   both authenticated with `MAIN_PUSH_TOKEN` (see below) instead of the default `GITHUB_TOKEN`:
+   `promote-to-main.yml`'s own fast-forward, and - easy to miss, since it happens inside a dependency's
+   code rather than this repo's own workflow YAML - `@semantic-release/git`'s "prepare" step inside
+   `release.yml`'s `npx semantic-release` run, which pushes the version-bump commit and tag straight to
+   `main`. `release.yml` passes `MAIN_PUSH_TOKEN` as that step's own `GITHUB_TOKEN` env var specifically
+   so semantic-release's git plugin picks it up instead of the default token, which isn't a bypass actor
+   and gets a GH013 rule violation. Set this up under Settings → Rules → Rulesets: protect `main`
+   (require PRs, block force-pushes/deletions as desired), then add the identity that owns
+   `MAIN_PUSH_TOKEN` as a bypass actor - confirmed working here as a `RepositoryRole` bypass actor
+   (Admin role, `bypass_mode: "always"`) rather than a per-identity bypass, i.e. `MAIN_PUSH_TOKEN` needs
+   to belong to an account with Admin access to this repo, not just any PAT with `contents: write`.
 3. **Repo secrets to add** (Settings → Secrets and variables → Actions):
    - `MAIN_PUSH_TOKEN` - PAT (or GitHub App installation token) for the bypass identity from step 2;
-     needs `contents: write` on this repo.
+     needs `contents: write` on this repo (covers both its own git push and, since `release.yml` now
+     reuses it as `@semantic-release/github`'s auth token too, that plugin's Release-creation API call -
+     Releases fall under the "contents" permission).
    - `CHROME_CLIENT_ID`, `CHROME_CLIENT_SECRET`, `CHROME_REFRESH_TOKEN` - OAuth credentials for the
      Chrome Web Store API, obtained via a Google Cloud OAuth client (see Chrome Web Store API docs for
      the `chrome-webstore-upload` auth flow this project uses).

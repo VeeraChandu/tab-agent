@@ -136,7 +136,7 @@
       <hr />
       <h2>
         Trusted input fallback
-        <button type="button" class="info-icon" data-tooltip="When a click's synthetic event gets silently ignored by a site (payment widgets and anti-bot form guards sometimes check event.isTrusted and drop anything else), the agent normally has no way around that. Turning this on lets it retry ONCE through chrome.debugger's real input pipeline, which the page can't tell apart from an actual click - but Chrome shows its own 'being debugged' banner on the tab while that's happening, and this requires granting the debugger permission. Off by default; only turn it on if you're hitting sites where clicks seem to do nothing.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="When a click's synthetic event gets silently ignored by a site (payment widgets and anti-bot form guards sometimes check event.isTrusted and drop anything else), the agent normally has no way around that. Turning this on lets it retry ONCE through chrome.debugger's real input pipeline, which the page can't tell apart from an actual click - but Chrome shows its own 'being debugged' banner on the tab while that's happening. The debugger permission itself is granted at install; this toggle only controls whether it's ever used. Off by default; only turn it on if you're hitting sites where clicks seem to do nothing.">ⓘ</button>
       </h2>
       <div class="field-row toggle-row">
         <span>Enable trusted-input retry (chrome.debugger)</span>

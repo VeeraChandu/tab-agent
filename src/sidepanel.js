@@ -420,6 +420,65 @@ privacyNoticeDismiss.addEventListener("click", () => {
 checkPrivacyNotice();
 
 loadProviders();
+
+// A task started before this panel was closed (or before it was ever
+// opened, if the run was kicked off from a different window) keeps running
+// in the background regardless — background.js's activeRuns doesn't care
+// whether anyone's watching. Without this, reopening the panel always
+// defaults to a blank new chat with zero indication that anything is
+// happening, other than the toolbar's pulsing dot — the only signal
+// available is the tool-call log inside a chat this panel isn't showing.
+// Re-attaching means loading that chat AND telling the UI it's running
+// (setRunning/showStatus/showTypingBubble), the same way clicking
+// "Continue" on a step-limit prompt already resumes a known node — a live
+// AGENT_EVENT broadcast could be seconds away, or over a minute (still
+// within the watchdog's grace period — see setRunning), so there's nothing
+// to visibly wait for in between.
+// A paused run (ask_user, a step-limit check-in, or a site-access gate) is
+// the other half of drive()'s two exit paths — unlike an active run, it's
+// not tracked in background.js's in-memory activeRuns at all (drive()'s
+// finally block clears that entry the instant it pauses, same moment
+// getRunningBadge's dot would turn off), so there's no live state to ask
+// background.js for. It's fully described by node.pendingQuestion, already
+// sitting in storage, so this reads sessions directly rather than adding a
+// second message round-trip. Ties go to whichever chat was paused most
+// recently — with several waiting at once, that's the one most likely to
+// still be relevant.
+function findMostRecentPausedSession(sessions) {
+  let best = null;
+  for (const raw of sessions) {
+    const session = migrateSessionIfNeeded(raw);
+    const path = computeActivePath(session);
+    const lastNode = path[path.length - 1];
+    if (!lastNode?.pendingQuestion) continue;
+    if (!best || (session.updatedAt || 0) > (best.updatedAt || 0)) best = session;
+  }
+  return best;
+}
+
+(async () => {
+  const { sessionId, nodeId } = await chrome.runtime.sendMessage({ type: "GET_RUNNING_SESSION" }).catch(() => ({}));
+  if (sessionId) {
+    const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+    const raw = sessions.find((s) => s.id === sessionId);
+    if (!raw) return;
+    loadSessionIntoView(raw);
+    activeRunNodeId = nodeId || null;
+    setRunning(true);
+    showStatus("Thinking", true);
+    showTypingBubble();
+    return;
+  }
+
+  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+  const paused = findMostRecentPausedSession(sessions);
+  // loadSessionIntoView's own renderSessionPath replays the node's
+  // ask_user/confirm_continue/confirm_site_category uiEvent exactly as it
+  // would on a manual History visit, forms and all — no separate "paused"
+  // UI state to set here, since setRunning's default (false) is already
+  // the resting state a paused chat wants (composer usable, no progress bar).
+  if (paused) loadSessionIntoView(paused);
+})();
 settingsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
 
 // --- new chat / history -------------------------------------------------
@@ -1264,6 +1323,9 @@ function toolIcon(name) {
     screenshot: "📸",
     read_tabs: "🗂️",
     extract_table: "📋",
+    copy_to_clipboard: "📤",
+    read_clipboard: "📥",
+    create_file: "📄",
   };
   return icons[name] || "⚙️";
 }
@@ -1298,6 +1360,9 @@ const TOOL_LABELS = {
   screenshot: "Taking a screenshot",
   parallel_investigate: "Investigating sources",
   run_batch: "Running batch task",
+  copy_to_clipboard: "Copying to clipboard",
+  read_clipboard: "Reading the clipboard",
+  create_file: "Creating a file",
 };
 function toolLabel(name) {
   return TOOL_LABELS[name] || name.replace(/_/g, " ");
@@ -1319,6 +1384,11 @@ function updateToolEntry(id, name, result, input) {
 
   if (name === "filter_images" && ok) {
     renderFilterImagesEntry(div, result);
+    return;
+  }
+
+  if (name === "create_file" && ok) {
+    renderCreateFileEntry(div, result, input);
     return;
   }
 
@@ -1454,6 +1524,76 @@ function renderFilterImagesEntry(div, result) {
   uncertain.forEach((e) => addCell(e, "uncertain"));
   body.appendChild(grid);
 
+  scrollToBottomIfNeeded();
+}
+
+function formatFileSize(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// The file's actual text lives only in the tool CALL's own input (see
+// lib/agentLoop.js's create_file case) — result carries just filename/
+// mime_type/size, so this is the one render function that reads `input`
+// instead of `result` for its main content. Blob + a synthetic <a download>
+// click needs no chrome.downloads permission at all; it's the same
+// mechanism any web page uses to offer a generated file.
+function renderCreateFileEntry(div, result, input) {
+  const filename = result.filename || input?.filename || "file.txt";
+  const mimeType = result.mime_type || "text/plain";
+  const content = input?.content ?? "";
+  const sizeLabel = formatFileSize(typeof result.size === "number" ? result.size : content.length);
+
+  const fillBody = (body) => {
+    body.classList.add("create-file-result");
+    body.innerHTML = "";
+
+    const info = document.createElement("div");
+    info.className = "tool-text";
+    info.textContent = `${filename} · ${sizeLabel}`;
+    body.appendChild(info);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "download-file-btn";
+    btn.textContent = "⬇ Download";
+    btn.addEventListener("click", () => {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    body.appendChild(btn);
+  };
+
+  if (!div) {
+    // Same defensive fallback as renderViewImageEntry/renderFilterImagesEntry
+    // above — shouldn't normally happen since the assistant event that
+    // preceded this always creates the pending card first via addPendingTool.
+    const wrapper = document.createElement("div");
+    wrapper.className = "entry tool ok";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = `${toolIcon("create_file")} ${toolLabel("create_file")}`;
+    wrapper.appendChild(label);
+    const body = document.createElement("div");
+    body.className = "tool-body";
+    fillBody(body);
+    wrapper.appendChild(body);
+    logEl.appendChild(wrapper);
+    scrollToBottomIfNeeded();
+    return;
+  }
+
+  div.classList.remove("pending");
+  div.classList.add("ok");
+  const body = div.querySelector(".tool-body");
+  if (!body) return;
+  fillBody(body);
   scrollToBottomIfNeeded();
 }
 
@@ -2013,6 +2153,8 @@ function summarizeInput(name, input) {
   if (name === "extract_table") return input.table_id || "";
   if (name === "view_image") return input.image_id || "";
   if (name === "filter_images") return `${(input.image_ids || []).length} image${(input.image_ids || []).length === 1 ? "" : "s"} - "${input.criteria || ""}"`;
+  if (name === "copy_to_clipboard") return `"${(input.text || "").slice(0, 60)}"`;
+  if (name === "create_file") return input.filename || "";
   return JSON.stringify(input);
 }
 
@@ -2050,6 +2192,9 @@ function summarizeResult(name, result, input) {
   }
   if (name === "wait_for") {
     return result.found ? "Condition met." : "Timed out waiting.";
+  }
+  if (name === "read_clipboard" && result.ok) {
+    return `Clipboard: "${(result.text || "").slice(0, 60)}"`;
   }
   if ((name === "view_image" || name === "screenshot") && result.description) {
     return result.description;
@@ -2134,7 +2279,12 @@ taskInput.addEventListener("input", () => {
   autoResize();
   checkForSlashCommand();
 });
-autoResize();
+// Deferred a frame — called this synchronously at parse time, the side
+// panel's own layout isn't always settled yet, so scrollHeight can measure
+// against a not-yet-final width and stick the box near its 140px cap with
+// nothing to ever re-measure it afterward (no input event fires on an
+// untouched box). Waiting for the next paint gives an accurate reading.
+requestAnimationFrame(autoResize);
 
 taskInput.addEventListener("keydown", (e) => {
   if (!agentPopover.classList.contains("hidden") && popoverMatches.length) {

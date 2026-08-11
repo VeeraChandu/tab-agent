@@ -53,8 +53,9 @@ extra safety net.
 ## How it works
 
 - **content.js** scans the page for interactive elements (links, buttons,
-  inputs, etc.), tags each with a short id, and exposes actions: click,
-  type, scroll.
+  inputs, etc., including inside open shadow roots), tags each with a short
+  id, and exposes the actions listed below (click, type, scroll, fill a
+  form, drag, and more).
 - **background.js** runs the agent loop: it asks the model what to do next,
   given the current page state and the running conversation, executes the
   tool call the model picks, and repeats until the model calls `finish` (or
@@ -73,26 +74,74 @@ extra safety net.
 ## Tools the model can call
 
 `read_page`, `read_page_chunk`, `list_frames`, `list_media_requests`, `recall_page`,
-`read_attachment_chunk`, `click`, `type_text`, `scroll`, `navigate`,
-`list_tabs`, `read_tabs`, `switch_tab`, `open_tab`, `view_image`,
-`filter_images`, `screenshot`, `extract_table`, `parallel_investigate`,
-`run_batch`, `ask_user`, `finish` - see `lib/tools.js` for the exact schema
-and system prompt. The system prompt instructs the model to read the current
-page first and interpret short/ambiguous requests ("check this", "summarize
-it") against what's actually on that page, rather than treating them as
-generic standalone questions. It also pushes the model to actually use a
-site's own filter/sort controls (and gather a proper set of results) on
-search/browse tasks instead of settling for the first match it happens to
-see, including expanding filter sections that start out collapsed.
+`read_attachment_chunk`, `click`, `type_text`, `select_option`, `fill_form`,
+`press_key`, `hover`, `copy_to_clipboard`, `read_clipboard`, `drag`, `upload_file`,
+`wait_for`, `find_in_page`, `scroll`,
+`navigate`, `list_tabs`, `read_tabs`, `switch_tab`, `open_tab`, `close_tab`,
+`view_image`, `filter_images`, `screenshot`, `extract_table`, `create_file`,
+`parallel_investigate`, `run_batch`, `ask_user`, `finish` - see `lib/tools.js`
+for the exact schema and system prompt. The system prompt instructs the model
+to read the current page first and interpret short/ambiguous requests ("check
+this", "summarize it") against what's actually on that page, rather than
+treating them as generic standalone questions. It also pushes the model to
+actually use a site's own filter/sort controls (and gather a proper set of
+results) on search/browse tasks instead of settling for the first match it
+happens to see, including expanding filter sections that start out collapsed.
+
+Element scanning and every click/type-style action pierce **open shadow
+roots** (Salesforce Lightning, most web-component design systems), so a page
+built entirely out of custom elements is just as scannable/actionable as a
+plain one - closed shadow roots stay invisible, the same limitation
+Playwright has. `read_page` also reads the complete document out of a code
+editor (CodeMirror, Monaco, Ace) rather than just whatever lines are
+currently scrolled into view, and the page-by-page text of a rendered PDF
+viewer.
 
 A couple of the less obvious ones:
 
+- **`fill_form`** fills several fields (text, checkboxes, dropdowns, sliders)
+  in one step instead of one `type_text` per field - use it for any form with
+  2+ fields (signup, checkout, filters). It never submits on its own.
+- **`press_key`** sends a single key (or combo like `Control+a`) to an element
+  or to whatever currently has focus - for Escape/Arrow/Tab-driven UI
+  (closing an overlay, an ARIA combobox that only builds options on key
+  events) that no other tool reaches. Doesn't insert text; `type_text` does.
+- **`hover`** reveals hover-only content - mega-menus, tooltips holding a
+  truncated value, row actions that render on mouseenter - that isn't in the
+  DOM (and so isn't in `read_page`) until hovered.
+- **`copy_to_clipboard`** / **`read_clipboard`** write/read the OS clipboard,
+  same as a real Ctrl+C/Ctrl+V - useful for moving a value between tabs, or
+  into/out of something the agent otherwise can't reach (a native dialog, a
+  password manager). Only works while the target tab is focused/active.
+- **`drag`** drags one element onto another - slider thumbs, sortable lists,
+  kanban cards - dispatching both a pointer-sequence and the native HTML5
+  drag-and-drop event family to cover most drag libraries.
+- **`click`** also accepts `x`/`y` viewport coordinates (the only way to reach
+  canvas/map content with no taggable element - every scanned element's `box`
+  field gives a ready-made point), plus `click_type: "double"/"right"` and
+  `modifiers` (Alt/Ctrl/Meta/Shift). `click`/`type_text` also accept
+  `element_text` as a fallback target when a scanned id has gone stale.
+- **`wait_for`** waits for text to appear or disappear (spinner, async
+  search result) instead of polling `read_page` in a loop; capped at 10
+  seconds.
+- **`find_in_page`** searches the page for text/regex without spending a full
+  scan just to locate one thing.
+- **`upload_file`** puts a file already attached to the conversation into a
+  page's `<input type="file">` - text-based attachments only (PDFs/images
+  aren't retained as raw bytes). A synthetic click can't open the OS file
+  picker, so this is the only way to get a file *into* a page.
 - **`read_tabs`** reads several already-open tabs in one call (title, text,
   elements, images) - used for comparison tasks ("compare these 3 tabs")
   instead of switching between them one at a time.
 - **`extract_table`** pulls a real `<table>` element (by id, from `read_page`)
   into clean structured rows - for "put this in a spreadsheet"-style asks,
   instead of eyeballing raw page text.
+- **`create_file`** generates a downloadable file from text the agent writes
+  itself (a CSV/JSON export, a converted document, a written report) and
+  offers it in the chat with a Download button - built entirely client-side
+  (`Blob` + a normal download link), so it needs no extra permission. For
+  content the agent generates only; it can't save a file that already exists
+  on a page as-is.
 - **`list_frames`** / **`list_media_requests`** handle content `read_page`'s
   DOM scan can't see: `list_frames` lists embedded iframes (common for
   third-party video players and widgets) so a `frame_id` can target one
@@ -101,6 +150,9 @@ A couple of the less obvious ones:
   the DOM at all.
 - **`recall_page`** looks up a page already read earlier in the same chat
   without re-visiting it - see **Page recall cache** below.
+- **`close_tab`** closes a tab this run opened earlier with `open_tab` (which
+  can also open `background: true`, i.e. without stealing the browser's
+  foreground tab) - any left open get offered for cleanup once the task ends.
 - **`read_attachment_chunk`** fetches more of a large attached file that
   didn't fit in one piece - see **Composer** below.
 - **`read_page_chunk`** fetches more of a `read_page` result that didn't fit
@@ -109,6 +161,26 @@ A couple of the less obvious ones:
   splitting the same way a large attachment does. Kept as its own tool
   (rather than reusing `read_attachment_chunk`) purely so the model never
   mistakes page content it read for a file the user uploaded.
+
+`read_page` also surfaces problems a plain scan can't tell apart from "the
+click did nothing": recent console errors/unhandled rejections, native
+`alert`/`confirm`/`prompt` dialogs (auto-resolved so the run never freezes
+waiting for a human to click them), and failed network requests all show up
+as notes on the result, and a failed navigation reports the real network
+error instead of misreporting a DNS failure or refused connection as an
+extension-restricted page.
+
+**Trusted-input fallback (Settings → Limits, off by default)**: some sites'
+own listeners check `event.isTrusted` and silently ignore any click that
+isn't a real, OS-level input event (payment widgets, anti-bot form guards) -
+reported back as an inert no-op with no explanation. Turning this on lets a
+click that reported no effect retry once through `chrome.debugger`'s real
+input pipeline, which the page can't tell apart from an actual click. The
+`debugger` permission itself is requested upfront at install (Chrome doesn't
+allow it to be requested/revoked at runtime like other optional permissions),
+but actually using it stays off by default and only turns on when you flip
+this toggle - Chrome also shows its own "being debugged" banner on the tab
+while it's attached.
 
 ## Multi-source and batch tasks (parallel_investigate / run_batch)
 
@@ -187,9 +259,10 @@ something only you can provide - a missing detail, a choice between options,
 or confirmation before something risky. This pauses the run and shows an
 inline form right in the chat (free text, single-choice, or multi-choice).
 Fill it in and hit Submit to continue. The pause is saved with the
-conversation, so if you close the side panel before answering, reopening it
-(or reloading that chat from History) shows the same open question waiting
-for you.
+conversation, so if you close the side panel before answering, reopening the
+side panel itself (not just navigating back to that chat from History) lands
+you straight back on the same open question, waiting for you - along with
+everything the agent already did before it paused.
 
 ## Vision fallback
 
@@ -227,10 +300,14 @@ what's actually rendered on the page:
 - **`screenshot`** captures everything actually visible in the viewport -
   canvas content, CSS background images, complex layouts - not just `<img>`
   tags. Use this when the other two can't see what's needed; the target tab
-  must be the currently active/visible one.
-- All three require a **Vision model** to be set in Settings → Providers -
-  if none is configured, the agent will tell you and stop rather than
-  guessing.
+  must be the currently active/visible one. If your current chat model can
+  see images directly, the screenshot is attached to the result for it to
+  look at; otherwise it falls back to a text description from the
+  separately-configured Vision model.
+- `view_image`/`filter_images` require a **Vision model** to be set in
+  Settings → Providers - if none is configured, the agent will tell you and
+  stop rather than guessing. `screenshot` only needs one as a fallback for a
+  chat model that can't see images itself.
 - When asked to generate an image and refine it, the agent asks up front
   whether you want it to iterate on its own (up to 3 attempts, reporting
   every attempt) or show you each result and wait for your guidance before
@@ -303,6 +380,19 @@ meantime).
   bubble show it's working, and the log auto-scrolls to follow along; if you
   scroll up to read something, auto-scroll pauses for that response and
   resumes automatically the next time you send a task.
+- The extension icon shows a small pulsing green dot in its bottom-right
+  corner for as long as any task (this chat, a resumed branch, or a
+  scheduled check) is running - so closing the side panel doesn't lose track
+  of whether something's still working in the background. Clears the moment
+  the last active run ends.
+- Reopening the side panel while a task is still running lands you straight
+  back on it - full history so far, tool calls included, and still live -
+  instead of a blank new chat with no sign anything's happening. This only
+  kicks in when exactly one task is actively running - with two side panel
+  windows each mid-task, it won't guess which one this window used to be
+  showing. If nothing's actively running but one or more chats are sitting
+  on an unanswered question (see **Ask-user prompts** and **Still
+  working?**), the most recently paused one reopens instead.
 - Each tool call in the log shows a plain-language status ("Reading the
   page", "Investigating sources", "Running batch task", etc.) instead of the
   raw tool name.
@@ -367,10 +457,15 @@ panel first if a scheduled check needs one.
   `read_page` scan (common on dynamic/SPA sites), the next click/type_text
   failure automatically includes a fresh scan so the model can retry with
   corrected ids on its very next turn, instead of burning a whole extra turn
-  on "error → re-scan → retry".
+  on "error → re-scan → retry". `click`/`type_text` also accept `element_text`
+  as an immediate fallback target (the element's visible text) when a scan
+  hasn't run yet but the model still knows what the element says.
 - A `parallel_investigate` branch that gets stuck reading/scrolling the same
   page without clicking or navigating anywhere is nudged, then stopped,
   instead of silently burning its whole step budget on one unproductive page.
+  Separately, in the main run too: 5 actions in a row that genuinely change
+  nothing (not just 5 identical ones - any mix) triggers a re-orient warning
+  telling the model to stop guessing variations and re-check its assumptions.
 - `read_page` returns a page's complete rendered text - there's no fixed
   character trim, the same way attached files are never trimmed (see
   **Composer** below). On the rare page too large for one result, the model
@@ -444,12 +539,13 @@ checks without your API keys, or as a plain backup.
   scanned/image-only PDF with no text layer won't yield anything useful.
   Attachments (images or files) are only sent with the message that starts a
   run, not with `ask_user` answers.
-- The `click` tool refuses (and asks for confirmation) on elements whose
-  text looks irreversible or consequential (delete, purchase, payment,
-  unsubscribe, etc.) - but this is a heuristic on the element's own text, not
-  a guarantee, so it can miss risky actions worded unusually or wave through
-  ones that aren't actually risky. Still review what the agent is about to
-  do on pages with forms, purchases, or account settings.
+- The `click`/`press_key` (Enter)/`drag` tools refuse (and ask for
+  confirmation) on elements/drop targets whose text looks irreversible or
+  consequential (delete, purchase, payment, unsubscribe, etc.) - but this is
+  a heuristic on the element's own text, not a guarantee, so it can miss
+  risky actions worded unusually or wave through ones that aren't actually
+  risky. Still review what the agent is about to do on pages with forms,
+  purchases, or account settings.
 - History is stored in `chrome.storage.local` (with the `unlimitedStorage`
   permission, so the default ~10MB cap doesn't apply), capped at 30
   conversations; older ones are pruned automatically.

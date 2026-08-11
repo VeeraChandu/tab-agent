@@ -15,9 +15,9 @@
     "notifications",
     "webRequest",
     "webNavigation",
-    "power"
-  ],
-  "optional_permissions": [
+    "power",
+    "clipboardRead",
+    "clipboardWrite",
     "debugger"
   ],
   "host_permissions": [

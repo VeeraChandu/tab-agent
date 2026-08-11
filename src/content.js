@@ -708,6 +708,28 @@
     return result;
   }
 
+  // navigator.clipboard requires the document to actually have focus - a
+  // background tab (e.g. a parallel_investigate branch) throws here rather
+  // than silently no-oping, which is exactly what the tool result should
+  // surface to the model instead of a generic failure.
+  async function doClipboardWrite(text) {
+    try {
+      await navigator.clipboard.writeText(text ?? "");
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: `Couldn't write to the clipboard (${err.message || err}) - this tab may not be focused.` };
+    }
+  }
+
+  async function doClipboardRead() {
+    try {
+      const text = await navigator.clipboard.readText();
+      return { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: `Couldn't read the clipboard (${err.message || err}) - this tab may not be focused, or clipboard access was denied.` };
+    }
+  }
+
   // Shared alias table for modifier names - used by both click's `modifiers`
   // array and press_key's `Control+a`-style combo specs (see parseKeySpec
   // below), so an alias added to one (e.g. "option" for alt) can't silently
@@ -1415,6 +1437,8 @@
     WAIT_FOR: (m) => doWaitFor(m.text, m.textGone, m.seconds),
     DRAG: (m) => doDrag(m.fromId, m.toId),
     SET_FILES: (m) => doSetFiles(m.id, m.name, m.text),
+    CLIPBOARD_WRITE: (m) => doClipboardWrite(m.text),
+    CLIPBOARD_READ: () => doClipboardRead(),
     // Used only by retryClickTrusted (agentLoop.js) - see its own comment
     // for why a flat sleep isn't good enough here.
     WAIT_FOR_SETTLE: async (m) => ({ ok: true, signature: await waitForSettled(CLICK_SETTLE_CEILING_MS, m.baseline) }),

@@ -510,18 +510,7 @@ async function load() {
   pageCacheEnabledInput.checked = pageCache.enabled;
   pageCacheMaxEntriesInput.value = pageCache.maxEntries;
 
-  // Reflects the ACTUAL granted permission, not just the stored preference —
-  // the user can revoke an optional permission from chrome://extensions at
-  // any time without going through this toggle, and that should win.
-  const wantsTrustedInput = !!stored.trustedInputFallback?.enabled;
-  const hasDebuggerPermission = await chrome.permissions.contains({ permissions: ["debugger"] });
-  trustedInputEnabledInput.checked = wantsTrustedInput && hasDebuggerPermission;
-  if (wantsTrustedInput && !hasDebuggerPermission) {
-    // The permission was revoked out from under a saved "on" preference —
-    // correct the stored state to match reality instead of silently lying
-    // about it on the next drive() call.
-    await chrome.storage.local.set({ trustedInputFallback: { enabled: false } });
-  }
+  trustedInputEnabledInput.checked = !!stored.trustedInputFallback?.enabled;
 
   renderProviders();
   renderAgents();
@@ -579,21 +568,12 @@ pageCacheMaxEntriesInput.addEventListener("change", () => {
   savePageCacheField("maxEntries", value);
 });
 
-// chrome.permissions.request/remove must be called from a foreground
-// extension page in direct response to a user gesture - this handler IS
-// that gesture, which is why the permission dance lives here rather than in
-// background.js (a service worker can't call chrome.permissions.request).
+// "debugger" is a required permission (granted at install - see
+// manifest.json), so unlike the optional-permission toggles this used to be
+// modeled after, there's nothing to request/remove here: this just persists
+// whether the code path should be used at all.
 trustedInputEnabledInput.addEventListener("change", async () => {
   const wantsEnabled = trustedInputEnabledInput.checked;
-  if (wantsEnabled) {
-    const granted = await chrome.permissions.request({ permissions: ["debugger"] });
-    if (!granted) {
-      trustedInputEnabledInput.checked = false; // user declined the permission prompt
-      return;
-    }
-  } else {
-    await chrome.permissions.remove({ permissions: ["debugger"] }).catch(() => {});
-  }
   await chrome.storage.local.set({ trustedInputFallback: { enabled: wantsEnabled } });
   trustedInputSavedHint.textContent = "Saved.";
   setTimeout(() => {
