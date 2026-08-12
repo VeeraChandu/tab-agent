@@ -663,6 +663,11 @@ main {
 .entry.assistant .body a, .entry.final .body a { color: var(--accent-dark); }
 .entry.assistant .body strong, .entry.final .body strong { font-weight: 650; }
 .entry.assistant .body hr, .entry.final .body hr { border: none; border-top: 1px solid var(--border-strong); margin: 10px 0; }
+.entry.assistant .body blockquote, .entry.final .body blockquote {
+  margin: 0 0 8px; padding: 2px 10px; border-left: 3px solid var(--border-strong); color: var(--text-muted);
+}
+.entry.assistant .body blockquote p, .entry.final .body blockquote p { margin: 0 0 4px; }
+.entry.assistant .body blockquote p:last-child, .entry.final .body blockquote p:last-child { margin-bottom: 0; }
 
 .entry.assistant .body table, .entry.final .body table {
   display: block;
@@ -762,7 +767,7 @@ main {
   display: block;
   height: auto;
   color: var(--text);
-  white-space: pre-wrap;
+  white-space: normal;
   word-break: break-word;
 }
 

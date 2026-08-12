@@ -2225,22 +2225,60 @@ function showTypingBubble() {
   scrollToBottomIfNeeded();
 }
 
+// Pending markdown re-render, coalesced to one paint per animation frame —
+// deltas can arrive many times faster than the screen refreshes, and without
+// this each one triggers its own renderMarkdown() pass + reflow, letting the
+// total re-parse cost grow with delta *count* instead of just answer length.
+let pendingStreamText = null;
+let streamRafId = null;
+
 function removeTypingBubble() {
+  if (streamRafId) {
+    cancelAnimationFrame(streamRafId);
+    streamRafId = null;
+  }
+  pendingStreamText = null;
   document.getElementById("typingBubble")?.remove();
 }
 
-// Live token-by-token preview while a step is streaming in. Shown as plain
-// text (not markdown-rendered) since partial markdown mid-stream can render
-// oddly — the final 'assistant' event replaces this bubble with the fully
-// rendered version once the step completes.
+// Live token-by-token preview while a step is streaming in. Re-renders the
+// whole accumulated text as markdown (renderMarkdown() is cheap line-based
+// parsing, not worth diffing) — an unclosed construct (a dangling ``` fence,
+// a lone leading -) just renders literally until the next delta completes
+// it, since renderMarkdown()'s inline regexes require a matching closing
+// delimiter before converting anything. The final 'assistant' event replaces
+// this bubble outright once the step completes.
 function updateStreamingText(text) {
+  if (!text) return;
+  pendingStreamText = text;
+  if (streamRafId) return;
+  streamRafId = requestAnimationFrame(() => {
+    streamRafId = null;
+    const bubble = document.getElementById("typingBubble");
+    const body = bubble?.querySelector(".body");
+    if (!body || pendingStreamText == null) return;
+    body.innerHTML = renderMarkdown(pendingStreamText);
+    body.classList.add("streaming-text");
+    scrollToBottomIfNeeded();
+  });
+}
+
+// A tool call (e.g. 'finish') is about to start streaming its own text into
+// this same bubble — snap back to the thinking-dots placeholder first rather
+// than jump-cutting straight from an unrelated block of prose to a single
+// character of the new content, which reads as a glitch rather than a new
+// message starting.
+function resetStreamingText() {
+  if (streamRafId) {
+    cancelAnimationFrame(streamRafId);
+    streamRafId = null;
+  }
+  pendingStreamText = null;
   const bubble = document.getElementById("typingBubble");
-  if (!bubble || !text) return;
-  const body = bubble.querySelector(".body");
+  const body = bubble?.querySelector(".body");
   if (!body) return;
-  body.textContent = text;
-  body.classList.add("streaming-text");
-  scrollToBottomIfNeeded();
+  body.innerHTML = typingDotsHtml();
+  body.classList.remove("streaming-text");
 }
 
 function showStatus(text, animated = false) {
@@ -3210,7 +3248,8 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
       break;
 
     case "assistant_delta":
-      updateStreamingText(event.text);
+      if (event.reset) resetStreamingText();
+      else updateStreamingText(event.text);
       break;
 
     case "assistant": {

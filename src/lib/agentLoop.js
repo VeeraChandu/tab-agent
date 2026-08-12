@@ -3199,7 +3199,11 @@ export async function runAgentTask({
       // receiving end, so there's no reason to serialize the network read
       // loop behind it.
       result = await callProviderRetryingEmpty(config, history, system, (partialText) => {
-        onEvent({ type: "assistant_delta", step, text: partialText });
+        // null is the streaming-tool-starting signal from providers.js (see
+        // callAnthropicStream/callOpenAIStream) - forwarded as reset:true so
+        // the UI can clear its live preview instead of showing text jump
+        // straight from unrelated prose to one character of the new content.
+        onEvent({ type: "assistant_delta", step, text: partialText, reset: partialText === null });
       }, shouldStop);
     } catch (err) {
       // A deliberate Stop click aborts the in-flight request/stream and
