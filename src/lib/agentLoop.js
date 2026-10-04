@@ -2723,6 +2723,67 @@ async function executeTool(ctx, name, input, callId) {
       // resolved in background.js before forwarding.
       return { ok: true, note: "Queue managed by the service worker. Use the side panel to view pending tasks." };
 
+    case "set_viewport": {
+      const width = input.width;
+      const height = input.height;
+      const tabId = ctx.tabId;
+      if (!tabId) return { ok: false, error: "No active tab." };
+
+      // Resetting to native viewport
+      if (width === undefined && height === undefined) {
+        try {
+          await chrome.debugger.detach({ tabId }).catch(() => {});
+          // A detach + re-attach is the only reliable way to clear emulation
+          return { ok: true, note: "Viewport reset to native. Use set_viewport again with width/height when ready." };
+        } catch {
+          return { ok: true, note: "No active debugger session to reset." };
+        }
+      }
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || height < 240) {
+        return { ok: false, error: "Width and height must be integers >= 320 x 240." };
+      }
+
+      let attached = false;
+      try {
+        // Attach debugger to the tab (no-op if already attached)
+        const targets = await chrome.debugger.getTargets();
+        const already = targets.some((t) => t.tabId === tabId && t.attached);
+        if (!already) {
+          await new Promise((resolve, reject) => {
+            chrome.debugger.attach({ tabId }, "1.3", () => {
+              if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+              else resolve();
+            });
+          });
+          attached = true;
+        }
+
+        // Override viewport metrics
+        const params = {
+          width,
+          height,
+          deviceScaleFactor: input.deviceScaleFactor ?? 1,
+          mobile: input.isMobile !== false,
+        };
+        await new Promise((resolve, reject) => {
+          chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", params, (result) => {
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else resolve(result);
+          });
+        });
+
+        return {
+          ok: true,
+          viewport: { width, height, deviceScaleFactor: params.deviceScaleFactor, isMobile: params.mobile },
+          note: `Viewport set to ${width}x${height}${params.mobile ? " (mobile)" : ""}. Use set_viewport({}) to reset.`,
+        };
+      } catch (err) {
+        // Clean up on failure
+        if (attached) chrome.debugger.detach({ tabId }).catch(() => {});
+        return { ok: false, error: `set_viewport failed: ${err.message || err}` };
+      }
+    }
+
     case "create_file": {
       const filename = (input.filename || "").trim();
       if (!filename) return { ok: false, error: "filename is required." };

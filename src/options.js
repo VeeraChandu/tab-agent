@@ -2169,4 +2169,162 @@ async function detectLocalModels() {
 
 detectLocalBtn?.addEventListener("click", detectLocalModels);
 
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// --- Usage dashboard (Item 9) -----------------------------------------------
+
+const refreshUsageBtn = document.getElementById("refreshUsageBtn");
+const clearUsageDataBtn = document.getElementById("clearUsageDataBtn");
+const usageStatus = document.getElementById("usageStatus");
+
+function setUsageStatus(msg) {
+  if (usageStatus) usageStatus.textContent = msg;
+}
+
+async function computeUsageStats() {
+  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+  let totalRuns = 0;
+  let successRuns = 0;
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalSteps = 0;
+  let totalCost = 0;
+  let hasKnownCost = false;
+  const modelMap = {}; // modelName -> { runs, steps, inputTokens, outputTokens, cost, label }
+
+  for (const session of sessions) {
+    const nodes = Object.values(session.nodes || {});
+    for (const node of nodes) {
+      totalRuns++;
+      const ok = node.uiEvents?.some((e) => e.type === "done" && e.success);
+      if (ok) successRuns++;
+      const stepCount = node.uiEvents?.filter((e) => e.type === "tool_call").length || 0;
+      totalSteps += stepCount;
+
+      if (node.usage) {
+        const inp = node.usage.inputTokens || 0;
+        const out = node.usage.outputTokens || 0;
+        totalInputTokens += inp;
+        totalOutputTokens += out;
+        const model = node.usage.model || "unknown";
+        if (!modelMap[model]) modelMap[model] = { runs: 0, steps: 0, inputTokens: 0, outputTokens: 0, cost: 0, label: null };
+        modelMap[model].runs++;
+        modelMap[model].steps += stepCount;
+        modelMap[model].inputTokens += inp;
+        modelMap[model].outputTokens += out;
+
+        const priced = window.TabAgentPricing?.estimateCost(model, inp, out);
+        if (priced) {
+          modelMap[model].cost += priced.cost;
+          modelMap[model].label = priced.label;
+          totalCost += priced.cost;
+          hasKnownCost = true;
+        }
+      }
+    }
+  }
+
+  return { totalRuns, successRuns, totalInputTokens, totalOutputTokens, totalSteps, totalCost, hasKnownCost, modelMap, sessions };
+}
+
+function renderUsageDashboard() {
+  computeUsageStats().then((stats) => {
+    // Summary cards
+    const el = (id) => document.getElementById(id);
+    el("statRunCount").textContent = stats.totalRuns;
+    const rate = stats.totalRuns > 0 ? Math.round((stats.successRuns / stats.totalRuns) * 100) + "%" : "—";
+    el("statSuccessRate").textContent = rate;
+    el("statTotalTokens").textContent = (stats.totalInputTokens + stats.totalOutputTokens).toLocaleString();
+    el("statAvgSteps").textContent = stats.totalRuns > 0 ? (stats.totalSteps / stats.totalRuns).toFixed(1) : "—";
+    el("statEstCost").textContent = stats.hasKnownCost ? window.TabAgentPricing?.formatCost(stats.totalCost) || "—" : "—";
+    el("statEstCost").title = stats.hasKnownCost ? "" : "Only available for models with known pricing rates.";
+
+    // By-model table
+    const modelWrap = el("usageByModel");
+    const models = Object.entries(stats.modelMap).sort((a, b) => b[1].cost - a[1].cost);
+    if (models.length === 0) {
+      modelWrap.innerHTML = '<p class="hint">No usage data yet.</p>';
+    } else {
+      let html = `<table><thead><tr>
+        <th>Model</th><th>Runs</th><th>Input tokens</th><th>Output tokens</th><th>Est. cost</th>
+      </tr></thead><tbody>`;
+      for (const [model, m] of models) {
+        const label = m.label || model;
+        const cost = m.cost > 0 ? window.TabAgentPricing?.formatCost(m.cost) : "—";
+        html += `<tr>
+          <td>${label}</td>
+          <td>${m.runs}</td>
+          <td>${m.inputTokens.toLocaleString()}</td>
+          <td>${m.outputTokens.toLocaleString()}</td>
+          <td>${cost}</td>
+        </tr>`;
+      }
+      html += "</tbody></table>";
+      modelWrap.innerHTML = html;
+    }
+
+    // Recent sessions
+    const sessList = el("usageSessionList");
+    const recent = stats.sessions.slice(0, 50);
+    if (recent.length === 0) {
+      sessList.innerHTML = '<p class="hint">No sessions yet.</p>';
+    } else {
+      let html = "";
+      for (const s of recent) {
+        const title = s.title || "New chat";
+        const nodes = Object.values(s.nodes || {});
+        const lastOk = [...nodes].reverse().find((n) => n.uiEvents?.some((e) => e.type === "done"));
+        const doneEvent = lastOk?.uiEvents?.find((e) => e.type === "done");
+        const success = doneEvent?.success;
+        const statusClass = success === true ? "ok" : success === false ? "fail" : "";
+        const statusIcon = success === true ? "✓" : success === false ? "✗" : "—";
+
+        let totalTok = 0;
+        for (const n of nodes) {
+          if (n.usage) {
+            totalTok += (n.usage.inputTokens || 0) + (n.usage.outputTokens || 0);
+          }
+        }
+        let cost = 0;
+        let hasCost = false;
+        for (const n of nodes) {
+          if (n.usage) {
+            const p = window.TabAgentPricing?.estimateCost(n.usage.model, n.usage.inputTokens, n.usage.outputTokens);
+            if (p) { cost += p.cost; hasCost = true; }
+          }
+        }
+        html += `<div class="usage-session-row">
+          <span class="name" title="${title}">${escapeHtml(title)}</span>
+          <span class="tokens">${totalTok.toLocaleString()} tokens</span>
+          <span class="cost">${hasCost ? (window.TabAgentPricing?.formatCost(cost) || "—") : "—"}</span>
+          <span class="result ${statusClass}">${statusIcon}</span>
+        </div>`;
+      }
+      sessList.innerHTML = html;
+    }
+
+    setUsageStatus(`Updated from ${stats.sessions.length} sessions.`);
+  }).catch((err) => {
+    setUsageStatus(`Error: ${err.message}`);
+  });
+}
+
+refreshUsageBtn?.addEventListener("click", renderUsageDashboard);
+clearUsageDataBtn?.addEventListener("click", async () => {
+  if (!confirm("Delete ALL session history? This cannot be undone.")) return;
+  await chrome.storage.local.set({ sessions: [] });
+  setUsageStatus("Session history cleared.");
+  renderUsageDashboard();
+});
+
+// Render usage data on page load.
+// (The usage tab's content-generating functions are idempotent, so it's
+// fine to render even when the tab isn't visible.)
+renderUsageDashboard();
+
+// Kick off full settings page load.
 load();

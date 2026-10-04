@@ -983,3 +983,54 @@ p { font-size: 12.5px; line-height: 1.5; color: var(--text-muted); }
 }
 .model-diff-added-list li::before { content: "+ "; color: var(--success-text, #1c6b41); font-weight: 650; }
 .model-diff-removed-list li::before { content: "\2212 "; color: var(--error-text); font-weight: 650; }
+
+/* --- Usage dashboard ------------------------------------------------------- */
+
+.usage-summary {
+  display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0;
+}
+.usage-stat {
+  flex: 1 0 140px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px 16px; text-align: center;
+}
+.usage-stat-value {
+  display: block; font-size: 1.5em; font-weight: 700; color: var(--accent);
+}
+.usage-stat-label {
+  display: block; font-size: 0.85em; color: var(--text-muted); margin-top: 4px;
+}
+
+.usage-model-table-wrap {
+  overflow-x: auto; margin: 8px 0;
+}
+.usage-model-table-wrap table {
+  width: 100%; border-collapse: collapse; font-size: 0.9em;
+}
+.usage-model-table-wrap th,
+.usage-model-table-wrap td {
+  text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+}
+.usage-model-table-wrap th {
+  font-weight: 600; color: var(--text-muted); font-size: 0.85em;
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+
+.usage-session-list { margin: 8px 0; max-height: 360px; overflow-y: auto; }
+.usage-session-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 0.9em;
+}
+.usage-session-row:last-child { border-bottom: none; }
+.usage-session-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-session-row .tokens { color: var(--text-muted); white-space: nowrap; margin: 0 12px; }
+.usage-session-row .cost { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.usage-session-row .result { margin-left: 8px; }
+.usage-session-row .result.ok { color: var(--success-text, #1c6b41); }
+.usage-session-row .result.fail { color: var(--error-text); }
+
+.danger-btn {
+  border: 1px solid var(--error-text); background: var(--error-bg);
+  color: var(--error-text); padding: 6px 14px; border-radius: var(--radius-sm);
+  cursor: pointer; font-size: 0.9em;
+}
+.danger-btn:hover { background: var(--error-text); color: #fff; }

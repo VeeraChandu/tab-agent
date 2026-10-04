@@ -885,6 +885,24 @@ export const TOOLS = [
       "Does not affect the currently running task.",
     input_schema: { type: "object", properties: {}, required: [] },
   },
+  {
+    name: "set_viewport",
+    description:
+      "Override the active tab's viewport dimensions (width and height), " +
+      "emulating a mobile or tablet device. Width/height must be positive integers " +
+      "in CSS pixel units. Call with {} (no params) to reset back to the native " +
+      "viewport. Uses chrome.debugger — requires the 'debugger' permission (already granted).",
+    input_schema: {
+      type: "object",
+      properties: {
+        width: { type: "number", description: "Target viewport width in CSS pixels (e.g. 375 for iPhone)." },
+        height: { type: "number", description: "Target viewport height in CSS pixels (e.g. 812 for iPhone X)." },
+        deviceScaleFactor: { type: "number", description: "Optional device pixel ratio (e.g. 2 for Retina, 3 for iPhone X). Defaults to 1." },
+        isMobile: { type: "boolean", description: "Optional. When true (default) uses mobile-like touch event model." },
+      },
+      required: [],
+    },
+  },
 ];
 
 export const SYSTEM_PROMPT = `You are Tab Agent, an assistant that completes tasks directly inside the user's browser.
