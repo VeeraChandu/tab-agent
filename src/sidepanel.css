@@ -1471,6 +1471,82 @@ select.model-select {
 select.model-select:focus { outline: none; }
 select.model-select:disabled { cursor: default; opacity: 0.6; }
 
+/* Step-through toggle — sits in the toolbar between model-select and the
+   send/stop buttons. Goes active (blue accent) when step-through is on. */
+button.step-through-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  color: var(--text-muted);
+}
+button.step-through-toggle.active {
+  color: var(--accent);
+  background: var(--accent-light);
+}
+
+/* Step-through confirmation card — shown when the agent pauses before
+   executing each tool call. */
+.step-confirm-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.step-confirm-tool {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.step-confirm-input {
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  font-size: 0.75rem;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+}
+.step-confirm-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.step-confirm-buttons button {
+  flex: 1;
+  min-width: 70px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.step-confirm-buttons button:hover {
+  background: var(--card-alt);
+}
+.step-confirm-execute {
+  border-color: var(--success-border) !important;
+  color: var(--success-text) !important;
+  background: var(--success-bg) !important;
+}
+.step-confirm-skip {
+  border-color: var(--warn-border) !important;
+  color: var(--warn-text) !important;
+  background: var(--warn-bg) !important;
+}
+.step-confirm-stop {
+  border-color: var(--error-border) !important;
+  color: var(--error-text) !important;
+  background: var(--error-bg) !important;
+}
+
 .send-btn {
   background: var(--accent);
   color: #fff;

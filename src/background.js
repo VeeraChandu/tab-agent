@@ -660,6 +660,7 @@ async function drive(session, node, runOpts) {
       // as a whole never actually finished in between.
       initialOpenedTabIds: node.pendingOpenedTabIds,
       initialIncompleteBranchTabIds: node.pendingIncompleteBranchTabIds,
+      stepThrough: runOpts.stepThrough,
     });
 
     // Remember wherever the agent actually ended up (which may differ from
@@ -1123,6 +1124,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         limits,
         pageCacheConfig,
         trustedInputEnabled,
+        stepThrough: !!msg.stepThrough,
         onEvent: (event) => persistAgentEvent(session, newNode, event),
       });
     })();
@@ -1168,10 +1170,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const pageCacheConfig = await getPageCacheConfig();
       const trustedInputEnabled = await getTrustedInputEnabled();
 
+      // Build the resume object. For normal ask_user pauses it delivers the
+      // answer; for step-through pauses the answer is "execute" / "skip" /
+      // "stop", mapped to _stepThroughAction so the step loop below knows how
+      // to continue.
+      let resume;
+      if (pending.kind === "step_through") {
+        resume = {
+          toolUseId: pending.toolUseId,
+          answer: msg.answer,
+          pendingToolResultBlocks: pending.pendingToolResultBlocks,
+          _stepThroughAction: msg.answer,
+          _stepThroughState: pending._stepThroughState,
+        };
+      } else {
+        resume = { toolUseId: pending.toolUseId, answer: msg.answer, pendingToolResultBlocks: pending.pendingToolResultBlocks };
+      }
+
       await drive(session, node, {
         tabId,
         initialHistory: node.cumulativeHistory, // includes the paused, not-yet-resolved turn
-        resume: { toolUseId: pending.toolUseId, answer: msg.answer, pendingToolResultBlocks: pending.pendingToolResultBlocks },
+        resume,
         agentContext: agent,
         config,
         visionConfig,
@@ -1179,6 +1198,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         limits,
         pageCacheConfig,
         trustedInputEnabled,
+        stepThrough: msg.stepThrough || node.stepThrough,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();

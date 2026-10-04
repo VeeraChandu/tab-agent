@@ -159,6 +159,7 @@ function docIcon(format) {
 }
 
 let running = false;
+let stepThroughEnabled = false;
 let autoScroll = true;
 let attachments = []; // images: { id, name, kind:"image", mediaType, data (base64, no prefix), previewUrl }
                        // pdfs:   { id, name, kind:"pdf", text, pageCount, truncated }
@@ -2683,12 +2684,88 @@ function makeAskUserSubmitBtn(onClick) {
 }
 
 function markAskUserAnswered(id, answer) {
-  const div = document.getElementById(`ask-${id}`);
+  const div = document.getElementById(`ask-${id}`) || document.getElementById(`step-${id}`);
   if (!div) return;
-  const formEl = div.querySelector(".ask-user-form");
+  const formEl = div.querySelector(".ask-user-form") || div.querySelector(".step-confirm-buttons");
   if (!formEl) return;
   const answerText = Array.isArray(answer) ? (answer.length ? answer.join(", ") : "(none selected)") : answer || "(no answer)";
   formEl.innerHTML = `<div class="ask-user-answered">You answered: <strong>${escapeHtml(answerText)}</strong></div>`;
+}
+
+// --- step-through confirmation card (Visual Debugger) ----------------------
+// Rendered when stepThrough mode is enabled and the agent is about to execute
+// a tool call. Shows the intended tool + input and lets the user Execute,
+// Skip, or Stop.
+
+function renderStepConfirmCard(event) {
+  hideEmptyState();
+  const div = document.createElement("div");
+  div.className = "entry assistant ask-user step-confirm";
+  div.id = `step-${event.id}`;
+
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = "🐞 Step-Through";
+  div.appendChild(label);
+
+  const body = document.createElement("div");
+  body.className = "body step-confirm-body";
+
+  const toolName = document.createElement("div");
+  toolName.className = "step-confirm-tool";
+  toolName.textContent = `Tool: ${event.name}`;
+  body.appendChild(toolName);
+
+  const inputPreview = document.createElement("pre");
+  inputPreview.className = "step-confirm-input";
+  inputPreview.textContent = JSON.stringify(event.input, null, 2);
+  body.appendChild(inputPreview);
+
+  const btnRow = document.createElement("div");
+  btnRow.className = "step-confirm-buttons";
+
+  const executeBtn = document.createElement("button");
+  executeBtn.type = "button";
+  executeBtn.className = "step-confirm-execute";
+  executeBtn.textContent = "▶ Execute";
+  executeBtn.addEventListener("click", () => submitStepThrough(event.id, "execute"));
+
+  const skipBtn = document.createElement("button");
+  skipBtn.type = "button";
+  skipBtn.className = "step-confirm-skip";
+  skipBtn.textContent = "⏭ Skip";
+  skipBtn.addEventListener("click", () => submitStepThrough(event.id, "skip"));
+
+  const stopBtn = document.createElement("button");
+  stopBtn.type = "button";
+  stopBtn.className = "step-confirm-stop";
+  stopBtn.textContent = "⏹ Stop";
+  stopBtn.addEventListener("click", () => submitStepThrough(event.id, "stop"));
+
+  btnRow.appendChild(executeBtn);
+  btnRow.appendChild(skipBtn);
+  btnRow.appendChild(stopBtn);
+  body.appendChild(btnRow);
+  div.appendChild(body);
+  logEl.appendChild(div);
+  scrollToBottomIfNeeded();
+
+  // Auto-highlight the Execute button as the safe default
+  executeBtn.focus();
+}
+
+function submitStepThrough(toolUseId, action) {
+  const div = document.getElementById(`step-${toolUseId}`);
+  if (div) {
+    const btnRow = div.querySelector(".step-confirm-buttons");
+    if (btnRow) {
+      btnRow.innerHTML = `<div class="ask-user-answered">You chose: <strong>${action}</strong></div>`;
+    }
+  }
+  // Reuses the ANSWER_QUESTION flow in background.js — the step-through
+  // pause stores the action as the "answer" and background.js's ANSWER_QUESTION
+  // handler picks it up from pendingQuestion.
+  submitAnswer(toolUseId, action);
 }
 
 // --- step-limit "still working?" pause: Continue / Stop here -------------
@@ -2882,6 +2959,7 @@ async function submitAnswer(toolUseId, answer) {
     providerId: providerId || undefined,
     modelId: modelId || undefined,
     agentId: activeAgent?.id || undefined,
+    stepThrough: stepThroughEnabled,
   });
 }
 
@@ -3234,6 +3312,7 @@ async function sendTask() {
     providerId: providerId || undefined,
     modelId: modelId || undefined,
     agentId: activeAgent?.id || undefined,
+    stepThrough: stepThroughEnabled,
     attachments: outgoingAttachments,
     docAttachments: outgoingDocAttachments,
   });
@@ -3349,6 +3428,15 @@ runBtn.addEventListener("click", sendTask);
 
 stopBtn.addEventListener("click", stopCurrentRun);
 
+const stepThroughToggle = document.getElementById("stepThroughToggle");
+stepThroughToggle.addEventListener("click", () => {
+  stepThroughEnabled = !stepThroughEnabled;
+  stepThroughToggle.classList.toggle("active", stepThroughEnabled);
+  stepThroughToggle.title = stepThroughEnabled
+    ? "Step-through mode ON — the agent will pause before each tool call"
+    : "Step-through mode: pause before each tool call";
+});
+
 // --- agent events (shared between live updates and history replay) ------
 
 function applyAgentEvent(event, isReplay = false, nodeId = null) {
@@ -3462,6 +3550,12 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
       removeTypingBubble();
       if (!isReplay) hideStatus();
       renderAskUserCard(event);
+      break;
+
+    case "step_confirm":
+      removeTypingBubble();
+      if (!isReplay) hideStatus();
+      renderStepConfirmCard(event);
       break;
 
     case "answered":
