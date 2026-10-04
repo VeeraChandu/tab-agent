@@ -981,7 +981,12 @@ function renderUserNode(session, node) {
   headerRow.className = "msg-header";
   const avatar = document.createElement("span");
   avatar.className = "msg-avatar user-avatar";
-  avatar.textContent = "U";
+  avatar.title = "You";
+  avatar.innerHTML = `
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
+    </svg>`;
   headerRow.appendChild(avatar);
   const time = document.createElement("span");
   time.className = "msg-time";
@@ -1249,7 +1254,12 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
   const avatar = document.createElement("span");
   if (kind === "user") {
     avatar.className = "msg-avatar user-avatar";
-    avatar.textContent = "U";
+    avatar.title = "You";
+    avatar.innerHTML = `
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+        <circle cx="12" cy="7" r="4"/>
+      </svg>`;
   } else {
     avatar.className = "msg-avatar agent-avatar";
     avatar.textContent = "T";
