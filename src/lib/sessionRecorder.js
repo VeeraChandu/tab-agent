@@ -1,5 +1,4 @@
 // lib/sessionRecorder.js
-/* global chrome */
 // Per-step visual recording for replay: captures a thumbnail screenshot on
 // every tool execution so a finished/stopped run can be reviewed as a visual
 // filmstrip. Recordings are stored in chrome.storage.local as

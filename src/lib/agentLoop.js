@@ -4,7 +4,8 @@
 // which is executed directly on the tab via content.js / chrome.tabs.
 
 import { callProvider, describeImage, classifyImages } from "./providers.js";
-import { buildSystemPrompt } from "./tools.js";
+import { buildSystemPrompt, initCustomTools } from "./tools.js";
+import { executeCustomTool } from "./customTools.js";
 import { detectSiteCategory, hostnameOf } from "./siteCategories.js";
 import { getMediaRequests, drainFailedRequests } from "./mediaSniffer.js";
 import { getLastNavError } from "./navErrors.js";
@@ -3064,8 +3065,14 @@ async function executeTool(ctx, name, input, callId) {
     case "finish":
       return { ok: true };
 
-    default:
+    default: {
+      // Check if this is a registered custom tool — if so, dispatch it.
+      const customResult = await executeCustomTool(ctx, name, input);
+      if (customResult !== null && customResult !== undefined && !customResult._notFound) {
+        return customResult;
+      }
       return { ok: false, error: `Unknown tool: ${name}` };
+    }
   }
 }
 
@@ -3099,6 +3106,8 @@ async function executeTool(ctx, name, input, callId) {
  * @param {{ mainMaxSteps?: number, batchStepLimit?: number, maxParallelTabs?: number }} [opts.limits]
  *   Settings → Limits values (background.js reads these from chrome.storage.local). Falls back to
  *   DEFAULT_LIMITS for any field not provided, so old callers that don't pass this at all still work.
+ * @param {boolean} [opts.stepThrough]  when true, pauses before each tool call and waits for user
+ *   confirmation, showing the model's reasoning + the intended tool + input
  */
 export async function runAgentTask({
   tabId,
@@ -3121,7 +3130,11 @@ export async function runAgentTask({
   sessionId,
   pageCacheConfig,
   trustedInputEnabled,
+  stepThrough,
 }) {
+  // Ensure custom tools are loaded (MV3 may wake without onInstalled firing)
+  await initCustomTools();
+
   const system = buildSystemPrompt(agentContext);
   const granted = grantedDomains || new Set();
   const effectiveLimits = { ...DEFAULT_LIMITS, ...(limits || {}) };
@@ -3208,11 +3221,44 @@ export async function runAgentTask({
   let history;
 
   if (resume) {
-    const blocks = [
-      ...(resume.pendingToolResultBlocks || []),
-      { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify({ ok: true, answer: resume.answer }) },
-    ];
-    history = [...(initialHistory || []), { role: "user", content: blocks }];
+    if (resume._stepThroughAction) {
+      // Step-through resume: resume.pendingToolResultBlocks contains the tool
+      // result blocks from preceding calls in the same turn that already ran
+      // (e.g. the model bundled multiple calls and we confirmed the first one
+      // earlier). The remaining logic is distributed across _stepThroughState:
+      const st = resume._stepThroughState || {};
+      if (resume._stepThroughAction === "stop") {
+        history = initialHistory || [];
+        history.push({ role: "user", content: [
+          ...(resume.pendingToolResultBlocks || []),
+          { type: "tool_result", tool_use_id: resume.toolUseId, content: "Stopped by user." },
+        ]});
+        return { finalAnswer: "Stopped by user.", success: false, stepsUsed: 0, history, alreadyShown: true, usage: { inputTokens: 0, outputTokens: 0 }, tabId: ctx.tabId, openedTabIds: Array.from(openedTabIds), incompleteBranchTabIds: Array.from(incompleteBranchTabIds.values()) };
+      }
+      if (resume._stepThroughAction === "execute" && st.toolName) {
+        // Execute the paused tool call inline, then feed its result into
+        // history and continue the loop normally.
+        const toolResult = await executeTool(ctx, st.toolName, st.toolInput || {}, resume.toolUseId);
+        await onEvent({ type: "tool_result", step: st.step || 1, id: resume.toolUseId, name: st.toolName, input: st.toolInput, result: toolResult });
+        const blocks = [
+          ...(resume.pendingToolResultBlocks || []),
+          { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify(toolResult) },
+        ];
+        history = [...(initialHistory || []), { role: "user", content: blocks }];
+      }
+      if (resume._stepThroughAction === "skip") {
+        history = [...(initialHistory || []), { role: "user", content: [
+          ...(resume.pendingToolResultBlocks || []),
+          { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify({ ok: true, note: "Skipped by user (step-through mode)." }) },
+        ]}];
+      }
+    } else {
+      const blocks = [
+        ...(resume.pendingToolResultBlocks || []),
+        { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify({ ok: true, answer: resume.answer }) },
+      ];
+      history = [...(initialHistory || []), { role: "user", content: blocks }];
+    }
   } else if (continueRun) {
     // Nothing is pending resolution — the last turn in initialHistory is
     // already a complete "user" tool-results turn from the run that hit the
@@ -3456,6 +3502,38 @@ export async function runAgentTask({
         continue;
       }
 
+      // Step-through mode: pause before executing the tool and wait for user
+      // confirmation. Reuses the pause/resume infrastructure — the UI shows a
+      // confirmation card with Execute / Skip / Edit / Stop, and resume passes
+      // the user's choice back via the same answer-and-continue flow.
+      if (stepThrough && !ctx.isSubAgent) {
+        // finish and ask_user are already handled above — we only reach this
+        // point for side-effecting tools that actually need user confirmation.
+        const remaining = result.toolCalls.slice(result.toolCalls.indexOf(call) + 1);
+        for (const skipped of remaining) {
+          toolResultBlocks.push({ type: "tool_result", tool_use_id: skipped.id, content: "Not run — a step-through confirmation was shown earlier in this turn." });
+        }
+        // Emit a step_confirm event for the UI to render as a confirmation card
+        await onEvent({ type: "step_confirm", id: call.id, name: call.name, input: call.input, step });
+        pendingQuestion = {
+          kind: "step_through",
+          toolUseId: call.id,
+          question: `Execute \`${call.name}\`?`,
+          inputType: "select",
+          options: [
+            { label: "Execute", value: "execute" },
+            { label: "Skip", value: "skip" },
+            { label: "Stop", value: "stop" },
+          ],
+          // Carry the call details so background.js can execute or skip it
+          // on resume. Stored on pendingQuestion → saved to node → picked
+          // up by drive().
+          _stepThroughState: { toolName: call.name, toolInput: call.input, step },
+          pendingToolResultBlocks: toolResultBlocks,
+        };
+        break;
+      }
+
       await onEvent({ type: "tool_start", step, id: call.id, name: call.name, input: call.input });
 
       let toolResult;
@@ -3538,7 +3616,13 @@ export async function runAgentTask({
     }
 
     if (pendingQuestion) {
-      await onEvent({ type: "ask_user", id: pendingQuestion.toolUseId, question: pendingQuestion.question, inputType: pendingQuestion.inputType, options: pendingQuestion.options });
+      if (pendingQuestion.kind === "step_through") {
+        // Step-through pauses already emitted step_confirm in the tool loop
+        // above; don't double-emit with the generic ask_user event below.
+        await onEvent({ type: "step_confirm", id: pendingQuestion.toolUseId, name: pendingQuestion._stepThroughState?.toolName, input: pendingQuestion._stepThroughState?.toolInput, step: pendingQuestion._stepThroughState?.step });
+      } else {
+        await onEvent({ type: "ask_user", id: pendingQuestion.toolUseId, question: pendingQuestion.question, inputType: pendingQuestion.inputType, options: pendingQuestion.options });
+      }
       return {
         finalAnswer: null,
         success: null,

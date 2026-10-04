@@ -1,5 +1,4 @@
 // lib/statePersist.js
-/* global chrome, setTimeout, URL, btoa */
 // Save and restore a tab's cookies + localStorage across runs, keyed by
 // sessionId. Meant to be called explicitly — the model can use
 // save_session_state / restore_session_state tools, or a run can
