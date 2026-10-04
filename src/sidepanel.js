@@ -3263,12 +3263,10 @@ async function openReplay(sessionId) {
   }
 
   replayStrip.innerHTML = "";
-  let activeIdx = 0;
 
   function renderFrame(idx) {
     const frame = frames[idx];
     if (!frame) return;
-    activeIdx = idx;
     replayScreenshot.innerHTML = "";
     if (frame.screenshot) {
       const img = document.createElement("img");
@@ -3285,7 +3283,8 @@ async function openReplay(sessionId) {
     if (active) active.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
 
     // Step detail panel
-    replayInfo.innerHTML = formatReplayInfo(frame);
+    const infoEl = document.getElementById("replayInfo");
+    if (infoEl) infoEl.innerHTML = formatReplayInfo(frame);
   }
 
   for (let i = 0; i < frames.length; i++) {

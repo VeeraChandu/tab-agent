@@ -1486,9 +1486,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === "GET_RECORDING") {
-    const frames = await getRecording(msg.sessionId);
-    sendResponse({ ok: true, frames });
-    return true;
+    getRecording(msg.sessionId).then((frames) => {
+      sendResponse({ ok: true, frames });
+    });
+    return true; // keep channel open for async response
   }
 
   if (msg.type === "DELETE_SESSION_CACHE") {
