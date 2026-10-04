@@ -527,8 +527,8 @@ main {
 /* --- User message --------------------------------------------------- */
 
 .entry.user {
-  background: var(--accent);
-  color: #fff;
+  background: var(--card);
+  color: var(--text);
   align-self: flex-end;
   padding: 9px 12px;
   border-radius: var(--radius-md) var(--radius-md) 4px var(--radius-md);
@@ -538,13 +538,14 @@ main {
   white-space: pre-wrap;
   box-shadow: var(--shadow-sm);
   max-width: 85%;
+  border: 1px solid var(--border);
 }
 
 .entry.user .msg-header { margin-bottom: 2px; }
 
-.entry.user .msg-label { color: rgba(255, 255, 255, 0.8); }
+.entry.user .msg-label { color: var(--text-muted); }
 
-.entry.user .msg-time { color: rgba(255, 255, 255, 0.5); }
+.entry.user .msg-time { color: var(--text-faint); }
 
 .entry.user .body {
   word-break: break-word;
@@ -559,13 +560,13 @@ main {
   margin-top: 6px;
   justify-content: flex-end;
   font-size: 10.5px;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--text-muted);
 }
 
 .entry.user .branch-switcher button {
-  background: rgba(255, 255, 255, 0.16);
-  border: none;
-  color: #fff;
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   border-radius: 5px;
   width: 16px;
   height: 16px;
@@ -577,30 +578,29 @@ main {
   padding: 0;
 }
 
-.entry.user .branch-switcher button:hover:not(:disabled) { background: rgba(255, 255, 255, 0.3); }
+.entry.user .branch-switcher button:hover:not(:disabled) { background: var(--border); }
 .entry.user .branch-switcher button:disabled { opacity: 0.35; cursor: default; }
 
 .entry.user .msg-actions {
   justify-content: flex-end;
 }
 
-.entry.user .msg-copy-btn { color: rgba(255, 255, 255, 0.5); }
-.entry.user .msg-copy-btn:hover { color: #fff; background: rgba(255, 255, 255, 0.2); }
+.entry.user .msg-copy-btn { color: var(--text-faint); }
+.entry.user .msg-copy-btn:hover { color: var(--text); background: var(--card-alt); }
 
 .edit-msg-btn {
-  background: rgba(255, 255, 255, 0.16);
-  border: none;
-  color: #fff;
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   border-radius: 6px;
   font-size: 10.5px;
   padding: 2px 6px;
   cursor: pointer;
-  opacity: 0.8;
   line-height: 1.4;
-  transition: background 0.15s, opacity 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
-.edit-msg-btn:hover { opacity: 1; background: rgba(255, 255, 255, 0.28); }
+.edit-msg-btn:hover { color: var(--text); background: var(--border); }
 
 /* --- Assistant / final message -------------------------------------- */
 

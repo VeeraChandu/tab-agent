@@ -4,12 +4,12 @@
 
 // Custom tools registered at runtime (from user-defined chrome.storage entries).
 // Populated once at startup by initCustomTools().
+import { getCustomToolDefs } from "./customTools.js";
 export let customToolDefs = [];
 
 /** Load custom tool definitions from storage and add them to the tool list.
  *  Call once at startup (e.g. from background.js or the first agent run). */
 export async function initCustomTools() {
-  const { getCustomToolDefs } = await import("./customTools.js");
   customToolDefs = await getCustomToolDefs();
 }
 

@@ -21,6 +21,7 @@ import { getRecording, deleteRecording } from "./lib/sessionRecorder.js";
 import { deleteSessionState } from "./lib/statePersist.js";
 import { initCustomTools } from "./lib/tools.js";
 import { startRecording, stopRecording, saveMacro, deleteMacro, listMacros, playMacro } from "./lib/macroRecorder.js";
+import { initDownloadCapture } from "./lib/downloadCapture.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
@@ -39,7 +40,6 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.storage.local.set({ agents: [] });
   }
   await initCustomTools();
-  const { initDownloadCapture } = await import("./lib/downloadCapture.js");
   initDownloadCapture();
 });
 

@@ -15,6 +15,7 @@ import { recordPageRead, recallPage, isUrlCached } from "./pageCache.js";
 import { getChunk, getFullAttachment, recordAttachment, chunkText } from "./attachmentCache.js";
 import { captureStep, startRecording } from "./sessionRecorder.js";
 import { saveTabState, restoreTabState, hasSavedState } from "./statePersist.js";
+import { getCapturedDownloads } from "./downloadCapture.js";
 
 const MAX_STEPS = 20;
 const TAB_LOAD_TIMEOUT_MS = 15000;
@@ -2522,7 +2523,7 @@ async function runBatch(ctx, input, callId) {
  * later tool call in the run (and the caller, once the run ends) automatically
  * targets whatever tab the agent last moved to.
  */
-async function executeTool(ctx, name, input, callId) {
+export async function executeTool(ctx, name, input, callId) {
   switch (name) {
     case "read_page": {
       const streakBlock = checkExplorationStreak(ctx, "read_page");
@@ -3136,7 +3137,6 @@ async function executeTool(ctx, name, input, callId) {
       return { ok: true };
 
     case "get_downloads": {
-      const { getCapturedDownloads } = await import("./downloadCapture.js");
       const downloads = getCapturedDownloads();
       return { ok: true, downloads };
     }
