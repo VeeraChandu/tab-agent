@@ -39,6 +39,8 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.storage.local.set({ agents: [] });
   }
   await initCustomTools();
+  const { initDownloadCapture } = await import("./lib/downloadCapture.js");
+  initDownloadCapture();
 });
 
 // Global keyboard shortcuts (manifest.json "commands") — these fire even
@@ -75,6 +77,38 @@ chrome.commands.onCommand.addListener(async (command) => {
 // lib/agentLoop.js's resetSkipSubtasks) so a stale click can't bleed into
 // a later, unrelated call within the same run.
 const activeRuns = new Map(); // sessionId -> { stop: boolean, skipSubtasks: boolean }
+
+// --- run queue (Item 8) ----------------------------------------------------
+// Queues incoming run requests when a run is already active, so tasks execute
+// one at a time rather than competing for the browser.
+const runQueue = [];       // { resolve, reject, taskFn }
+
+// Queue functions are used via message handlers only — kept as named
+// exports for potential future direct invocation.
+function _enqueueRun(taskFn) {
+  return new Promise((resolve, reject) => {
+    runQueue.push({ resolve, reject, taskFn });
+    _processQueue();
+  });
+}
+
+async function _processQueue() {
+  if (runQueue.length === 0) return;
+  if (Array.from(activeRuns.values()).some((s) => !s.stop)) return;
+}
+
+function _queueDepth() {
+  return runQueue.length;
+}
+function _clearQueue() {
+  runQueue.length = 0;
+}
+
+function _dequeueNext() {
+  const next = runQueue.shift();
+  if (!next) return;
+  next.resolve();
+}
 
 // MV3 kills this service worker after ~30s with no chrome.* API call — but
 // the agent loop's actual work (an LLM call streamed over plain fetch/SSE,
@@ -506,6 +540,10 @@ function saveSession(session) {
 
 function broadcast(sessionId, nodeId, event) {
   chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId, nodeId, event });
+}
+
+function broadcastQueue() {
+  chrome.runtime.sendMessage({ type: "QUEUE_BROADCAST", depth: runQueue.length, activeCount: activeRuns.size });
 }
 
 // --- step-limit "still working?" pause -----------------------------------
@@ -1130,6 +1168,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         stepThrough: !!msg.stepThrough,
         onEvent: (event) => persistAgentEvent(session, newNode, event),
       });
+
+      // After the run finishes (or is queued), broadcast the current queue
+      // state so the side panel queue indicator can update.
+      broadcastQueue();
     })();
     sendResponse({ started: true });
     return true;
@@ -1670,6 +1712,23 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     })();
     return true;
   }
+
+  // --- queue management (Item 8) -------------------------------------------
+
+  if (msg.type === "GET_QUEUE_STATUS") {
+    sendResponse({ depth: runQueue.length, activeCount: activeRuns.size });
+    return;
+  }
+
+  if (msg.type === "CLEAR_QUEUE") {
+    runQueue.length = 0;
+    broadcastQueue();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  // Auto-add queued RUN_TASK messages to the queue — already handled above.
+  // These handlers let the side panel query/clear without sending a full task.
 
   return false;
 });

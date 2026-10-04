@@ -34,6 +34,9 @@ const enableMicBtn = document.getElementById("enableMicBtn");
 const openMicSettingsBtn = document.getElementById("openMicSettingsBtn");
 const micStatus = document.getElementById("micStatus");
 
+const detectLocalBtn = document.getElementById("detectLocalBtn");
+const detectLocalStatus = document.getElementById("detectLocalStatus");
+
 const scheduledListEl = document.getElementById("scheduledList");
 const addScheduledBtn = document.getElementById("addScheduledBtn");
 const scheduledTemplate = document.getElementById("scheduledCardTemplate");
@@ -2104,5 +2107,66 @@ importFileInput?.addEventListener("change", async () => {
     backupStatus.textContent = `Could not import: ${err.message || err}`;
   }
 });
+
+// --- local model detection (Item 6) ----------------------------------------
+
+const LOCAL_ENDPOINTS = [
+  { label: "Ollama", baseUrl: "http://localhost:11434", type: "openai" },
+  { label: "LM Studio", baseUrl: "http://localhost:1234", type: "openai" },
+  { label: "LocalAI", baseUrl: "http://localhost:8080", type: "openai" },
+  { label: "Ollama (Docker)", baseUrl: "http://host.docker.internal:11434", type: "openai" },
+];
+
+/** Probe each well-known local endpoint for a valid /v1/models response.
+ *  Returns the first that responds, or null. */
+async function detectLocalModels() {
+  detectLocalStatus.textContent = "Scanning…";
+  detectLocalBtn.disabled = true;
+
+  for (const ep of LOCAL_ENDPOINTS) {
+    detectLocalStatus.textContent = `Checking ${ep.label} (${ep.baseUrl})…`;
+    try {
+      const res = await fetch(`${ep.baseUrl}/v1/models`, {
+        method: "GET",
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const models = (data.data || []).map((m) => ({ id: m.id, label: m.id }));
+      if (models.length === 0) continue;
+
+      // Found a working local provider — create or reuse provider entry
+      let existing = providers.find((p) => p.baseUrl === ep.baseUrl);
+      if (existing) {
+        existing.models = models;
+        existing.enabledModelIds = models.map((m) => m.id);
+      } else {
+        existing = {
+          id: uid("p"),
+          label: ep.label,
+          type: ep.type,
+          apiKey: "no-key-needed",
+          baseUrl: ep.baseUrl,
+          models,
+          enabledModelIds: models.map((m) => m.id),
+          enabled: true,
+        };
+        providers.push(existing);
+      }
+      await persistProviders();
+      renderProviders();
+      detectLocalStatus.textContent = `✓ Found ${ep.label} (${models.length} models).`;
+      detectLocalBtn.disabled = false;
+      return;
+    } catch {
+      // timeout or connection refused — skip
+    }
+  }
+
+  detectLocalStatus.textContent = "No local model endpoint found.";
+  detectLocalBtn.disabled = false;
+}
+
+detectLocalBtn?.addEventListener("click", detectLocalModels);
 
 load();

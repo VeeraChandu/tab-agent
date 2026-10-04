@@ -18,7 +18,8 @@
     "power",
     "clipboardRead",
     "clipboardWrite",
-    "debugger"
+    "debugger",
+    "downloads"
   ],
   "host_permissions": [
     "<all_urls>"

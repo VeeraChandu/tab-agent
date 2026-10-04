@@ -9,6 +9,7 @@ const emptyState = document.getElementById("emptyState");
 const taskInput = document.getElementById("taskInput");
 const runBtn = document.getElementById("runBtn");
 const stopBtn = document.getElementById("stopBtn");
+const queueBadge = document.getElementById("queueBadge");
 const settingsBtn = document.getElementById("settingsBtn");
 const newChatBtn = document.getElementById("newChatBtn");
 const historyBtn = document.getElementById("historyBtn");
@@ -3672,6 +3673,15 @@ chrome.runtime.onMessage.addListener((msg) => {
   // it opens this panel — see applyScheduledTaskPrefill above. Clear the
   // storage fallback now that the live message actually landed, so a later
   // panel reload doesn't re-apply the same stale prefill.
+  if (msg.type === "QUEUE_BROADCAST") {
+    if (msg.depth > 0) {
+      queueBadge.textContent = msg.depth;
+      queueBadge.classList.remove("hidden");
+    } else {
+      queueBadge.classList.add("hidden");
+    }
+  }
+
   if (msg.type === "PREFILL_SCHEDULED_TASK") {
     applyScheduledTaskPrefill(msg);
     chrome.storage.local.remove("pendingScheduledTaskPrefill").catch(() => {});
