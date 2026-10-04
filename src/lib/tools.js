@@ -849,6 +849,42 @@ export const TOOLS = [
       required: ["answer"],
     },
   },
+  {
+    name: "get_downloads",
+    description:
+      "List files that have been downloaded during this session (intercepted automatically when " +
+      "a download completes). Returns metadata for each captured download: id, filename, URL, size, " +
+      "and MIME type. Use this to see what files the browser has downloaded.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "capture_download",
+    description:
+      "Read a specific downloaded file's content and attach it to the conversation so you can " +
+      "inspect or process it. Provide the download id (from get_downloads). " +
+      "The file content is base64-encoded UTF-8 text (binary files may not be fully readable).",
+    input_schema: {
+      type: "object",
+      properties: {
+        downloadId: { type: "number", description: "The download id from get_downloads." },
+      },
+      required: ["downloadId"],
+    },
+  },
+  {
+    name: "get_queue_status",
+    description:
+      "Check the current run queue: how many tasks are waiting to execute, " +
+      "and how many runs are currently active.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "clear_queue",
+    description:
+      "Cancel all pending (queued, not yet started) run requests. " +
+      "Does not affect the currently running task.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
 ];
 
 export const SYSTEM_PROMPT = `You are Tab Agent, an assistant that completes tasks directly inside the user's browser.

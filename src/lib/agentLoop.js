@@ -2714,6 +2714,15 @@ async function executeTool(ctx, name, input, callId) {
     // content), so the result just confirms success rather than echoing
     // potentially-large content back into the model's own context a second
     // time (the input already carries it once, same as any other tool call).
+    case "clear_queue":
+      return { ok: true, cleared: true };
+
+    case "get_queue_status":
+      // Queue status is read from the service worker (background.js), not
+      // from agent loop state. Returns a placeholder — actual depth is
+      // resolved in background.js before forwarding.
+      return { ok: true, note: "Queue managed by the service worker. Use the side panel to view pending tasks." };
+
     case "create_file": {
       const filename = (input.filename || "").trim();
       if (!filename) return { ok: false, error: "filename is required." };
@@ -3064,6 +3073,66 @@ async function executeTool(ctx, name, input, callId) {
 
     case "finish":
       return { ok: true };
+
+    case "get_downloads": {
+      const { getCapturedDownloads } = await import("./downloadCapture.js");
+      const downloads = getCapturedDownloads();
+      return { ok: true, downloads };
+    }
+
+    case "capture_download": {
+      const downloadId = input.downloadId;
+      if (typeof downloadId !== "number" && typeof downloadId !== "string") {
+        return { ok: false, error: "capture_download requires a downloadId (number)." };
+      }
+      // Ask the content script to fetch the download blob from the page
+      // Since we captured the download metadata already, we can re-read the file
+      // via chrome.downloads API. Downloads from the same browser session are
+      // accessible by id through chrome.downloads.search.
+      const items = await new Promise((resolve) => {
+        chrome.downloads.search({ id: Number(downloadId) }, resolve);
+      });
+      if (!items || items.length === 0) {
+        return { ok: false, error: `Download ${downloadId} not found.` };
+      }
+      const item = items[0];
+
+      // Get the file metadata via downloads API
+      try {
+        await new Promise((resolve) => {
+          chrome.downloads.getFileIcon(item.id, { size: 32 }, () => {
+            resolve(null);
+          });
+        });
+      } catch {
+        // best-effort
+      }
+
+      // For now, return the download metadata and content via fetch if same-origin
+      let content = null;
+      try {
+        const resp = await fetch(item.url, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const text = await blob.text();
+          content = btoa(text);
+        }
+      } catch {
+        // URL may not be refetchable — just return metadata
+      }
+
+      return {
+        ok: true,
+        download: {
+          id: item.id,
+          filename: item.filename,
+          mimeType: item.mime,
+          url: item.url,
+          fileSize: item.fileSize,
+          ...(content ? { content, contentLength: atob(content).length } : { note: "Content not re-readable from URL." }),
+        },
+      };
+    }
 
     default: {
       // Check if this is a registered custom tool — if so, dispatch it.

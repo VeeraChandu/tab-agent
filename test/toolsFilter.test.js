@@ -15,6 +15,10 @@ const ALL_TOOL_NAMES = [
   "parallel_investigate", "run_batch", "ask_user",   "finish",
   "save_session_state",
   "restore_session_state",
+  "get_downloads",
+  "capture_download",
+  "get_queue_status",
+  "clear_queue",
 ];
 
 function toolNames(tools) {
