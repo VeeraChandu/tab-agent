@@ -112,3 +112,82 @@ describe("compactHistory with screenshot's ephemeral image blocks", () => {
     expect(h[2].content.some((b) => b.type === "image")).toBe(true); // the only screenshot so far, kept
   });
 });
+
+describe("compactHistory with attachment/page chunk tools", () => {
+  const chunkTool = (name, extra = {}) => JSON.stringify({
+    ok: true,
+    chunk_index: 2,
+    total_chunks: 5,
+    [name === "read_attachment_chunk" ? "attachment_id" : "chunk_id"]: "chk_abc123",
+    text: "x".repeat(300),
+    ...extra,
+  });
+
+  // After compaction, the content is still JSON: `{"ok":true,"note":"[...]"}`.
+  // Parse it and check the `note` field for the pointer text.
+  const noteAt = (h, i) => JSON.parse(h[i * 2 + 1].content[0].content).note;
+
+  test("older read_attachment_chunk results are compacted, most recent is kept", () => {
+    const h = history(
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk") },
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk", { chunk_index: 5 }) },
+    );
+    compactHistory(h, false);
+
+    // First result is compacted — note replaces the full text
+    const first = noteAt(h, 0);
+    expect(first).toContain("call read_attachment_chunk with attachment_id");
+    expect(first).toContain("chk_abc123");
+    expect(first).toContain("chunk_index 2");
+
+    // Second (newest) is still full JSON content
+    const second = resultAt(h, 1);
+    expect(second.text).toBe("x".repeat(300));
+    expect(second.chunk_index).toBe(5);
+  });
+
+  test("older read_page_chunk results are compacted, most recent is kept", () => {
+    const h = history(
+      { name: "read_page_chunk", result: chunkTool("read_page_chunk") },
+      { name: "read_page_chunk", result: chunkTool("read_page_chunk", { chunk_index: 3 }) },
+    );
+    compactHistory(h, false);
+
+    const first = noteAt(h, 0);
+    expect(first).toContain("call read_page_chunk with chunk_id");
+    expect(first).toContain("chk_abc123");
+    expect(first).toContain("chunk_index 2");
+
+    const second = resultAt(h, 1);
+    expect(second.text).toBe("x".repeat(300));
+    expect(second.chunk_index).toBe(3);
+  });
+
+  test("compacted chunk result points back at the correct tool by id and index", () => {
+    // Two of the same type so the first one gets compacted.
+    const h = history(
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk") },
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk", { chunk_index: 4 }) },
+    );
+    compactHistory(h, false);
+
+    const compacted = noteAt(h, 0);
+    expect(compacted).toContain("read_attachment_chunk");
+    expect(compacted).toContain("attachment_id");
+    expect(compacted).toContain("chk_abc123");
+    expect(compacted).toContain("chunk_index 2");
+
+    const kept = resultAt(h, 1);
+    expect(kept.chunk_index).toBe(4);
+  });
+
+  test("short chunk results (under COMPACT_MIN_LENGTH) are never touched", () => {
+    const short = JSON.stringify({ ok: true, chunk_index: 1, attachment_id: "chk_short", text: "short" });
+    const h = history(
+      { name: "read_attachment_chunk", result: short },
+    );
+    compactHistory(h, false);
+
+    expect(resultAt(h, 0).text).toBe("short"); // untouched
+  });
+});
