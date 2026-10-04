@@ -13,7 +13,7 @@
 // This mirrors Anthropic's native shape, and gets converted to OpenAI's
 // message/tool_calls shape when needed.
 
-import { TOOLS } from "./tools.js";
+import { TOOLS, filterTools } from "./tools.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
 
@@ -89,16 +89,16 @@ function openaiApiUrl(baseUrl, path) {
   return alreadyVersioned ? `${trimmed}${path}` : `${trimmed}/v1${path}`;
 }
 
-function anthropicTools() {
-  return TOOLS.map((t) => ({
+function anthropicTools(filterCtx) {
+  return (filterCtx ? filterTools(filterCtx) : TOOLS).map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
   }));
 }
 
-function openaiTools() {
-  return TOOLS.map((t) => ({
+function openaiTools(filterCtx) {
+  return (filterCtx ? filterTools(filterCtx) : TOOLS).map((t) => ({
     type: "function",
     function: {
       name: t.name,
@@ -108,7 +108,7 @@ function openaiTools() {
   }));
 }
 
-export async function callAnthropic(config, history, system, shouldStop) {
+export async function callAnthropic(config, history, system, shouldStop, toolFilterCtx) {
   const baseUrl = (config.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
   const res = await fetchWithRetry(`${baseUrl}/v1/messages`, {
     method: "POST",
@@ -129,7 +129,7 @@ export async function callAnthropic(config, history, system, shouldStop) {
       max_tokens: 8192,
       system,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
-      tools: anthropicTools(),
+      tools: anthropicTools(toolFilterCtx),
     }),
   }, { shouldStop });
 
@@ -249,7 +249,7 @@ function toOpenAIMessages(history, system) {
   return messages;
 }
 
-export async function callOpenAI(config, history, system, shouldStop) {
+export async function callOpenAI(config, history, system, shouldStop, toolFilterCtx) {
   const requestMessages = toOpenAIMessages(history, system);
   const res = await fetchWithRetry(openaiApiUrl(config.baseUrl, "/chat/completions"), {
     method: "POST",
@@ -260,7 +260,7 @@ export async function callOpenAI(config, history, system, shouldStop) {
     body: JSON.stringify({
       model: config.model || "gpt-4.1",
       messages: requestMessages,
-      tools: openaiTools(),
+      tools: openaiTools(toolFilterCtx),
       tool_choice: "auto",
     }),
   }, { shouldStop });
@@ -417,7 +417,7 @@ export function extractPartialJsonString(jsonText, field) {
   return out;
 }
 
-async function callAnthropicStream(config, history, system, onDelta, shouldStop) {
+async function callAnthropicStream(config, history, system, onDelta, shouldStop, toolFilterCtx) {
   const baseUrl = (config.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
   const res = await fetchWithRetry(`${baseUrl}/v1/messages`, {
     method: "POST",
@@ -438,7 +438,7 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
       max_tokens: 8192,
       system,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
-      tools: anthropicTools(),
+      tools: anthropicTools(toolFilterCtx),
       stream: true,
     }),
   }, { shouldStop });
@@ -508,7 +508,7 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
   return { assistantBlocks: blocks, toolCalls, text, stopReason, usage };
 }
 
-async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
+async function callOpenAIStream(config, history, system, onDelta, shouldStop, toolFilterCtx) {
   const requestMessages = toOpenAIMessages(history, system);
   const res = await fetchWithRetry(openaiApiUrl(config.baseUrl, "/chat/completions"), {
     method: "POST",
@@ -519,7 +519,7 @@ async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
     body: JSON.stringify({
       model: config.model || "gpt-4.1",
       messages: requestMessages,
-      tools: openaiTools(),
+      tools: openaiTools(toolFilterCtx),
       tool_choice: "auto",
       stream: true,
       stream_options: { include_usage: true },
@@ -603,28 +603,28 @@ function isStoppedError(err) {
   return err?.message === "Stopped by user.";
 }
 
-export async function callProvider(config, history, system, onDelta, shouldStop) {
+export async function callProvider(config, history, system, onDelta, shouldStop, toolFilterCtx) {
   if (config.provider === "anthropic") {
     if (onDelta) {
       try {
-        return await callAnthropicStream(config, history, system, onDelta, shouldStop);
+        return await callAnthropicStream(config, history, system, onDelta, shouldStop, toolFilterCtx);
       } catch (err) {
         if (isStoppedError(err) || isRealApiError(err)) throw err;
-        return callAnthropic(config, history, system, shouldStop);
+        return callAnthropic(config, history, system, shouldStop, toolFilterCtx);
       }
     }
-    return callAnthropic(config, history, system, shouldStop);
+    return callAnthropic(config, history, system, shouldStop, toolFilterCtx);
   }
   if (config.provider === "openai") {
     if (onDelta) {
       try {
-        return await callOpenAIStream(config, history, system, onDelta, shouldStop);
+        return await callOpenAIStream(config, history, system, onDelta, shouldStop, toolFilterCtx);
       } catch (err) {
         if (isStoppedError(err) || isRealApiError(err)) throw err;
-        return callOpenAI(config, history, system, shouldStop);
+        return callOpenAI(config, history, system, shouldStop, toolFilterCtx);
       }
     }
-    return callOpenAI(config, history, system, shouldStop);
+    return callOpenAI(config, history, system, shouldStop, toolFilterCtx);
   }
   throw new Error(`Unknown provider: ${config.provider}`);
 }

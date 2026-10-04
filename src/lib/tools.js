@@ -1083,3 +1083,57 @@ export function buildSystemPrompt(agentContext) {
   lines.push("---");
   return lines.join("\n");
 }
+
+/**
+ * Filters the tool list to exclude tools that can't succeed in the current
+ * context. This prevents the model from spending a step on a tool that will
+ * immediately fail with a "not available here" error.
+ * @param {object} ctx - The run context (visionConfig, hasAttachments, isSubAgent, etc.)
+ * @returns {import('./tools.js').Tool[]} Filtered tool list
+ */
+export function filterTools(ctx = {}) {
+  // ctx can be the main run's ctx or a sub-loop's branchCtx — only the
+  // fields listed below are ever read, so the same function works for both.
+  const needsVision = new Set(["view_image", "filter_images", "screenshot"]);
+  const needsClipboard = new Set(["copy_to_clipboard", "read_clipboard"]);
+  const needsAttachments = new Set(["upload_file"]);
+  const disallowedInSubAgent = new Set(["parallel_investigate", "run_batch", "ask_user", "screenshot"]);
+  const disallowedInBatch = new Set(["open_tab", "switch_tab", "parallel_investigate", "run_batch", "ask_user", "screenshot"]);
+  const requiresVisionConfig = new Set(["view_image", "filter_images"]);
+
+  return TOOLS.filter((t) => {
+    // Vision-dependent tools: if no vision config is available, hide them so
+    // the model doesn't waste a step calling view_image only to get "no vision
+    // model configured".
+    if (needsVision.has(t.name)) {
+      if (!ctx.visionConfig && !ctx.visionCapable) return false;
+      // screenshot also requires the tab to be active — but the model can
+      // switch to it first, so only filter it out when we know it can never
+      // work (no vision at all).
+    }
+
+    // view_image/filter_images need a separately configured vision model
+    // even when the main model is vision-capable (they use singleTurnComplete,
+    // not the main loop's model call).
+    if (requiresVisionConfig.has(t.name) && !ctx.visionConfig) return false;
+
+    // Clipboard tools only work while the tab is focused/active. In sub-agent
+    // contexts (branches/batch), tabs are backgrounded, so these would always
+    // fail — hide them to prevent wasted steps.
+    if (needsClipboard.has(t.name) && ctx.isSubAgent) return false;
+
+    // upload_file needs an attached file — with no attachments it always
+    // errors out with "no files attached". The model shouldn't see it when
+    // it can't possibly succeed.
+    if (needsAttachments.has(t.name) && !ctx.hasAttachments) return false;
+
+    // Sub-agent restrictions: sub-agents can't call certain tools (ask_user,
+    // parallel_investigate, run_batch, screenshot).
+    if (ctx.isSubAgent && disallowedInSubAgent.has(t.name)) return false;
+
+    // run_batch restrictions: stays on one tab, no tab switching/fan-out.
+    if (ctx.isBatch && disallowedInBatch.has(t.name)) return false;
+
+    return true;
+  });
+}

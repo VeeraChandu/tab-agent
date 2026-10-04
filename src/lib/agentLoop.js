@@ -46,6 +46,40 @@ const DEFAULT_LIMITS = {
 // feel like a natural consequence of finishing, not an abrupt yank.
 const BRANCH_AUTO_CLOSE_DELAY_MS = 900;
 
+// Proactive context-window budget thresholds: estimate the total token cost
+// of history + system prompt before every LLM call. This is a rough heuristic
+// (~3.5 chars per token, no per-model vocab) — not a guarantee, but it catches
+// the worst cases (30+ steps of large tool results) that would otherwise 400.
+// Anthropic's default context is 200K tokens; OpenAI models range from 128K to
+// 200K. The hard ceiling flags runs that are genuinely at risk; the warn ceiling
+// is a softer heads-up.
+const CONTEXT_WARN_TOKENS = 75000;
+const CONTEXT_HARD_CEILING = 100000;
+
+// Rough token estimate by character count: dividing by 3.5 approximates the
+// average English text token density; image blocks get a fixed 500-token
+// estimate; per-turn overhead adds 10 tokens per turn.
+export function estimateContextTokens(history, system) {
+  let total = Math.ceil((system || "").length / 3.5);
+  for (const turn of history) {
+    const blocks = turn.content || [];
+    for (const block of blocks) {
+      if (block.type === "text") {
+        total += Math.ceil((block.text || "").length / 3.5);
+      } else if (block.type === "tool_result") {
+        total += Math.ceil(typeof block.content === "string" ? block.content.length / 3.5 : 100);
+      } else if (block.type === "tool_use") {
+        total += Math.ceil(JSON.stringify(block.input || {}).length / 3.5);
+        total += (block.name || "").length;
+      } else if (block.type === "image") {
+        total += 500;
+      }
+    }
+    total += 10;
+  }
+  return total;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -1725,8 +1759,8 @@ function summarizeSubStep(name, input, result) {
 // is what manually sending "continue" was papering over), so retry a bounded
 // number of times here instead of ending the run on nothing.
 const MAX_EMPTY_RESPONSE_RETRIES = 2;
-async function callProviderRetryingEmpty(config, history, system, onDelta, shouldStop) {
-  let result = await callProvider(config, history, system, onDelta, shouldStop);
+async function callProviderRetryingEmpty(config, history, system, onDelta, shouldStop, toolFilterCtx) {
+  let result = await callProvider(config, history, system, onDelta, shouldStop, toolFilterCtx);
   let retries = 0;
   while (
     !result.toolCalls.length &&
@@ -1737,7 +1771,7 @@ async function callProviderRetryingEmpty(config, history, system, onDelta, shoul
     !(shouldStop && shouldStop())
   ) {
     retries += 1;
-    result = await callProvider(config, history, system, onDelta, shouldStop);
+    result = await callProvider(config, history, system, onDelta, shouldStop, toolFilterCtx);
   }
   return result;
 }
@@ -1770,9 +1804,25 @@ async function runSubLoop({ ctx, objective, maxSteps, config, system, onStep, ga
 
     compactHistory(history, !!(ctx.sessionId && ctx.pageCacheConfig?.enabled));
 
+    if (!ctx._ctxWarned) {
+      const estimated = estimateContextTokens(history, system);
+      if (estimated >= CONTEXT_HARD_CEILING) {
+        ctx._ctxWarned = true;
+        if (ctx.onEvent) ctx.onEvent({ type: "info", message: `⚠️ This sub-task's history is estimated at ~${(estimated / 1000).toFixed(0)}K tokens — near the context limit.` });
+      } else if (estimated >= CONTEXT_WARN_TOKENS) {
+        ctx._ctxWarned = true;
+        if (ctx.onEvent) ctx.onEvent({ type: "info", message: `~${(estimated / 1000).toFixed(0)}K tokens of context in this sub-task.` });
+      }
+    }
+
     let result;
     try {
-      result = await callProviderRetryingEmpty(config, history, system, () => {}, ctx.shouldStop);
+      const toolFilterCtx = {
+        visionConfig: ctx.visionConfig,
+        isSubAgent: true,
+        isBatch: !ctx.allowTabTools,
+      };
+      result = await callProviderRetryingEmpty(config, history, system, () => {}, ctx.shouldStop, toolFilterCtx);
     } catch (err) {
       // A deliberate Stop surfaces as this exact error (see fetchWithRetry/
       // readSSE in providers.js) — report it as a plain stop, not a
@@ -3081,6 +3131,11 @@ export async function runAgentTask({
   const ctx = {
     tabId,
     visionConfig: visionConfig || null,
+    visionCapable: looksVisionCapable(config?.model),
+    hasAttachments: attachments && attachments.length > 0,
+    // Context-window warning flag: set once per run to avoid spamming the UI
+    // with repeated "context is large" warnings on every step once over threshold.
+    _ctxWarned: false,
     grantedDomains: granted,
     config,
     onEvent,
@@ -3192,19 +3247,37 @@ export async function runAgentTask({
 
     compactHistory(history, !!(ctx.sessionId && ctx.pageCacheConfig?.enabled));
 
+    // Warn once per run if the context is getting large, so the user has
+    // advance notice before the provider's limit is actually hit.
+    if (!ctx._ctxWarned) {
+      const estimated = estimateContextTokens(history, system);
+      if (estimated >= CONTEXT_HARD_CEILING) {
+        ctx._ctxWarned = true;
+        await onEvent({ type: "info", message: `⚠️ The conversation history is estimated at ~${(estimated / 1000).toFixed(0)}K tokens — approaching or past the provider's context window. Consider using /compact to summarize older turns, or starting a new chat.` });
+      } else if (estimated >= CONTEXT_WARN_TOKENS) {
+        ctx._ctxWarned = true;
+        await onEvent({ type: "info", message: `~${(estimated / 1000).toFixed(0)}K tokens of context so far. If the model starts to struggle, use /compact to summarize older material.` });
+      }
+    }
+
     let result;
     try {
       // onDelta is fire-and-forget (not awaited) — it's purely a live text
       // preview for the UI, broadcast-only with no storage write on the
       // receiving end, so there's no reason to serialize the network read
       // loop behind it.
+      const toolFilterCtx = {
+        visionConfig: ctx.visionConfig,
+        hasAttachments: !!(ctx.hasAttachments),
+        visionCapable: ctx.visionCapable,
+      };
       result = await callProviderRetryingEmpty(config, history, system, (partialText) => {
         // null is the streaming-tool-starting signal from providers.js (see
         // callAnthropicStream/callOpenAIStream) - forwarded as reset:true so
         // the UI can clear its live preview instead of showing text jump
         // straight from unrelated prose to one character of the new content.
         onEvent({ type: "assistant_delta", step, text: partialText, reset: partialText === null });
-      }, shouldStop);
+      }, shouldStop, toolFilterCtx);
     } catch (err) {
       // A deliberate Stop click aborts the in-flight request/stream and
       // surfaces here as this exact error (see fetchWithRetry/readSSE in
