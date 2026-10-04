@@ -3,8 +3,7 @@
 // an automated macro sequence. Macros are stored as named sequences of
 // { action, target, value } steps that get converted to tool calls on replay.
 
-const RECORDING_KEY = "macroRecording"; // per-tab recording state (volatile)
-const MACROS_KEY = "savedMacros";       // persisted named macros
+const MACROS_KEY = "savedMacros"; // persisted named macros
 
 // --- recording (volatile, per session) ---
 

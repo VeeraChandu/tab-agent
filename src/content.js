@@ -1522,10 +1522,11 @@
           sendResponse({ ok: true });
           break;
 
-        case "STOP_MACRO_RECORDING":
+        case "STOP_MACRO_RECORDING": {
           const steps = stopMacroRecording();
           sendResponse({ ok: true, steps });
           break;
+        }
 
         default:
           sendResponse({ ok: false, error: "Unknown message type" });
@@ -1631,3 +1632,5 @@
     _macroSteps = [];
     return steps;
   }
+
+})();

@@ -42,7 +42,6 @@ export async function removeCustomTool(name) {
  *  error handler if the function body is invalid. */
 function buildHandler(raw) {
   try {
-    // eslint-disable-next-line no-new-func
     return new Function("ctx", "input", raw);
   } catch {
     return () => ({ ok: false, error: "Invalid custom tool handler (parse error)." });

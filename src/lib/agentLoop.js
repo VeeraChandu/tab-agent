@@ -5,7 +5,7 @@
 
 import { callProvider, describeImage, classifyImages } from "./providers.js";
 import { buildSystemPrompt, initCustomTools } from "./tools.js";
-import { executeCustomTool, getCustomToolDefs } from "./customTools.js";
+import { executeCustomTool } from "./customTools.js";
 import { detectSiteCategory, hostnameOf } from "./siteCategories.js";
 import { getMediaRequests, drainFailedRequests } from "./mediaSniffer.js";
 import { getLastNavError } from "./navErrors.js";
