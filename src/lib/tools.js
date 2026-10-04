@@ -2,6 +2,17 @@
 // Neutral tool definitions (JSON Schema) shared by every provider adapter.
 // Each adapter (see providers.js) converts these into its own tool-calling format.
 
+// Custom tools registered at runtime (from user-defined chrome.storage entries).
+// Populated once at startup by initCustomTools().
+export let customToolDefs = [];
+
+/** Load custom tool definitions from storage and add them to the tool list.
+ *  Call once at startup (e.g. from background.js or the first agent run). */
+export async function initCustomTools() {
+  const { getCustomToolDefs } = await import("./customTools.js");
+  customToolDefs = await getCustomToolDefs();
+}
+
 export const TOOLS = [
   {
     name: "read_page",
@@ -1108,7 +1119,8 @@ export function buildSystemPrompt(agentContext) {
 /**
  * Filters the tool list to exclude tools that can't succeed in the current
  * context. This prevents the model from spending a step on a tool that will
- * immediately fail with a "not available here" error.
+ * immediately fail with a "not available here" error. Custom tools are always
+ * included (their availability is up to the user-defined handler).
  * @param {object} ctx - The run context (visionConfig, hasAttachments, isSubAgent, etc.)
  * @returns {import('./tools.js').Tool[]} Filtered tool list
  */
@@ -1122,7 +1134,7 @@ export function filterTools(ctx = {}) {
   const disallowedInBatch = new Set(["open_tab", "switch_tab", "parallel_investigate", "run_batch", "ask_user", "screenshot"]);
   const requiresVisionConfig = new Set(["view_image", "filter_images"]);
 
-  return TOOLS.filter((t) => {
+  return [...TOOLS, ...customToolDefs].filter((t) => {
     // Vision-dependent tools: if no vision config is available, hide them so
     // the model doesn't waste a step calling view_image only to get "no vision
     // model configured".

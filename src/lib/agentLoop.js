@@ -4,7 +4,8 @@
 // which is executed directly on the tab via content.js / chrome.tabs.
 
 import { callProvider, describeImage, classifyImages } from "./providers.js";
-import { buildSystemPrompt } from "./tools.js";
+import { buildSystemPrompt, initCustomTools } from "./tools.js";
+import { executeCustomTool, getCustomToolDefs } from "./customTools.js";
 import { detectSiteCategory, hostnameOf } from "./siteCategories.js";
 import { getMediaRequests, drainFailedRequests } from "./mediaSniffer.js";
 import { getLastNavError } from "./navErrors.js";
@@ -3064,8 +3065,14 @@ async function executeTool(ctx, name, input, callId) {
     case "finish":
       return { ok: true };
 
-    default:
+    default: {
+      // Check if this is a registered custom tool — if so, dispatch it.
+      const customResult = await executeCustomTool(ctx, name, input);
+      if (customResult !== null && customResult !== undefined && !customResult._notFound) {
+        return customResult;
+      }
       return { ok: false, error: `Unknown tool: ${name}` };
+    }
   }
 }
 
@@ -3125,6 +3132,9 @@ export async function runAgentTask({
   trustedInputEnabled,
   stepThrough,
 }) {
+  // Ensure custom tools are loaded (MV3 may wake without onInstalled firing)
+  await initCustomTools();
+
   const system = buildSystemPrompt(agentContext);
   const granted = grantedDomains || new Set();
   const effectiveLimits = { ...DEFAULT_LIMITS, ...(limits || {}) };

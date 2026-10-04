@@ -19,6 +19,7 @@ import { recordAttachment, deleteCacheForSession as deleteAttachmentCacheForSess
 import { startRunningBadge, stopRunningBadge } from "./lib/statusBadge.js";
 import { getRecording, deleteRecording } from "./lib/sessionRecorder.js";
 import { deleteSessionState } from "./lib/statePersist.js";
+import { initCustomTools } from "./lib/tools.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
@@ -36,6 +37,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (!agents) {
     await chrome.storage.local.set({ agents: [] });
   }
+  await initCustomTools();
 });
 
 // Global keyboard shortcuts (manifest.json "commands") — these fire even
