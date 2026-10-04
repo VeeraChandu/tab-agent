@@ -26,8 +26,8 @@
       </h2>
 
       <div id="providerList" class="provider-list"></div>
-      <button id="addProviderBtn" type="button" class="add-btn">+ Add provider</button>
-      <button id="detectLocalBtn" type="button" class="tool-btn" style="margin-top:8px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Detect local models…</button>
+      <button id="addProviderBtn" type="button" class="btn btn-primary btn-dashed btn-full">+ Add provider</button>
+      <button id="detectLocalBtn" type="button" class="btn btn-secondary" style="margin-top:8px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Detect local models…</button>
       <span id="detectLocalStatus" class="hint" style="margin-left:8px"></span>
 
       <hr />
@@ -54,7 +54,7 @@
       </h2>
 
       <div id="agentList" class="agent-list"></div>
-      <button id="addAgentBtn" type="button" class="add-btn">+ Add agent</button>
+      <button id="addAgentBtn" type="button" class="btn btn-primary btn-dashed btn-full">+ Add agent</button>
     </section>
 
     <section id="tab-automation" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-automation" tabindex="0">
@@ -63,7 +63,7 @@
         <button type="button" class="info-icon" data-tooltip="Runs a task automatically on a timer, with no side panel open - Tab Agent opens the target page in a background tab, runs the task, and closes it again. There's no one to answer a question mid-run, so anything needing ask_user (or a one-time adult/financial site confirmation) pauses, reports back as &quot;Needs input&quot;, and disables itself until you review it and run it manually. Prerequisite: Chrome itself must be running for these to fire - if Chrome is fully quit (not just all windows closed), checks won't run until you reopen it, and system sleep pauses timers too.">ⓘ</button>
       </h2>
       <div id="scheduledList" class="scheduled-list"></div>
-      <button id="addScheduledBtn" type="button" class="add-btn">+ Add scheduled check</button>
+      <button id="addScheduledBtn" type="button" class="btn btn-primary btn-dashed btn-full">+ Add scheduled check</button>
     </section>
 
     <section id="tab-limits" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-limits" tabindex="0">
@@ -172,8 +172,8 @@
         <button type="button" class="info-icon" data-tooltip="The side panel's microphone button uses Chrome's built-in speech recognition, which needs one-time microphone permission for this extension. Chrome doesn't reliably show that permission prompt inside the side panel itself - grant it here instead (a regular tab, where the prompt always works). It carries over to the side panel automatically, since both share the same extension origin.">ⓘ</button>
       </h2>
       <div class="mic-actions">
-        <button id="enableMicBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg> Enable microphone access</button>
-        <button id="openMicSettingsBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg> Open Chrome mic settings</button>
+        <button id="enableMicBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg> Enable microphone access</button>
+        <button id="openMicSettingsBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg> Open Chrome mic settings</button>
       </div>
       <p id="micStatus" class="hint"></p>
 
@@ -203,8 +203,8 @@
         <h3>Sessions</h3>
         <div class="usage-sessions-actions">
           <input id="usageSearchInput" type="text" placeholder="Filter sessions…" class="usage-search-input" />
-          <button id="refreshUsageBtn" type="button" class="tool-btn">Refresh</button>
-          <button id="clearUsageDataBtn" type="button" class="danger-btn">Clear all</button>
+          <button id="refreshUsageBtn" type="button" class="btn btn-secondary">Refresh</button>
+          <button id="clearUsageDataBtn" type="button" class="btn btn-danger">Clear all</button>
         </div>
       </div>
       <div id="usageSessionList" class="usage-session-list"></div>
@@ -217,8 +217,8 @@
         <button type="button" class="info-icon" data-tooltip="Export/Import let you pick which sections to include before proceeding. Providers includes your API keys in plain text - store an export with that included somewhere private.">ⓘ</button>
       </h2>
       <div class="backup-actions">
-        <button id="exportSettingsBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export settings</button>
-        <button id="importSettingsBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Import settings</button>
+        <button id="exportSettingsBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export settings</button>
+        <button id="importSettingsBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Import settings</button>
         <input type="file" id="importFileInput" accept="application/json" hidden />
       </div>
       <p id="backupStatus" class="hint"></p>
@@ -237,8 +237,8 @@
     <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmMessage">
       <p id="confirmMessage"></p>
       <div class="confirm-actions">
-        <button id="confirmCancelBtn" type="button" class="confirm-cancel-btn">Cancel</button>
-        <button id="confirmOkBtn" type="button" class="confirm-ok-btn">Remove</button>
+        <button id="confirmCancelBtn" type="button" class="confirm-cancel-btn btn btn-secondary">Cancel</button>
+        <button id="confirmOkBtn" type="button" class="confirm-ok-btn btn btn-danger">Remove</button>
       </div>
     </div>
   </div>
@@ -256,7 +256,7 @@
       <p class="model-diff-heading model-diff-removed-heading hidden">Removed</p>
       <ul class="model-diff-list model-diff-removed-list"></ul>
       <div class="confirm-actions">
-        <button id="modelDiffOkBtn" type="button" class="confirm-ok-btn">Got it</button>
+        <button id="modelDiffOkBtn" type="button" class="btn btn-primary">Got it</button>
       </div>
     </div>
   </div>
@@ -272,7 +272,7 @@
       </div>
       <div class="history-dialog-actions">
         <label class="history-select-all-label"><input id="historySelectAll" type="checkbox" /> Select all</label>
-        <button id="historyDeleteSelectedBtn" type="button" class="history-delete-selected-btn" disabled>Delete selected</button>
+        <button id="historyDeleteSelectedBtn" type="button" class="history-delete-selected-btn btn btn-danger" disabled>Delete selected</button>
       </div>
       <ul id="historyList" class="history-modal-list"></ul>
     </div>
@@ -306,7 +306,7 @@
       </div>
       <div id="runDetailMarkdown" class="history-row-markdown run-detail-markdown"></div>
       <div class="run-detail-actions">
-        <button id="runDetailDeleteBtn" type="button" class="history-delete-selected-btn">Delete this run</button>
+        <button id="runDetailDeleteBtn" type="button" class="history-delete-selected-btn btn btn-danger">Delete this run</button>
       </div>
     </div>
   </div>
@@ -316,8 +316,8 @@
       <p id="backupSectionsTitle" class="backup-sections-title"></p>
       <div id="backupSectionsList" class="backup-sections-list"></div>
       <div class="confirm-actions">
-        <button id="backupSectionsCancelBtn" type="button" class="confirm-cancel-btn">Cancel</button>
-        <button id="backupSectionsOkBtn" type="button" class="confirm-ok-btn backup-sections-ok-btn">Continue</button>
+        <button id="backupSectionsCancelBtn" type="button" class="confirm-cancel-btn btn btn-secondary">Cancel</button>
+        <button id="backupSectionsOkBtn" type="button" class="backup-sections-ok-btn btn btn-primary">Continue</button>
       </div>
     </div>
   </div>
@@ -360,7 +360,7 @@
         <input class="baseurl-input" type="text" placeholder="https://api.openai.com" />
         <p class="hint">Works with any OpenAI-compatible endpoint - for a local model, try <code>http://localhost:11434/v1</code> (Ollama) or <code>http://localhost:1234/v1</code> (LM Studio). Any text is accepted as the API key if your local server doesn't check one.</p>
 
-        <button class="fetch-models-btn" type="button">Fetch models</button>
+        <button class="fetch-models-btn btn btn-primary btn-full" type="button">Fetch models</button>
 
         <div class="fetch-spinner hidden"><span class="spinner"></span> Fetching available models…</div>
 
@@ -415,7 +415,7 @@
         <p class="agent-status"></p>
 
         <div class="agent-footer">
-          <button class="agent-save-btn" type="button">Save</button>
+          <button class="agent-save-btn btn btn-primary" type="button">Save</button>
         </div>
       </div>
     </div>
@@ -490,9 +490,9 @@
 
         <div class="sched-footer">
           <div class="sched-footer-actions">
-            <button class="sched-run-now-btn" type="button">Run now</button>
-            <button class="sched-run-manually-btn hidden" type="button">Run manually</button>
-            <button class="sched-save-btn" type="button">Save</button>
+            <button class="sched-run-now-btn btn btn-secondary" type="button">Run now</button>
+            <button class="sched-run-manually-btn btn btn-warn hidden" type="button">Run manually</button>
+            <button class="sched-save-btn btn btn-primary" type="button">Save</button>
           </div>
           <button class="sched-history-btn" type="button" title="View full run history">🕓 History</button>
         </div>
