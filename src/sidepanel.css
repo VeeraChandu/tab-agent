@@ -527,7 +527,7 @@ main {
 /* --- User message --------------------------------------------------- */
 
 .entry.user {
-  background: var(--card);
+  background: var(--card-alt);
   color: var(--text);
   align-self: flex-end;
   padding: 9px 12px;
@@ -611,6 +611,7 @@ main {
 .entry.assistant .body, .entry.final .body {
   background: var(--card);
   border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
   border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 4px;
   padding: 9px 12px;
   line-height: 1.5;
