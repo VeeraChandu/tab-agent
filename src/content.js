@@ -1504,6 +1504,17 @@
         case "PAGE_SIGNATURE":
           sendResponse({ ok: true, signature: pageSignature() });
           break;
+        case "GET_LOCAL_STORAGE":
+          sendResponse({ ok: true, data: { ...localStorage } });
+          break;
+        case "SET_LOCAL_STORAGE":
+          if (msg.data && typeof msg.data === "object") {
+            for (const [k, v] of Object.entries(msg.data)) {
+              try { localStorage.setItem(k, String(v)); } catch { /* quota exceeded or private mode */ }
+            }
+          }
+          sendResponse({ ok: true });
+          break;
         default:
           sendResponse({ ok: false, error: "Unknown message type" });
       }

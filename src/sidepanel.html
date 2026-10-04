@@ -147,6 +147,20 @@
     <input type="file" id="fileInput" accept="image/*,application/pdf,.txt,.md,.markdown,.csv,.tsv,.json,.log,.yaml,.yml,.xml,.html,.htm,.js,.ts,.py,.css,.sh,.java,.c,.cpp,.go,.rb,.php,.rs,text/plain,text/csv,text/markdown,application/json" multiple hidden />
   </footer>
 
+  <!-- Replay overlay — shown when the user clicks 📽 on a history row -->
+  <div id="replayOverlay" class="replay-overlay hidden">
+    <div class="replay-header">
+      <span id="replayTitle">Recording</span>
+      <button id="replayClose" class="icon-btn" title="Close replay">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="replay-body">
+      <div id="replayStrip" class="replay-strip"></div>
+      <div id="replayScreenshot" class="replay-screenshot"></div>
+    </div>
+  </div>
+
   <script src="lib/markdown.js"></script>
   <script src="lib/pricing.js"></script>
   <script src="lib/pdf.min.js"></script>

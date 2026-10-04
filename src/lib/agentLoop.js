@@ -12,6 +12,8 @@ import { looksVisionCapable } from "./vision.js";
 import { dispatchTrustedClick } from "./trustedInput.js";
 import { recordPageRead, recallPage, isUrlCached } from "./pageCache.js";
 import { getChunk, getFullAttachment, recordAttachment, chunkText } from "./attachmentCache.js";
+import { captureStep, startRecording } from "./sessionRecorder.js";
+import { saveTabState, restoreTabState, hasSavedState } from "./statePersist.js";
 
 const MAX_STEPS = 20;
 const TAB_LOAD_TIMEOUT_MS = 15000;
@@ -350,7 +352,7 @@ async function waitForTabComplete(tabId, ceilingMs, intervalMs) {
   }
 }
 
-function sendToTab(tabId, message, frameId = 0, shouldStop) {
+export function sendToTab(tabId, message, frameId = 0, shouldStop) {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result) => {
@@ -1653,6 +1655,8 @@ const SUB_AGENT_ALLOWED_TOOLS = new Set([
   "recall_page",
   "read_attachment_chunk",
   "read_page_chunk",
+  "save_session_state",
+  "restore_session_state",
 ]);
 // open_tab/switch_tab are gated separately (via ctx.allowTabTools below,
 // checked alongside SUB_AGENT_ALLOWED_TOOLS in runSubLoop's dispatch loop)
@@ -3037,6 +3041,26 @@ async function executeTool(ctx, name, input, callId) {
     case "run_batch":
       return runBatch(ctx, input, callId);
 
+    case "save_session_state": {
+      const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
+      if (!tab?.url) return { ok: false, error: "Cannot access current tab" };
+      const saved = await saveTabState(ctx.tabId, ctx.sessionId);
+      if (saved.ok) {
+        await ctx.onEvent({ type: "info", message: `💾 Session state saved for ${saved.origins.join(", ")} (${saved.cookies_saved} cookies, ${saved.localStorage_keys} localStorage keys). Will restore automatically on resume.` });
+      }
+      return saved;
+    }
+
+    case "restore_session_state": {
+      const exists = await hasSavedState(ctx.sessionId);
+      if (!exists) return { ok: false, error: "No saved session state found for this conversation. Use save_session_state after logging into a site or configuring it." };
+      const restored = await restoreTabState(ctx.tabId, ctx.sessionId);
+      if (restored.ok) {
+        await ctx.onEvent({ type: "info", message: `↩️ Session state restored (${restored.origins_restored} origin(s)).` });
+      }
+      return restored;
+    }
+
     case "finish":
       return { ok: true };
 
@@ -3176,6 +3200,10 @@ export async function runAgentTask({
     // footprint (and the visible "being debugged" infobar risk) as narrow
     // as possible.
     trustedInputEnabled: !!trustedInputEnabled,
+    // Recording — set to true once startRecording succeeds so captureStep
+    // calls in the tool-result loop don't try to record before the index
+    // is initialized.
+    _recordingStarted: false,
   };
   let history;
 
@@ -3238,6 +3266,27 @@ export async function runAgentTask({
   // same text. Only the step-limit-exhausted fallback below leaves this
   // false, since nothing else will have shown the user that message.
   let alreadyShown = false;
+  // Initialize session recording (best-effort) so every tool result gets
+  // a thumbnail + metadata frame for visual replay.
+  if (ctx.sessionId) {
+    startRecording(ctx.sessionId).then(() => { ctx._recordingStarted = true; }).catch(() => {});
+  }
+
+  // Auto-restore saved session state on resume/continue so the model picks
+  // up where it left off without re-authenticating. Only fires when there's
+  // actually saved state.
+  if (ctx.sessionId && (resume || continueRun)) {
+    hasSavedState(ctx.sessionId).then((exists) => {
+      if (exists) {
+        restoreTabState(ctx.tabId, ctx.sessionId).then((res) => {
+          if (res.ok) {
+            onEvent({ type: "info", message: `↩️ Session state restored (${res.origins_restored} origin(s)).` });
+          }
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }
+
   // model/providerId ride along on the usage object itself — the pricing
   // dashboard (lib/pricing.js, read in sidepanel.js) needs to know which
   // model actually generated these tokens to look up a $/token rate. config
@@ -3426,6 +3475,22 @@ export async function runAgentTask({
       const screenshotImage = toolResult._screenshotImage;
       if (screenshotImage) delete toolResult._screenshotImage;
       await onEvent({ type: "tool_result", step, id: call.id, name: call.name, input: call.input, result: toolResult });
+
+      // Record every step for visual replay (best-effort — skips quietly
+      // when the tab isn't active/visible or recording isn't initialized).
+      if (ctx.sessionId && ctx._recordingStarted) {
+        const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
+        captureStep({
+          sessionId: ctx.sessionId,
+          step: step * 1000 + result.toolCalls.indexOf(call), // sub-step within a turn
+          callId: call.id,
+          toolName: call.name,
+          toolInput: call.input,
+          toolResult,
+          url: tab?.url || null,
+        }).catch(() => {});
+      }
+
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: call.id,

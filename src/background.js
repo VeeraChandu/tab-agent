@@ -17,6 +17,8 @@ import { startNavErrorTracking } from "./lib/navErrors.js";
 import { deleteCacheForSession, DEFAULT_MAX_ENTRIES as PAGE_CACHE_DEFAULT_MAX_ENTRIES } from "./lib/pageCache.js";
 import { recordAttachment, deleteCacheForSession as deleteAttachmentCacheForSession } from "./lib/attachmentCache.js";
 import { startRunningBadge, stopRunningBadge } from "./lib/statusBadge.js";
+import { getRecording, deleteRecording } from "./lib/sessionRecorder.js";
+import { deleteSessionState } from "./lib/statePersist.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
@@ -1483,6 +1485,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "GET_RECORDING") {
+    const frames = await getRecording(msg.sessionId);
+    sendResponse({ ok: true, frames });
+    return true;
+  }
+
   if (msg.type === "DELETE_SESSION_CACHE") {
     // Sent by sidepanel.js right after it removes a chat from the "sessions"
     // array, so a deleted chat's cached page content (see lib/pageCache.js)
@@ -1493,6 +1501,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // either module's key-naming logic directly.
     deleteCacheForSession(msg.sessionId).catch((err) => console.log("[pageCache] deleteCacheForSession failed:", err?.message || err));
     deleteAttachmentCacheForSession(msg.sessionId).catch((err) => console.log("[attachmentCache] deleteCacheForSession failed:", err?.message || err));
+    deleteRecording(msg.sessionId).catch((err) => console.log("[sessionRecorder] deleteRecording failed:", err?.message || err));
+    deleteSessionState(msg.sessionId).catch((err) => console.log("[statePersist] deleteSessionState failed:", err?.message || err));
     sendResponse({ ok: true });
     return true;
   }
