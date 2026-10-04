@@ -683,6 +683,35 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// --- Footer resize (drag handle) ----------------------------------------
+(function initFooterResize() {
+  const handle = document.getElementById("footerResizeHandle");
+  const footer = document.querySelector("footer");
+  if (!handle || !footer) return;
+  let startY = 0;
+  let startH = 0;
+  const onMove = (e) => {
+    const delta = startY - e.clientY;
+    const newH = Math.max(80, Math.min(window.innerHeight * 0.7, startH + delta));
+    footer.style.height = `${newH}px`;
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startY = e.clientY;
+    startH = footer.offsetHeight;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+})();
+
 function relativeTime(ts) {
   const diff = Date.now() - ts;
   const min = Math.round(diff / 60000);
@@ -955,20 +984,52 @@ function renderSessionPath(session) {
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
-// Quiet, view-only usage readout pinned to the top of the composer card —
-// just for the user to glance at, not a quota/limit (the extension has no
-// concept of a spend cap since it's bring-your-own-key).
+// Context ring + click-to-compact — shows active context size as a filled
+// ring (clamped relative to AUTO_COMPACT_TOKEN_THRESHOLD). Clicking it
+// compacts the session. Only shown when there's measurable usage and only
+// active when the user is NOT mid-run.
 function updateComposerUsage(session) {
   const el = document.getElementById("composerUsage");
   if (!el) return;
-  const label = sessionUsageLabel(session).replace(/^ · /, "");
-  if (!label) {
+
+  if (!session) {
     el.classList.add("hidden");
-    el.textContent = "";
+    el.innerHTML = "";
     return;
   }
-  el.textContent = `Usage this chat: ${label}`;
+
+  const path = computeActivePath(session);
+  const lastNode = path[path.length - 1];
+  const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
+  if (!active) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+
+  const MAX = AUTO_COMPACT_TOKEN_THRESHOLD; // 250k
+  const pct = Math.min(active / MAX, 1);
+  const circumference = 2 * Math.PI * 8; // r=8
+  const dashOffset = circumference * (1 - pct);
+  const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+  el.innerHTML = `
+    <button id="contextCompactBtn" class="context-ring-btn" title="Active context: ~${fmtNum(active)} tokens — click to compact">
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="context-ring-bg" cx="12" cy="12" r="8"/>
+        <circle class="context-ring-fg" cx="12" cy="12" r="8" stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>
+      </svg>
+      <span class="context-ring-label"><strong>${fmtNum(active)}</strong> · compact</span>
+    </button>`;
   el.classList.remove("hidden");
+
+  const btn = document.getElementById("contextCompactBtn");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      if (running) return;
+      compactCurrentSession();
+    });
+  }
 }
 
 function renderUserNode(session, node) {
@@ -1167,9 +1228,9 @@ function addCopyButtonsToLinks(body) {
 function createCopyButton(getText, variant = "muted") {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = variant === "light" ? "copy-msg-btn light" : "copy-msg-btn";
+  btn.className = variant === "light" ? "msg-copy-btn light" : "msg-copy-btn";
   btn.title = "Copy to clipboard";
-  btn.innerHTML = "⧉";
+  btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
   btn.addEventListener("click", async () => {
     const text = getText();
     if (!text) return;
@@ -1193,10 +1254,10 @@ function createCopyButton(getText, variant = "muted") {
       document.body.removeChild(ta);
     }
     btn.classList.add("copied");
-    btn.innerHTML = "✓";
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
     setTimeout(() => {
       btn.classList.remove("copied");
-      btn.innerHTML = "⧉";
+      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     }, 1200);
   });
   return btn;

@@ -91,6 +91,7 @@
   </div>
 
   <footer>
+    <div id="footerResizeHandle" class="footer-resize-handle" title="Drag to resize"></div>
     <div id="agentPopover" class="agent-popover hidden"></div>
     <div id="editBanner" class="edit-banner hidden">
       <span>✎ Editing a previous message - sending will branch from here</span>
@@ -99,15 +100,6 @@
     <div id="attachmentsRow" class="attachments-row hidden"></div>
 
     <div class="composer">
-      <!-- Persistent (never dismissed) — distinct from #privacyNotice above,
-           which is a one-time banner shown once per PRIVACY_NOTICE_VERSION
-           and then dismissed for good. This stays put right above the input
-           on every message as a standing reminder of where a task's data
-           goes, since a dismiss-once banner easily gets forgotten. -->
-      <div id="composerPrivacyNote" class="composer-privacy-note" title="Page content, screenshots, and tab details a task needs are sent to the AI provider you configure in Settings, using your own API key.">
-        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>Page data for this task goes to the AI provider you configure in Settings - see Settings → Privacy.</span>
-      </div>
       <div id="composerUsage" class="composer-usage hidden"></div>
       <div id="agentChip" class="agent-chip hidden">
         <span class="agent-chip-icon">🤖</span>

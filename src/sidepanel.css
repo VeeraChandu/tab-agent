@@ -1406,6 +1406,34 @@ main {
 
 /* --- composer ------------------------------------------------------- */
 
+/* Resize handle for the footer — draggable strip across the full width */
+.footer-resize-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 5px;
+  cursor: ns-resize;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.footer-resize-handle::after {
+  content: "";
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  opacity: 0.3;
+  transition: opacity 0.12s;
+}
+.footer-resize-handle:hover::after,
+.footer-resize-handle:active::after {
+  opacity: 0.7;
+  background: var(--accent);
+}
+
 footer {
   border-top: 1px solid var(--border);
   padding: 10px 14px 14px;
@@ -1415,6 +1443,9 @@ footer {
   gap: 8px;
   flex-shrink: 0;
   position: relative;
+  min-height: 80px;
+  max-height: 70vh;
+  overflow: hidden;
 }
 
 .edit-banner {
@@ -1494,6 +1525,10 @@ footer {
   padding: 8px 10px 6px;
   box-shadow: var(--shadow-sm);
   transition: border-color 0.12s, box-shadow 0.12s;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
 }
 
 .composer-usage {
@@ -1504,28 +1539,29 @@ footer {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
 
 .composer-usage.hidden { display: none; }
 
-/* Persistent (never dismissed) privacy line above the input — see the HTML
-   comment above #composerPrivacyNote for how this differs from the one-time
-   #privacyNotice banner higher up the panel. Kept small/muted so it doesn't
-   compete with the actual composer on every single use. */
-.composer-privacy-note {
-  font-size: 10px;
-  line-height: 1.35;
-  color: var(--text-faint);
-  padding: 0 2px 6px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: flex-start;
+/* Context ring — SVG circular progress showing active context usage */
+.context-ring-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
   gap: 5px;
+  color: var(--text-faint);
+  transition: color 0.12s;
 }
-
-.composer-privacy-note svg { flex: none; margin-top: 1.5px; opacity: 0.8; }
+.context-ring-btn:hover { color: var(--text); }
+.context-ring-btn svg { display: block; }
+.context-ring-bg { fill: none; stroke: var(--border); stroke-width: 2.5; }
+.context-ring-fg { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
+.context-ring-label { font-size: 10px; color: inherit; }
+.context-ring-label strong { font-weight: 600; }
 
 .composer:focus-within {
   border-color: var(--accent);
@@ -1541,9 +1577,10 @@ textarea#taskInput {
   padding: 4px 4px 6px;
   border: none;
   background: transparent;
-  max-height: 140px;
   overflow-y: auto;
   display: block;
+  flex: 1;
+  min-height: 20px;
 }
 
 textarea#taskInput::placeholder { color: var(--text-faint); }
