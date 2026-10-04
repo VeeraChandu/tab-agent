@@ -1170,6 +1170,18 @@ p { font-size: 12.5px; line-height: 1.5; color: var(--text-muted); }
   border-radius: var(--radius-sm);
 }
 
+.tool-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  padding: 6px 14px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: background 0.1s, border-color 0.1s;
+}
+.tool-btn:hover { background: var(--card-alt); border-color: var(--border-strong); }
+
 .danger-btn {
   border: 1px solid var(--error-text); background: var(--error-bg);
   color: var(--error-text); padding: 6px 14px; border-radius: var(--radius-sm);

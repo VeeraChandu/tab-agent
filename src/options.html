@@ -27,8 +27,8 @@
 
       <div id="providerList" class="provider-list"></div>
       <button id="addProviderBtn" type="button" class="add-btn">+ Add provider</button>
-      <button id="detectLocalBtn" type="button" class="tool-btn" style="margin-top:8px">🔍 Detect local models…</button>
-      <span id="detectLocalStatus" style="margin-left:8px;font-size:0.9em;"></span>
+      <button id="detectLocalBtn" type="button" class="tool-btn" style="margin-top:8px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Detect local models…</button>
+      <span id="detectLocalStatus" class="hint" style="margin-left:8px"></span>
 
       <hr />
       <h2>
@@ -172,8 +172,8 @@
         <button type="button" class="info-icon" data-tooltip="The side panel's microphone button uses Chrome's built-in speech recognition, which needs one-time microphone permission for this extension. Chrome doesn't reliably show that permission prompt inside the side panel itself - grant it here instead (a regular tab, where the prompt always works). It carries over to the side panel automatically, since both share the same extension origin.">ⓘ</button>
       </h2>
       <div class="mic-actions">
-        <button id="enableMicBtn" type="button" class="add-btn">🎤 Enable microphone access</button>
-        <button id="openMicSettingsBtn" type="button" class="add-btn">Open Chrome mic settings</button>
+        <button id="enableMicBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg> Enable microphone access</button>
+        <button id="openMicSettingsBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg> Open Chrome mic settings</button>
       </div>
       <p id="micStatus" class="hint"></p>
 
@@ -217,8 +217,8 @@
         <button type="button" class="info-icon" data-tooltip="Export/Import let you pick which sections to include before proceeding. Providers includes your API keys in plain text - store an export with that included somewhere private.">ⓘ</button>
       </h2>
       <div class="backup-actions">
-        <button id="exportSettingsBtn" type="button" class="add-btn">▲ Export settings</button>
-        <button id="importSettingsBtn" type="button" class="add-btn">▼ Import settings</button>
+        <button id="exportSettingsBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export settings</button>
+        <button id="importSettingsBtn" type="button" class="tool-btn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Import settings</button>
         <input type="file" id="importFileInput" accept="application/json" hidden />
       </div>
       <p id="backupStatus" class="hint"></p>

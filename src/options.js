@@ -2362,6 +2362,7 @@ function renderUsageDashboard() {
 
         const badgeClass = stats_.success === true ? "ok" : stats_.success === false ? "fail" : "neutral";
         const badgeIcon = stats_.success === true ? "✓" : stats_.success === false ? "✗" : "·";
+        const badgeTitle = stats_.success === true ? "Completed successfully" : stats_.success === false ? "Failed or error" : "Incomplete";
 
         html += `<div class="usage-session-row">
           <span class="usage-session-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
@@ -2369,7 +2370,7 @@ function renderUsageDashboard() {
           <span class="usage-session-tokens">${stats_.totalTokens.toLocaleString()} tok</span>
           <span class="usage-session-cost">${cost}</span>
           <span class="usage-session-date">${date}</span>
-          <span class="usage-session-badge ${badgeClass}">${badgeIcon}</span>
+          <span class="usage-session-badge ${badgeClass}" title="${badgeTitle}">${badgeIcon}</span>
         </div>`;
       }
       sessList.innerHTML = html;
