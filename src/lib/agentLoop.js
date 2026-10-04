@@ -2023,6 +2023,9 @@ async function runOneBranch(ctx, task, label, config, callId) {
     // — branches only, never the main loop or run_batch.
     explorationGuard: true,
     lockedHostname,
+    // Context-window warning flag — use the parent run's state so a warning
+    // from any branch suppresses further warnings in the same session.
+    _ctxWarned: ctx._ctxWarned,
     openedTabIds: branchOpenedTabIds,
     allowTabTools: true,
     // Page recall cache (see lib/pageCache.js) — inherited from the parent
@@ -2222,6 +2225,7 @@ export async function resumeBranch({
     pageCacheConfig,
     turnIndex,
     subAgentLabel: label,
+    _ctxWarned: false,
     openedTabIds: branchOpenedTabIds,
     allowTabTools: true,
   };
@@ -2449,6 +2453,9 @@ async function runBatch(ctx, input, callId) {
     shouldStop: ctx.shouldStop,
     shouldSkip: () => ctx.shouldSkipSubtasks && ctx.shouldSkipSubtasks(),
     lockedHostname: hostnameOf(startTab?.url),
+    // Context-window warning flag — inherit from parent so one warning
+    // covers the whole session.
+    _ctxWarned: ctx._ctxWarned,
     // Page recall cache — same inheritance rationale as branchCtx above.
     sessionId: ctx.sessionId,
     pageCacheConfig: ctx.pageCacheConfig,
