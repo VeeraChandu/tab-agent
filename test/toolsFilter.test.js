@@ -19,6 +19,7 @@ const ALL_TOOL_NAMES = [
   "capture_download",
   "get_queue_status",
   "clear_queue",
+  "set_viewport",
 ];
 
 function toolNames(tools) {
