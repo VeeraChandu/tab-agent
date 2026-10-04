@@ -1014,6 +1014,10 @@ function renderUserNode(session, node) {
   }
 
   const siblings = node.parentId ? session.nodes[node.parentId]?.childIds || [] : session.rootChildIds || [];
+  const footer = document.createElement("div");
+  footer.className = "msg-footer";
+
+  // Branch switcher (left side)
   if (siblings.length > 1) {
     const idx = siblings.indexOf(node.id);
     const switcher = document.createElement("div");
@@ -1037,10 +1041,10 @@ function renderUserNode(session, node) {
     switcher.appendChild(prevBtn);
     switcher.appendChild(countLabel);
     switcher.appendChild(nextBtn);
-    div.appendChild(switcher);
+    footer.appendChild(switcher);
   }
 
-  // Actions toolbar (copy, edit)
+  // Actions toolbar (copy, edit) — right side
   const actions = document.createElement("div");
   actions.className = "msg-actions";
 
@@ -1054,7 +1058,8 @@ function renderUserNode(session, node) {
   editBtn.addEventListener("click", () => startEditingNode(node));
   actions.appendChild(editBtn);
 
-  div.appendChild(actions);
+  footer.appendChild(actions);
+  div.appendChild(footer);
 
   logEl.appendChild(div);
 }
