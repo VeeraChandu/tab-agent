@@ -983,10 +983,6 @@ function renderUserNode(session, node) {
   avatar.className = "msg-avatar user-avatar";
   avatar.textContent = "U";
   headerRow.appendChild(avatar);
-  const label = document.createElement("span");
-  label.className = "msg-label";
-  label.textContent = "You";
-  headerRow.appendChild(label);
   const time = document.createElement("span");
   time.className = "msg-time";
   time.textContent = formatTime(node.createdAt);
@@ -1262,7 +1258,7 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
 
   const labelSpan = document.createElement("span");
   labelSpan.className = "msg-label";
-  labelSpan.textContent = label;
+  if (label) labelSpan.textContent = label;
   headerRow.appendChild(labelSpan);
 
   const time = document.createElement("span");
@@ -3339,7 +3335,7 @@ async function sendTask() {
   editingNodeId = null;
   editBanner.classList.add("hidden");
 
-  addEntry("user", "You", effectiveTask, false, [...previewUrls, ...docPreviews]);
+  addEntry("user", "", effectiveTask, false, [...previewUrls, ...docPreviews]);
 
   taskInput.value = "";
   autoResize();
@@ -3499,7 +3495,7 @@ stepThroughToggle.addEventListener("click", () => {
 function applyAgentEvent(event, isReplay = false, nodeId = null) {
   switch (event.type) {
     case "user_message":
-      addEntry("user", "You", event.text, false, event.attachmentPreviews || []);
+      addEntry("user", "", event.text, false, event.attachmentPreviews || []);
       break;
 
     case "thinking":
