@@ -2185,62 +2185,127 @@ function setUsageStatus(msg) {
   if (usageStatus) usageStatus.textContent = msg;
 }
 
+function formatSessionDate(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const opts = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString([], opts);
+}
+
+function getPrimaryModel(session) {
+  const nodes = Object.values(session.nodes || {});
+  // Find the most used model by token count
+  const modelTokens = {};
+  for (const n of nodes) {
+    if (n.usage) {
+      const m = n.usage.model || "unknown";
+      modelTokens[m] = (modelTokens[m] || 0) + (n.usage.inputTokens || 0) + (n.usage.outputTokens || 0);
+    }
+  }
+  const entries = Object.entries(modelTokens);
+  if (entries.length === 0) return "";
+  entries.sort((a, b) => b[1] - a[1]);
+  // Try to get a friendly label
+  const best = entries[0][0];
+  return best;
+}
+
+function computeSessionStats(session) {
+  const nodes = Object.values(session.nodes || {});
+  let totalInputTokens = 0, totalOutputTokens = 0, totalSteps = 0, totalCost = 0;
+  let hasCost = false;
+  for (const n of nodes) {
+    if (n.uiEvents) totalSteps += n.uiEvents.filter((e) => e.type === "tool_call").length;
+    if (n.usage) {
+      const inp = n.usage.inputTokens || 0;
+      const out = n.usage.outputTokens || 0;
+      totalInputTokens += inp;
+      totalOutputTokens += out;
+      const priced = window.TabAgentPricing?.estimateCost(n.usage.model, inp, out);
+      if (priced) { totalCost += priced.cost; hasCost = true; }
+    }
+  }
+  const lastOk = [...nodes].reverse().find((n) => n.uiEvents?.some((e) => e.type === "done"));
+  const doneEvent = lastOk?.uiEvents?.find((e) => e.type === "done");
+  const success = doneEvent?.success;
+  return { totalInputTokens, totalOutputTokens, totalSteps, totalCost, hasCost, success, totalTokens: totalInputTokens + totalOutputTokens };
+}
+
 async function computeUsageStats() {
   const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  let totalRuns = 0;
-  let successRuns = 0;
-  let totalInputTokens = 0;
-  let totalOutputTokens = 0;
-  let totalSteps = 0;
-  let totalCost = 0;
+  const totalSessions = sessions.length;
+  let successCount = 0, totalInputTokens = 0, totalOutputTokens = 0, totalSteps = 0, totalCost = 0;
   let hasKnownCost = false;
-  const modelMap = {}; // modelName -> { runs, steps, inputTokens, outputTokens, cost, label }
+  const modelMap = {};
 
   for (const session of sessions) {
-    const nodes = Object.values(session.nodes || {});
-    for (const node of nodes) {
-      totalRuns++;
-      const ok = node.uiEvents?.some((e) => e.type === "done" && e.success);
-      if (ok) successRuns++;
-      const stepCount = node.uiEvents?.filter((e) => e.type === "tool_call").length || 0;
-      totalSteps += stepCount;
+    const stats = computeSessionStats(session);
+    if (stats.success === true) successCount++;
+    totalInputTokens += stats.totalInputTokens;
+    totalOutputTokens += stats.totalOutputTokens;
+    totalSteps += stats.totalSteps;
+    if (stats.hasCost) { totalCost += stats.totalCost; hasKnownCost = true; }
 
-      if (node.usage) {
-        const inp = node.usage.inputTokens || 0;
-        const out = node.usage.outputTokens || 0;
-        totalInputTokens += inp;
-        totalOutputTokens += out;
-        const model = node.usage.model || "unknown";
-        if (!modelMap[model]) modelMap[model] = { runs: 0, steps: 0, inputTokens: 0, outputTokens: 0, cost: 0, label: null };
-        modelMap[model].runs++;
-        modelMap[model].steps += stepCount;
+    // Per-model aggregation
+    const nodes = Object.values(session.nodes || {});
+
+    for (const n of nodes) {
+      if (n.usage) {
+        const model = n.usage.model || "unknown";
+        // Track unique sessions per model, not nodes
+        if (!modelMap[model]) modelMap[model] = { sessions: new Set(), steps: 0, inputTokens: 0, outputTokens: 0, cost: 0, label: null };
+        modelMap[model].sessions.add(session.id);
+        const inp = n.usage.inputTokens || 0;
+        const out = n.usage.outputTokens || 0;
         modelMap[model].inputTokens += inp;
         modelMap[model].outputTokens += out;
-
+        // count steps per node for this model
+        const stepCount = n.uiEvents?.filter((e) => e.type === "tool_call").length || 0;
+        modelMap[model].steps += stepCount;
         const priced = window.TabAgentPricing?.estimateCost(model, inp, out);
-        if (priced) {
-          modelMap[model].cost += priced.cost;
-          modelMap[model].label = priced.label;
-          totalCost += priced.cost;
-          hasKnownCost = true;
-        }
+        if (priced) { modelMap[model].cost += priced.cost; modelMap[model].label = priced.label; }
       }
     }
   }
 
-  return { totalRuns, successRuns, totalInputTokens, totalOutputTokens, totalSteps, totalCost, hasKnownCost, modelMap, sessions };
+  // Convert modelMap Sets to counts
+  const modelData = {};
+  for (const [model, m] of Object.entries(modelMap)) {
+    modelData[model] = {
+      sessions: m.sessions.size,
+      steps: m.steps,
+      inputTokens: m.inputTokens,
+      outputTokens: m.outputTokens,
+      cost: m.cost,
+      label: m.label,
+    };
+  }
+
+  return {
+    totalSessions, successCount, totalInputTokens, totalOutputTokens,
+    totalSteps, totalCost, hasKnownCost, modelMap: modelData, sessions,
+  };
 }
 
 function renderUsageDashboard() {
   computeUsageStats().then((stats) => {
-    // Summary cards
     const el = (id) => document.getElementById(id);
-    el("statRunCount").textContent = stats.totalRuns;
-    const rate = stats.totalRuns > 0 ? Math.round((stats.successRuns / stats.totalRuns) * 100) + "%" : "—";
+
+    // Summary cards
+    el("statRunCount").textContent = stats.totalSessions;
+    const rate = stats.totalSessions > 0
+      ? Math.round((stats.successCount / stats.totalSessions) * 100) + "%"
+      : "—";
     el("statSuccessRate").textContent = rate;
     el("statTotalTokens").textContent = (stats.totalInputTokens + stats.totalOutputTokens).toLocaleString();
-    el("statAvgSteps").textContent = stats.totalRuns > 0 ? (stats.totalSteps / stats.totalRuns).toFixed(1) : "—";
-    el("statEstCost").textContent = stats.hasKnownCost ? window.TabAgentPricing?.formatCost(stats.totalCost) || "—" : "—";
+    el("statAvgSteps").textContent = stats.totalSessions > 0
+      ? (stats.totalSteps / stats.totalSessions).toFixed(1)
+      : "—";
+    el("statEstCost").textContent = stats.hasKnownCost
+      ? window.TabAgentPricing?.formatCost(stats.totalCost) || "—"
+      : "—";
     el("statEstCost").title = stats.hasKnownCost ? "" : "Only available for models with known pricing rates.";
 
     // By-model table
@@ -2250,14 +2315,15 @@ function renderUsageDashboard() {
       modelWrap.innerHTML = '<p class="hint">No usage data yet.</p>';
     } else {
       let html = `<table><thead><tr>
-        <th>Model</th><th>Runs</th><th>Input tokens</th><th>Output tokens</th><th>Est. cost</th>
+        <th>Model</th><th>Sessions</th><th>Steps</th><th>Input</th><th>Output</th><th>Cost</th>
       </tr></thead><tbody>`;
       for (const [model, m] of models) {
         const label = m.label || model;
         const cost = m.cost > 0 ? window.TabAgentPricing?.formatCost(m.cost) : "—";
         html += `<tr>
           <td>${label}</td>
-          <td>${m.runs}</td>
+          <td>${m.sessions}</td>
+          <td>${m.steps}</td>
           <td>${m.inputTokens.toLocaleString()}</td>
           <td>${m.outputTokens.toLocaleString()}</td>
           <td>${cost}</td>
@@ -2269,45 +2335,62 @@ function renderUsageDashboard() {
 
     // Recent sessions
     const sessList = el("usageSessionList");
-    const recent = stats.sessions.slice(0, 50);
-    if (recent.length === 0) {
-      sessList.innerHTML = '<p class="hint">No sessions yet.</p>';
-    } else {
+    const searchEl = el("usageSearchInput");
+    const allSessions = stats.sessions.slice().sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+
+    function renderSessions(filter) {
+      const q = (filter || "").toLowerCase();
+      const matches = q
+        ? allSessions.filter((s) => (s.title || "").toLowerCase().includes(q))
+        : allSessions;
+      const recent = matches.slice(0, 100);
+
+      if (recent.length === 0) {
+        sessList.innerHTML = q
+          ? `<div class="usage-empty">No sessions matching "${q}"</div>`
+          : '<div class="usage-empty">No sessions yet.</div>';
+        return;
+      }
+
       let html = "";
       for (const s of recent) {
         const title = s.title || "New chat";
-        const nodes = Object.values(s.nodes || {});
-        const lastOk = [...nodes].reverse().find((n) => n.uiEvents?.some((e) => e.type === "done"));
-        const doneEvent = lastOk?.uiEvents?.find((e) => e.type === "done");
-        const success = doneEvent?.success;
-        const statusClass = success === true ? "ok" : success === false ? "fail" : "";
-        const statusIcon = success === true ? "✓" : success === false ? "✗" : "—";
+        const stats_ = computeSessionStats(s);
+        const model = getPrimaryModel(s);
+        const date = formatSessionDate(s.updatedAt || s.createdAt);
+        const cost = stats_.hasCost ? window.TabAgentPricing?.formatCost(stats_.totalCost) || "—" : "—";
 
-        let totalTok = 0;
-        for (const n of nodes) {
-          if (n.usage) {
-            totalTok += (n.usage.inputTokens || 0) + (n.usage.outputTokens || 0);
-          }
-        }
-        let cost = 0;
-        let hasCost = false;
-        for (const n of nodes) {
-          if (n.usage) {
-            const p = window.TabAgentPricing?.estimateCost(n.usage.model, n.usage.inputTokens, n.usage.outputTokens);
-            if (p) { cost += p.cost; hasCost = true; }
-          }
-        }
+        const badgeClass = stats_.success === true ? "ok" : stats_.success === false ? "fail" : "neutral";
+        const badgeIcon = stats_.success === true ? "✓" : stats_.success === false ? "✗" : "·";
+
         html += `<div class="usage-session-row">
-          <span class="name" title="${title}">${escapeHtml(title)}</span>
-          <span class="tokens">${totalTok.toLocaleString()} tokens</span>
-          <span class="cost">${hasCost ? (window.TabAgentPricing?.formatCost(cost) || "—") : "—"}</span>
-          <span class="result ${statusClass}">${statusIcon}</span>
+          <span class="usage-session-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+          <span class="usage-session-model" title="${escapeHtml(model)}">${escapeHtml(model.split("/").pop() || model)}</span>
+          <span class="usage-session-tokens">${stats_.totalTokens.toLocaleString()} tok</span>
+          <span class="usage-session-cost">${cost}</span>
+          <span class="usage-session-date">${date}</span>
+          <span class="usage-session-badge ${badgeClass}">${badgeIcon}</span>
         </div>`;
       }
       sessList.innerHTML = html;
     }
 
-    setUsageStatus(`Updated from ${stats.sessions.length} sessions.`);
+    renderSessions(searchEl?.value || "");
+
+    // Wire up search
+    if (searchEl) {
+      // Remove old listener
+      const newSearch = searchEl.cloneNode(true);
+      searchEl.parentNode.replaceChild(newSearch, searchEl);
+      const freshSearch = el("usageSearchInput");
+      if (freshSearch) {
+        freshSearch.addEventListener("input", () => renderSessions(freshSearch.value));
+      }
+    }
+
+    el("usageStatus").textContent = stats.totalSessions > 0
+      ? `Showing ${Math.min(allSessions.length, 100)} of ${allSessions.length} sessions.`
+      : "";
   }).catch((err) => {
     setUsageStatus(`Error: ${err.message}`);
   });

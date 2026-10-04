@@ -187,27 +187,27 @@
 
     <section id="tab-usage" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-usage" tabindex="0">
       <h2>Usage Dashboard</h2>
-      <p class="hint">Lifetime aggregate of all sessions. Costs are estimates based on published model pricing.</p>
+      <p class="hint">Aggregate across all sessions. Costs are estimates based on published model pricing.</p>
 
       <div id="usageSummary" class="usage-summary">
-        <div class="usage-stat"><span class="usage-stat-value" id="statRunCount">—</span><span class="usage-stat-label">Runs</span></div>
+        <div class="usage-stat"><span class="usage-stat-value" id="statRunCount">—</span><span class="usage-stat-label">Sessions</span></div>
         <div class="usage-stat"><span class="usage-stat-value" id="statSuccessRate">—</span><span class="usage-stat-label">Success rate</span></div>
         <div class="usage-stat"><span class="usage-stat-value" id="statTotalTokens">—</span><span class="usage-stat-label">Total tokens</span></div>
-        <div class="usage-stat"><span class="usage-stat-value" id="statAvgSteps">—</span><span class="usage-stat-label">Avg steps/run</span></div>
+        <div class="usage-stat"><span class="usage-stat-value" id="statAvgSteps">—</span><span class="usage-stat-label">Avg steps</span></div>
         <div class="usage-stat"><span class="usage-stat-value" id="statEstCost">—</span><span class="usage-stat-label">Est. cost</span></div>
       </div>
 
-      <hr />
-      <h3>By model</h3>
       <div id="usageByModel" class="usage-model-table-wrap"></div>
 
-      <hr />
-      <h3>Recent sessions</h3>
+      <div class="usage-sessions-header">
+        <h3>Sessions</h3>
+        <div class="usage-sessions-actions">
+          <input id="usageSearchInput" type="text" placeholder="Filter sessions…" class="usage-search-input" />
+          <button id="refreshUsageBtn" type="button" class="tool-btn">Refresh</button>
+          <button id="clearUsageDataBtn" type="button" class="danger-btn">Clear all</button>
+        </div>
+      </div>
       <div id="usageSessionList" class="usage-session-list"></div>
-
-      <hr />
-      <button id="refreshUsageBtn" type="button" class="add-btn">🔄 Refresh</button>
-      <button id="clearUsageDataBtn" type="button" class="danger-btn" style="margin-left:8px">🗑️ Clear all session history</button>
       <p id="usageStatus" class="hint"></p>
     </section>
 
