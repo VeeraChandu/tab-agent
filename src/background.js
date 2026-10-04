@@ -20,6 +20,7 @@ import { startRunningBadge, stopRunningBadge } from "./lib/statusBadge.js";
 import { getRecording, deleteRecording } from "./lib/sessionRecorder.js";
 import { deleteSessionState } from "./lib/statePersist.js";
 import { initCustomTools } from "./lib/tools.js";
+import { startRecording, stopRecording, saveMacro, deleteMacro, listMacros, playMacro } from "./lib/macroRecorder.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
@@ -1512,6 +1513,69 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       sendResponse({ ok: true, frames });
     });
     return true; // keep channel open for async response
+  }
+
+  // --- macro recording (item 5) -----------------------------------------
+  if (msg.type === "MACRO_START_RECORDING") {
+    const tabId = msg.tabId;
+    const result = startRecording(tabId);
+    // Also tell the content script to start capturing user events
+    if (result.ok && tabId) {
+      chrome.tabs.sendMessage(tabId, { type: "START_MACRO_RECORDING" }).catch(() => {});
+    }
+    sendResponse(result);
+    return true;
+  }
+
+  if (msg.type === "MACRO_STOP_RECORDING") {
+    const tabId = msg.tabId;
+    // Stop content script recording
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, { type: "STOP_MACRO_RECORDING" }).then((resp) => {
+        const state = stopRecording(tabId);
+        sendResponse({ ok: true, steps: resp?.steps || state.steps });
+      }).catch(() => {
+        const state = stopRecording(tabId);
+        sendResponse({ ok: true, steps: state.steps });
+      });
+      return true;
+    }
+    const state = stopRecording(tabId);
+    sendResponse(state);
+    return true;
+  }
+
+  if (msg.type === "MACRO_SAVE") {
+    saveMacro(msg.name, msg.steps).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === "MACRO_DELETE") {
+    deleteMacro(msg.name).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === "MACRO_LIST") {
+    listMacros().then((macros) => sendResponse({ ok: true, macros }));
+    return true;
+  }
+
+  if (msg.type === "MACRO_PLAY") {
+    // Playback requires a run context — delegate to a lightweight runner.
+    const tabId = msg.tabId;
+    if (!tabId) {
+      sendResponse({ ok: false, error: "No active tab for macro playback." });
+      return true;
+    }
+    // Fire-and-forget — the sidepanel gets step-by-step events via
+    // chrome.runtime.sendMessage.
+    playMacro(msg.name, { tabId }, (event) => {
+      chrome.runtime.sendMessage({ type: "AGENT_EVENT", event }).catch(() => {});
+    }).then((result) => {
+      chrome.runtime.sendMessage({ type: "MACRO_DONE", result }).catch(() => {});
+    });
+    sendResponse({ ok: true, started: true });
+    return true;
   }
 
   if (msg.type === "DELETE_SESSION_CACHE") {

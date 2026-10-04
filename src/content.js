@@ -1515,6 +1515,18 @@
           }
           sendResponse({ ok: true });
           break;
+
+        // --- macro recording (user action capture) -------------------------
+        case "START_MACRO_RECORDING":
+          startMacroRecording();
+          sendResponse({ ok: true });
+          break;
+
+        case "STOP_MACRO_RECORDING":
+          const steps = stopMacroRecording();
+          sendResponse({ ok: true, steps });
+          break;
+
         default:
           sendResponse({ ok: false, error: "Unknown message type" });
       }
@@ -1523,4 +1535,99 @@
     }
     return true;
   });
-})();
+
+  // --- macro recording helpers ------------------------------------------
+
+  /** True while event listeners are attached to the document. */
+  let _macroActive = false;
+
+  /** Buffer of recorded actions for this recording session. */
+  let _macroSteps = [];
+
+  /** Capture a click event. */
+  function _onMacroClick(e) {
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    const id = el.getAttribute(AGENT_ATTR);
+    _macroSteps.push({
+      action: "click",
+      target: id || undefined,
+      text: id ? undefined : (el.textContent || "").trim().slice(0, 120) || undefined,
+      tag: el.tagName?.toLowerCase(),
+      selector: cssSelector(el),
+    });
+  }
+
+  /** Capture a text input event (debounced via 'change' for selects). */
+  function _onMacroInput(e) {
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    if (el.tagName === "SELECT") return; // handled by _onMacroChange
+    const id = el.getAttribute(AGENT_ATTR);
+    _macroSteps.push({
+      action: "type",
+      target: id || undefined,
+      value: el.value || "",
+      tag: el.tagName?.toLowerCase(),
+      selector: cssSelector(el),
+    });
+  }
+
+  /** Capture a select/checkbox change. */
+  function _onMacroChange(e) {
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    const id = el.getAttribute(AGENT_ATTR);
+    if (el.tagName === "SELECT") {
+      _macroSteps.push({
+        action: "select",
+        target: id || undefined,
+        value: el.value,
+        tag: "select",
+        selector: cssSelector(el),
+      });
+    } else if (el.type === "checkbox" || el.type === "radio") {
+      _macroSteps.push({
+        action: "click",
+        target: id || undefined,
+        text: el.checked ? "checked" : "unchecked",
+        tag: "input",
+        selector: cssSelector(el),
+      });
+    }
+  }
+
+  /** Build a simple CSS selector for an element (used as fallback when
+   *  no data-agent-id is available). */
+  function cssSelector(el) {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const tag = el.tagName?.toLowerCase() || "";
+    const cls = Array.from(el.classList).slice(0, 2).map((c) => `.${CSS.escape(c)}`).join("");
+    if (cls) return `${tag}${cls}`;
+    const parent = el.parentElement;
+    if (parent) {
+      const idx = Array.from(parent.children).indexOf(el) + 1;
+      return `${cssSelector(parent)} > ${tag}:nth-child(${idx})`;
+    }
+    return tag;
+  }
+
+  function startMacroRecording() {
+    if (_macroActive) return;
+    _macroActive = true;
+    _macroSteps = [];
+    document.addEventListener("click", _onMacroClick, { capture: true });
+    document.addEventListener("input", _onMacroInput, { capture: true });
+    document.addEventListener("change", _onMacroChange, { capture: true });
+  }
+
+  function stopMacroRecording() {
+    if (!_macroActive) return [];
+    _macroActive = false;
+    document.removeEventListener("click", _onMacroClick, { capture: true });
+    document.removeEventListener("input", _onMacroInput, { capture: true });
+    document.removeEventListener("change", _onMacroChange, { capture: true });
+    const steps = _macroSteps;
+    _macroSteps = [];
+    return steps;
+  }
