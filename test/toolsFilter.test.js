@@ -12,7 +12,9 @@ const ALL_TOOL_NAMES = [
   "scroll", "navigate", "list_tabs", "read_tabs", "switch_tab", "open_tab", "close_tab",
   "view_image", "filter_images", "screenshot", "extract_table", "create_file",
   "wait_for", "find_in_page", "drag", "upload_file",
-  "parallel_investigate", "run_batch", "ask_user", "finish",
+  "parallel_investigate", "run_batch", "ask_user",   "finish",
+  "save_session_state",
+  "restore_session_state",
 ];
 
 function toolNames(tools) {

@@ -806,6 +806,27 @@ export const TOOLS = [
     },
   },
   {
+    name: "save_session_state",
+    description:
+      "Save the current tab's cookies and localStorage so the next run on this same site can pick up " +
+      "where this one left off without re-authenticating. Call this after you have logged into a site, " +
+      "applied filters/settings, or reached a state you'd want restored later. The saved state is scoped " +
+      "to this conversation — resuming this chat (via a step-limit check-in, or editing a past message and " +
+      "regenerating) automatically restores it. This stores httpOnly + secure cookies too, so most login " +
+      "sessions (the kind that survive closing a tab) persist reliably. Session cookies (those that expire " +
+      "when the browser closes) are NOT saved, since they can never meaningfully be restored.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
+    name: "restore_session_state",
+    description:
+      "Restore cookies and localStorage saved earlier by save_session_state in this conversation. " +
+      "Call this on a fresh tab to get back into an authenticated or configured state without going " +
+      "through the login/filter steps again. Does nothing if no state was saved yet in this chat. " +
+      "Also runs automatically at the start of every resumed/continued run.",
+    input_schema: { type: "object", properties: {}, required: [] },
+  },
+  {
     name: "finish",
     description: "Call this when the task is complete (or cannot be completed) to end the run and report the result to the user.",
     input_schema: {

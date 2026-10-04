@@ -828,6 +828,16 @@ async function renderHistoryList(filterText = "") {
       duplicateSession(session);
     });
 
+    const replay = document.createElement("button");
+    replay.type = "button";
+    replay.className = "history-row-action";
+    replay.title = "Visual replay";
+    replay.textContent = "📽";
+    replay.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openReplay(session.id);
+    });
+
     const exp = document.createElement("button");
     exp.type = "button";
     exp.className = "history-row-action";
@@ -3227,6 +3237,113 @@ async function sendTask() {
     attachments: outgoingAttachments,
     docAttachments: outgoingDocAttachments,
   });
+}
+
+// --- replay overlay -----------------------------------------------------
+const replayOverlay = document.getElementById("replayOverlay");
+const replayTitle = document.getElementById("replayTitle");
+const replayClose = document.getElementById("replayClose");
+const replayStrip = document.getElementById("replayStrip");
+const replayScreenshot = document.createElement("div");
+replayScreenshot.id = "replayScreenshot";
+
+async function openReplay(sessionId) {
+  // Fetch the recording frames from the background
+  let frames;
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "GET_RECORDING", sessionId });
+    if (!resp?.ok || !resp.frames?.length) {
+      addEntry("error", "Replay", "No recording found for this session.");
+      return;
+    }
+    frames = resp.frames;
+  } catch {
+    addEntry("error", "Replay", "Could not load recording.");
+    return;
+  }
+
+  replayStrip.innerHTML = "";
+  let activeIdx = 0;
+
+  function renderFrame(idx) {
+    const frame = frames[idx];
+    if (!frame) return;
+    activeIdx = idx;
+    replayScreenshot.innerHTML = "";
+    if (frame.screenshot) {
+      const img = document.createElement("img");
+      img.src = frame.screenshot;
+      img.alt = `${frame.toolName} step ${frame.step}`;
+      replayScreenshot.appendChild(img);
+    } else {
+      replayScreenshot.innerHTML = "<p class='replay-no-capture'>(This step ran in a background tab — no screenshot available.)</p>";
+    }
+    // Highlight the active thumbnail
+    Array.from(replayStrip.children).forEach((el, i) => el.classList.toggle("active", i === idx));
+    // Scroll it into view
+    const active = replayStrip.children[idx];
+    if (active) active.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+
+    // Step detail panel
+    replayInfo.innerHTML = formatReplayInfo(frame);
+  }
+
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    const thumb = document.createElement("button");
+    thumb.className = "replay-thumb";
+    if (f.screenshot) {
+      const img = document.createElement("img");
+      img.src = f.screenshot;
+      img.alt = `Step ${f.step}`;
+      thumb.appendChild(img);
+    } else {
+      thumb.innerHTML =
+        `<span class="replay-thumb-placeholder">${toolIcon(f.toolName)}</span>`;
+    }
+    const label = document.createElement("span");
+    label.className = "replay-thumb-label";
+    label.textContent = toolLabel(f.toolName).slice(0, 16);
+    thumb.appendChild(label);
+    thumb.addEventListener("click", () => renderFrame(i));
+    replayStrip.appendChild(thumb);
+  }
+
+  const infoHtml = document.getElementById("replayInfo");
+  if (!infoHtml) {
+    // First time — build the info panel
+    const info = document.createElement("div");
+    info.id = "replayInfo";
+    info.className = "replay-info";
+    replayScreenshot.after(info);
+  }
+  replayTitle.textContent = `${frames.length} step${frames.length !== 1 ? "s" : ""}`;
+  replayOverlay.classList.remove("hidden");
+  renderFrame(0);
+}
+
+replayClose.addEventListener("click", () => replayOverlay.classList.add("hidden"));
+
+function formatReplayInfo(frame) {
+  const lines = [
+    `<div class="replay-info-row"><strong>Tool:</strong> ${toolLabel(frame.toolName)}</div>`,
+  ];
+  if (frame.url) {
+    const short = frame.url.length > 60 ? frame.url.slice(0, 57) + "…" : frame.url;
+    lines.push(`<div class="replay-info-row"><strong>URL:</strong> ${escapeHtml(short)}</div>`);
+  }
+  if (frame.callId) {
+    lines.push(`<div class="replay-info-row"><strong>Call ID:</strong> <code>${escapeHtml(frame.callId)}</code></div>`);
+  }
+  if (frame.toolInput && Object.keys(frame.toolInput).length) {
+    const inp = JSON.stringify(frame.toolInput, null, 2);
+    lines.push(`<div class="replay-info-row"><strong>Input:</strong></div><pre class="replay-info-pre">${escapeHtml(inp)}</pre>`);
+  }
+  if (frame.toolResult) {
+    const label = frame.toolResult.ok ? "✅ Success" : `❌ Error: ${escapeHtml(frame.toolResult.error || "unknown")}`;
+    lines.push(`<div class="replay-info-row">${label}</div>`);
+  }
+  return lines.join("\n");
 }
 
 runBtn.addEventListener("click", sendTask);
