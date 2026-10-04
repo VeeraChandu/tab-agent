@@ -976,31 +976,25 @@ function renderUserNode(session, node) {
   div.className = "entry user";
   div.dataset.nodeId = node.id;
 
-  const toolbar = document.createElement("div");
-  toolbar.className = "user-entry-toolbar";
+  // Avatar + header row
+  const headerRow = document.createElement("div");
+  headerRow.className = "msg-header";
+  const avatar = document.createElement("span");
+  avatar.className = "msg-avatar user-avatar";
+  avatar.textContent = "U";
+  headerRow.appendChild(avatar);
   const label = document.createElement("span");
-  label.className = "label";
+  label.className = "msg-label";
   label.textContent = "You";
-  toolbar.appendChild(label);
-
-  const actions = document.createElement("span");
-  actions.className = "user-entry-actions";
-
-  actions.appendChild(createCopyButton(() => node.userText, "light"));
-
-  const editBtn = document.createElement("button");
-  editBtn.type = "button";
-  editBtn.className = "edit-msg-btn";
-  editBtn.title = "Edit this message";
-  editBtn.innerHTML = "✎";
-  editBtn.addEventListener("click", () => startEditingNode(node));
-  actions.appendChild(editBtn);
-
-  toolbar.appendChild(actions);
-  div.appendChild(toolbar);
+  headerRow.appendChild(label);
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(node.createdAt);
+  headerRow.appendChild(time);
+  div.appendChild(headerRow);
 
   const body = document.createElement("div");
-  body.className = "body";
+  body.className = "body user-body";
   body.textContent = node.userText;
   div.appendChild(body);
 
@@ -1045,6 +1039,22 @@ function renderUserNode(session, node) {
     switcher.appendChild(nextBtn);
     div.appendChild(switcher);
   }
+
+  // Actions toolbar (copy, edit)
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
+
+  actions.appendChild(createCopyButton(() => node.userText, "light"));
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "edit-msg-btn";
+  editBtn.title = "Edit this message";
+  editBtn.innerHTML = "✎";
+  editBtn.addEventListener("click", () => startEditingNode(node));
+  actions.appendChild(editBtn);
+
+  div.appendChild(actions);
 
   logEl.appendChild(div);
 }
@@ -1186,33 +1196,85 @@ function createCopyButton(getText, variant = "muted") {
   return btn;
 }
 
+function formatTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const opts = { hour: "2-digit", minute: "2-digit" };
+  if (d.toDateString() !== now.toDateString()) {
+    opts.month = "short";
+    opts.day = "numeric";
+  }
+  return d.toLocaleTimeString([], opts);
+}
+
+function addPendingTool(id, name, input) {
+  hideEmptyState();
+  const div = document.createElement("div");
+  div.className = "entry tool pending";
+  if (id) div.id = `tool-${id}`;
+
+  const inner = document.createElement("div");
+  inner.className = "tool-card";
+
+  const headerEl = document.createElement("div");
+  headerEl.className = "tool-card-header";
+  headerEl.innerHTML = toolIcon(name) + '<span class="tool-card-name">' + toolLabel(name) + '</span>';
+  inner.appendChild(headerEl);
+
+  const body = document.createElement("div");
+  body.className = "tool-card-body tool-body";
+  const summary = summarizeInput(name, input);
+  const spinner = document.createElement("span");
+  spinner.className = "spinner-inline";
+  body.appendChild(spinner);
+  body.appendChild(buildToolTextSpan(name, input, summary, summary ? " — running…" : "running…"));
+  inner.appendChild(body);
+
+  div.appendChild(inner);
+  logEl.appendChild(div);
+  scrollToBottomIfNeeded();
+}
+
 function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) {
   hideEmptyState();
   const div = document.createElement("div");
   div.className = `entry ${kind}`;
 
-  // Copy button only on the user's own message and the actual final answer —
-  // not on intermediate assistant narration bubbles, which are transient
-  // "thinking out loud" text rather than something worth copying on its own.
+  // Avatar + header row
+  const headerRow = document.createElement("div");
+  headerRow.className = "msg-header";
+
+  const avatar = document.createElement("span");
+  if (kind === "user") {
+    avatar.className = "msg-avatar user-avatar";
+    avatar.textContent = "U";
+  } else {
+    avatar.className = "msg-avatar agent-avatar";
+    avatar.textContent = "T";
+  }
+  headerRow.appendChild(avatar);
+
+  const labelSpan = document.createElement("span");
+  labelSpan.className = "msg-label";
+  labelSpan.textContent = label;
+  headerRow.appendChild(labelSpan);
+
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(Date.now());
+  headerRow.appendChild(time);
+
+  // Copy button on user/final messages (reuses existing createCopyButton)
   const copyableKind = kind === "user" || kind === "final";
   if (copyableKind) {
-    const toolbar = document.createElement("div");
-    toolbar.className = kind === "user" ? "user-entry-toolbar" : "entry-toolbar";
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "label";
-    labelSpan.textContent = label;
-    toolbar.appendChild(labelSpan);
-    toolbar.appendChild(createCopyButton(() => text, kind === "user" ? "light" : "muted"));
-    div.appendChild(toolbar);
-  } else {
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "label";
-    labelSpan.textContent = label;
-    div.appendChild(labelSpan);
+    headerRow.appendChild(createCopyButton(() => text, kind === "user" ? "light" : "muted"));
   }
 
+  div.appendChild(headerRow);
+
   const body = document.createElement("div");
-  body.className = "body";
+  body.className = kind === "user" ? "body user-body" : "body";
   if (markdown) {
     body.innerHTML = renderMarkdown(text);
     addCopyButtonsToLinks(body);
@@ -1287,59 +1349,35 @@ function buildToolTextSpan(name, input, summaryText, suffix = "") {
   return span;
 }
 
-function addPendingTool(id, name, input) {
-  hideEmptyState();
-  const div = document.createElement("div");
-  div.className = "entry tool pending";
-  if (id) div.id = `tool-${id}`;
-
-  const labelSpan = document.createElement("span");
-  labelSpan.className = "label";
-  labelSpan.textContent = toolIcon(name) + " " + toolLabel(name);
-  div.appendChild(labelSpan);
-
-  const body = document.createElement("div");
-  body.className = "tool-body";
-  const summary = summarizeInput(name, input);
-  const spinner = document.createElement("span");
-  spinner.className = "spinner-inline";
-  body.appendChild(spinner);
-  body.appendChild(buildToolTextSpan(name, input, summary, summary ? " - running…" : "running…"));
-  div.appendChild(body);
-
-  logEl.appendChild(div);
-  scrollToBottomIfNeeded();
-}
-
 function toolIcon(name) {
-  const icons = {
-    read_page: "🔍",
-    click: "🖱️",
-    type_text: "⌨️",
-    select_option: "🔽",
-    fill_form: "📝",
-    press_key: "🎹",
-    hover: "🖐️",
-    wait_for: "⏳",
-    find_in_page: "🔎",
-    drag: "🫳",
-    upload_file: "📎",
-    scroll: "↕️",
-    navigate: "🔗",
-    list_tabs: "🗂️",
-    switch_tab: "↪️",
-    open_tab: "➕",
-    close_tab: "✖️",
-    view_image: "👁️",
-    filter_images: "🖼️",
-    screenshot: "📸",
-    read_tabs: "🗂️",
-    extract_table: "📋",
-    copy_to_clipboard: "📤",
-    read_clipboard: "📥",
-    create_file: "📄",
+  const SVG_ICONS = {
+    read_page: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>',
+    click: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 2v8l-4-2-2 4 6 3 2 6 4-2 1-7z"/></svg>',
+    type_text: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h4M6 14h8"/></svg>',
+    select_option: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>',
+    fill_form: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8M8 16h5"/></svg>',
+    press_key: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="2 12 7 17 13 7"/></svg>',
+    hover: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>',
+    wait_for: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+    find_in_page: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>',
+    scroll: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="8 15 12 19 16 15"/><polyline points="8 9 12 5 16 9"/></svg>',
+    navigate: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    open_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    switch_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>',
+    list_tabs: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>',
+    close_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg>',
+    read_tabs: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>',
+    view_image: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+    screenshot: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="3"/></svg>',
+    copy_to_clipboard: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    read_clipboard: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><path d="M12 15l2 2 4-4"/></svg>',
+    create_file: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    extract_table: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>',
+    upload_file: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+    parallel_investigate: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 12h.01M19 12h.01M12 5h.01M12 19h.01"/></svg>',
+    run_batch: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>',
   };
-  return icons[name] || "⚙️";
+  return SVG_ICONS[name] || '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>';
 }
 
 // User-facing phrasing for each tool name — shown in the status bar and on
@@ -1407,16 +1445,29 @@ function updateToolEntry(id, name, result, input) {
   const text = ok ? summarizeResult(name, result, input) : `Error: ${result?.error || "unknown error"}`;
 
   if (!div) {
-    addEntry(`tool ${ok ? "ok" : "error"}`, `${toolIcon(name)} ${toolLabel(name)}`, text);
+    addEntry(`tool ${ok ? "ok" : "error"}`, "Tab Agent", text);
     return;
   }
 
   div.classList.remove("pending");
   div.classList.add(ok ? "ok" : "error");
-  const body = div.querySelector(".tool-body");
-  if (body) {
-    body.innerHTML = "";
-    body.appendChild(buildToolTextSpan(name, input, text));
+  const inner = div.querySelector(".tool-card");
+  if (inner) {
+    // Replace header with done/error state
+    const header = inner.querySelector(".tool-card-header");
+    if (header) {
+      if (!ok) {
+        header.style.color = "var(--error-text)";
+      }
+    }
+    const body = inner.querySelector(".tool-body");
+    if (body) {
+      body.innerHTML = "";
+      body.appendChild(buildToolTextSpan(name, input, text));
+      if (!ok) {
+        body.style.color = "var(--error-text)";
+      }
+    }
   }
   scrollToBottomIfNeeded();
 }

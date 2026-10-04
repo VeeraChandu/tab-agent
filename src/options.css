@@ -1,39 +1,30 @@
 * { box-sizing: border-box; }
 
 :root {
-  --accent: #4f46e5;
-  --accent-dark: #4338ca;
-  --accent-light: #eef2ff;
-  --accent-rgb: 79, 70, 229;
+  --accent: #0066ff;
+  --accent-dark: #0052cc;
+  --accent-light: rgba(0, 102, 255, 0.08);
+  --accent-rgb: 0, 102, 255;
 
-  --bg: #f7f5f2;
+  --bg: #fafaf9;
   --card: #ffffff;
-  --card-alt: #f4f1ec;
-  --border: #e9e4dc;
+  --card-alt: #f5f5f4;
+  --border: #e6e4e0;
+  --border-strong: #d4d2cd;
 
-  --text: #24211d;
-  --text-muted: #857c70;
-  --text-faint: #a89e90;
+  --text: #18181b;
+  --text-muted: #737373;
+  --text-faint: #a8a8a3;
 
-  --error-bg: #fdedec;
-  --error-text: #b23c2e;
+  --error-bg: #fef2f2;
+  --error-text: #dc2626;
 
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --shadow-sm: 0 1px 2px rgba(30, 25, 15, 0.05);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
 
-  /* Gemini-style multicolor gradient, matching the side panel — used for
-     primary CTAs (Fetch models, Add) and the loading spinner. */
-  --grad-blue: #4285f4;
-  --grad-blue-rgb: 66, 133, 244;
-  --grad-purple: #9b72cb;
-  --grad-purple-rgb: 155, 114, 203;
-  --grad-pink: #d96570;
-  --grad-pink-rgb: 217, 101, 112;
-  --grad-amber: #f9ab00;
-  --grad-amber-rgb: 249, 171, 0;
-  --gradient-brand: linear-gradient(120deg, var(--grad-blue) 0%, var(--grad-purple) 35%, var(--grad-pink) 65%, var(--grad-amber) 100%);
-  --gradient-brand-soft: linear-gradient(120deg, rgba(var(--grad-blue-rgb), 0.16), rgba(var(--grad-purple-rgb), 0.16), rgba(var(--grad-pink-rgb), 0.16), rgba(var(--grad-amber-rgb), 0.16));
+  --accent-gradient: linear-gradient(135deg, #0066ff, #3b82f6);
 }
 
 /* Same manual-override pattern as sidepanel.css: system preference applies
@@ -41,64 +32,54 @@
    value in chrome.storage.local, applied on load by options.js). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --accent: #818cf8;
-    --accent-dark: #a5b4fc;
-    --accent-light: rgba(129, 140, 248, 0.16);
-    --accent-rgb: 129, 140, 248;
+    --accent: #3b82f6;
+    --accent-dark: #60a5fa;
+    --accent-light: rgba(59, 130, 246, 0.15);
+    --accent-rgb: 59, 130, 246;
 
-    --bg: #1c1a17;
-    --card: #26231f;
-    --card-alt: #2c2822;
-    --border: #3a352d;
+    --bg: #18181b;
+    --card: #27272a;
+    --card-alt: #2c2c30;
+    --border: #3f3f46;
+    --border-strong: #52525b;
 
-    --text: #ede8e0;
-    --text-muted: #a89d8d;
-    --text-faint: #746a5c;
+    --text: #fafafa;
+    --text-muted: #a1a1aa;
+    --text-faint: #7f7f88;
 
-    --error-bg: #2e1a18;
-    --error-text: #f0938a;
+    --error-bg: #450a0a;
+    --error-text: #fca5a5;
 
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
 
-    --grad-blue: #7bb0ff;
-    --grad-blue-rgb: 123, 176, 255;
-    --grad-purple: #c9a4ee;
-    --grad-purple-rgb: 201, 164, 238;
-    --grad-pink: #ff97a3;
-    --grad-pink-rgb: 255, 151, 163;
-    --grad-amber: #ffcf6b;
-    --grad-amber-rgb: 255, 207, 107;
+    --accent-gradient: linear-gradient(135deg, #3b82f6, #60a5fa);
   }
 }
 
 :root[data-theme="dark"] {
-  --accent: #818cf8;
-  --accent-dark: #a5b4fc;
-  --accent-light: rgba(129, 140, 248, 0.16);
-  --accent-rgb: 129, 140, 248;
+  --accent: #3b82f6;
+  --accent-dark: #60a5fa;
+  --accent-light: rgba(59, 130, 246, 0.15);
+  --accent-rgb: 59, 130, 246;
 
-  --bg: #1c1a17;
-  --card: #26231f;
-  --card-alt: #2c2822;
-  --border: #3a352d;
+  --bg: #18181b;
+  --card: #27272a;
+  --card-alt: #2c2c30;
+  --border: #3f3f46;
+  --border-strong: #52525b;
 
-  --text: #ede8e0;
-  --text-muted: #a89d8d;
-  --text-faint: #746a5c;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --text-faint: #7f7f88;
 
-  --error-bg: #2e1a18;
-  --error-text: #f0938a;
+  --error-bg: #450a0a;
+  --error-text: #fca5a5;
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
 
-  --grad-blue: #7bb0ff;
-  --grad-blue-rgb: 123, 176, 255;
-  --grad-purple: #c9a4ee;
-  --grad-purple-rgb: 201, 164, 238;
-  --grad-pink: #ff97a3;
-  --grad-pink-rgb: 255, 151, 163;
-  --grad-amber: #ffcf6b;
-  --grad-amber-rgb: 255, 207, 107;
+  --accent-gradient: linear-gradient(135deg, #3b82f6, #60a5fa);
 }
 
 body {
@@ -396,7 +377,7 @@ a:hover { color: var(--accent); }
   width: 13px;
   height: 13px;
   border-radius: 50%;
-  background: conic-gradient(from 0deg, var(--grad-blue), var(--grad-purple), var(--grad-pink), var(--grad-amber), var(--grad-blue));
+  background: conic-gradient(from 0deg, var(--accent), var(--accent), var(--accent), var(--accent), var(--accent));
   -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
   mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
   animation: opts-spin 0.85s linear infinite;
