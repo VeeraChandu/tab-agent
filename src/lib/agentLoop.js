@@ -2316,15 +2316,22 @@ async function runParallelInvestigate(ctx, input, callId) {
   // task is dropped instead of re-run — re-checking the same site burns
   // budget and just repeats findings the model already has (this is exactly
   // what happened before this cap existed: the same retailer got checked in
-  // two separate rounds). tab_id-based tasks skip this check since there's
-  // no url to compare without opening the tab.
+  // two separate rounds). Also catches duplicates within a single call
+  // (same hostname appearing multiple tasks in one request).
+  // tab_id-based tasks skip this check since there's no url to compare
+  // without opening the tab.
   const seenHostnames = ctx.investigatedHostnames || new Set();
   const duplicates = [];
   const fresh = [];
   for (const t of tasks) {
     const hostname = t.url ? hostnameOf(t.url) : null;
-    if (hostname && seenHostnames.has(hostname)) duplicates.push({ ...t, hostname });
-    else fresh.push(t);
+    // Check both cross-call (already investigated) and within-call (already
+    // seen in this very array, before the batch runs) duplicates.
+    if (hostname && (seenHostnames.has(hostname) || fresh.some((f) => f.url && hostnameOf(f.url) === hostname))) {
+      duplicates.push({ ...t, hostname });
+    } else {
+      fresh.push(t);
+    }
   }
 
   // Run-wide cap: a single parallel_investigate call only costs ONE step
