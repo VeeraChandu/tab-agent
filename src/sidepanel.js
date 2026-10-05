@@ -3277,9 +3277,10 @@ async function compactCurrentSession() {
     modelId: modelId || undefined,
   });
   await waitForCompaction(sessionIdAtStart);
-  // Bail if the user started a new chat or switched sessions while
-  // compaction was running — don't mess with the new session's view.
-  if (currentSessionId !== sessionIdAtStart) return;
+  if (currentSessionId !== sessionIdAtStart) {
+    hideStatus();
+    return;
+  }
   hideStatus();
 }
 
@@ -3764,7 +3765,8 @@ chrome.runtime.onMessage.addListener((msg) => {
     // since navigated away from would silently overwrite currentSessionId
     // to match it, which then makes that type's OWN "is this my chat?"
     // check further down trivially true and yanks the view back to it.
-    if (msg.sessionId) currentSessionId = msg.sessionId;
+    // Similarly, SESSION_COMPACTED is not a run message and must not adopt.
+    if (msg.sessionId && msg.type !== "SESSION_COMPACTED") currentSessionId = msg.sessionId;
   }
 
   if (msg.type === "AGENT_EVENT") {

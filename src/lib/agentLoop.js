@@ -50,16 +50,6 @@ const DEFAULT_LIMITS = {
 // feel like a natural consequence of finishing, not an abrupt yank.
 const BRANCH_AUTO_CLOSE_DELAY_MS = 900;
 
-// Proactive context-window budget thresholds: estimate the total token cost
-// of history + system prompt before every LLM call. This is a rough heuristic
-// (~3.5 chars per token, no per-model vocab) — not a guarantee, but it catches
-// the worst cases (30+ steps of large tool results) that would otherwise 400.
-// Anthropic's default context is 200K tokens; OpenAI models range from 128K to
-// 200K. The hard ceiling flags runs that are genuinely at risk; the warn ceiling
-// is a softer heads-up.
-const CONTEXT_WARN_TOKENS = 75000;
-const CONTEXT_HARD_CEILING = 100000;
-
 // Rough token estimate by character count: dividing by 3.5 approximates the
 // average English text token density; image blocks get a fixed 500-token
 // estimate; per-turn overhead adds 10 tokens per turn.
@@ -1810,17 +1800,6 @@ async function runSubLoop({ ctx, objective, maxSteps, config, system, onStep, ga
 
     compactHistory(history, !!(ctx.sessionId && ctx.pageCacheConfig?.enabled));
 
-    if (!ctx._ctxWarned) {
-      const estimated = estimateContextTokens(history, system);
-      if (estimated >= CONTEXT_HARD_CEILING) {
-        ctx._ctxWarned = true;
-        if (ctx.onEvent) ctx.onEvent({ type: "info", message: `⚠️ This sub-task's history is estimated at ~${(estimated / 1000).toFixed(0)}K tokens — near the context limit.` });
-      } else if (estimated >= CONTEXT_WARN_TOKENS) {
-        ctx._ctxWarned = true;
-        if (ctx.onEvent) ctx.onEvent({ type: "info", message: `~${(estimated / 1000).toFixed(0)}K tokens of context in this sub-task.` });
-      }
-    }
-
     let result;
     try {
       const toolFilterCtx = {
@@ -2029,9 +2008,6 @@ async function runOneBranch(ctx, task, label, config, callId) {
     // — branches only, never the main loop or run_batch.
     explorationGuard: true,
     lockedHostname,
-    // Context-window warning flag — use the parent run's state so a warning
-    // from any branch suppresses further warnings in the same session.
-    _ctxWarned: ctx._ctxWarned,
     openedTabIds: branchOpenedTabIds,
     allowTabTools: true,
     // Page recall cache (see lib/pageCache.js) — inherited from the parent
@@ -2231,7 +2207,6 @@ export async function resumeBranch({
     pageCacheConfig,
     turnIndex,
     subAgentLabel: label,
-    _ctxWarned: false,
     openedTabIds: branchOpenedTabIds,
     allowTabTools: true,
   };
@@ -2466,9 +2441,6 @@ async function runBatch(ctx, input, callId) {
     shouldStop: ctx.shouldStop,
     shouldSkip: () => ctx.shouldSkipSubtasks && ctx.shouldSkipSubtasks(),
     lockedHostname: hostnameOf(startTab?.url),
-    // Context-window warning flag — inherit from parent so one warning
-    // covers the whole session.
-    _ctxWarned: ctx._ctxWarned,
     // Page recall cache — same inheritance rationale as branchCtx above.
     sessionId: ctx.sessionId,
     pageCacheConfig: ctx.pageCacheConfig,
@@ -3314,9 +3286,6 @@ export async function runAgentTask({
     visionConfig: visionConfig || null,
     visionCapable: looksVisionCapable(config?.model),
     hasAttachments: attachments && attachments.length > 0,
-    // Context-window warning flag: set once per run to avoid spamming the UI
-    // with repeated "context is large" warnings on every step once over threshold.
-    _ctxWarned: false,
     grantedDomains: granted,
     config,
     onEvent,
@@ -3485,19 +3454,6 @@ export async function runAgentTask({
     await onEvent({ type: "thinking", step });
 
     compactHistory(history, !!(ctx.sessionId && ctx.pageCacheConfig?.enabled));
-
-    // Warn once per run if the context is getting large, so the user has
-    // advance notice before the provider's limit is actually hit.
-    if (!ctx._ctxWarned) {
-      const estimated = estimateContextTokens(history, system);
-      if (estimated >= CONTEXT_HARD_CEILING) {
-        ctx._ctxWarned = true;
-        await onEvent({ type: "info", message: `⚠️ The conversation history is estimated at ~${(estimated / 1000).toFixed(0)}K tokens — approaching or past the provider's context window. Consider using /compact to summarize older turns, or starting a new chat.` });
-      } else if (estimated >= CONTEXT_WARN_TOKENS) {
-        ctx._ctxWarned = true;
-        await onEvent({ type: "info", message: `~${(estimated / 1000).toFixed(0)}K tokens of context so far. If the model starts to struggle, use /compact to summarize older material.` });
-      }
-    }
 
     let result;
     try {
