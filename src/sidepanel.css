@@ -617,24 +617,29 @@ main {
 
 /* --- Assistant / final message -------------------------------------- */
 
-.entry.assistant, .entry.final {
+.entry.assistant {
   align-self: flex-start;
-}
-
-.entry.assistant .body, .entry.final .body {
   background: var(--card);
   border: 1px solid var(--border);
   border-left: 2px solid var(--accent);
   border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 4px;
   padding: 9px 12px;
-  line-height: 1.5;
-  font-size: 12.5px;
-  word-break: break-word;
   box-shadow: var(--shadow-sm);
 }
 
-.entry.assistant.typing { padding: 0; }
-.entry.assistant.typing .body { padding: 11px 14px; }
+.entry.assistant .body, .entry.final .body {
+  line-height: 1.5;
+  font-size: 12.5px;
+  word-break: break-word;
+}
+
+.entry.assistant.typing { padding: 11px 14px; }
+.entry.assistant.typing .body { padding: 0; }
+
+.entry.assistant .msg-header { margin-bottom: 2px; }
+.entry.assistant .msg-avatar { background: var(--text); color: #fff; }
+.entry.assistant .msg-label { font-weight: 600; font-size: 11px; margin: 0; color: var(--accent); }
+.entry.assistant .msg-time { color: var(--text-faint); }
 
 /* --- Tool card (agent's tool calls) --------------------------------- */
 
@@ -723,25 +728,45 @@ main {
 .entry.error {
   background: var(--error-bg);
   color: var(--error-text);
-  white-space: pre-wrap;
   align-self: flex-start;
   border: 1px solid var(--error-border);
+  border-left: 2px solid var(--error-text);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
 }
-.entry.final {
-  background: var(--success-bg);
-  border: 1px solid var(--success-border);
-  color: var(--success-text);
+.entry.error .msg-header { margin-bottom: 2px; }
+.entry.error .msg-label { font-weight: 600; font-size: 11px; margin: 0; }
+.entry.error .msg-time { color: var(--text-faint); }
+
+.entry.info {
   align-self: flex-start;
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-light);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
 }
+.entry.info .msg-header { margin-bottom: 2px; }
+.entry.info .msg-label { color: var(--text-muted); font-size: 10.5px; font-weight: 600; }
+.entry.info .msg-time { color: var(--text-faint); }
+.entry.info .body { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+
 .entry.stopped {
   background: var(--card-alt);
   color: var(--text-muted);
   font-style: italic;
   align-self: flex-start;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
 }
+.entry.stopped .msg-header { margin-bottom: 2px; }
 
 /* Rendered markdown inside assistant/final entries
-   (body background/border/radius defined above in .entry.assistant .body) */
+   (background/border/radius defined above on .entry.assistant / .entry.final) */
 .entry.assistant .body, .entry.final .body { white-space: normal; }
 .entry.assistant .body p, .entry.final .body p { margin: 0 0 8px; }
 .entry.assistant .body p:last-child, .entry.final .body p:last-child { margin-bottom: 0; }
@@ -868,14 +893,6 @@ main {
   color: var(--text);
   white-space: normal;
   word-break: break-word;
-}
-
-.entry.info {
-  background: var(--card-alt);
-  color: var(--text-muted);
-  font-size: 11.5px;
-  align-self: flex-start;
-  border: 1px solid var(--border);
 }
 
 /* --- ask_user inline forms ------------------------------------------ */

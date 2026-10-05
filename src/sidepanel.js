@@ -1014,12 +1014,12 @@ function updateComposerUsage(session) {
   const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
   el.innerHTML = `
-    <button id="contextCompactBtn" class="context-ring-btn" title="Active context: ~${fmtNum(active)} tokens — click to compact">
+    <button id="contextCompactBtn" class="context-ring-btn" title="Active context: ~${fmtNum(active)} / ${fmtNum(MAX)} tokens — click to compact">
       <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
         <circle class="context-ring-bg" cx="12" cy="12" r="8"/>
         <circle class="context-ring-fg" cx="12" cy="12" r="8" stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>
       </svg>
-      <span class="context-ring-label"><strong>${fmtNum(active)}</strong> · compact</span>
+      <span class="context-ring-label"><strong>${fmtNum(active)}</strong> / ${fmtNum(MAX)} · compact</span>
     </button>`;
   el.classList.remove("hidden");
 
@@ -3268,14 +3268,18 @@ async function compactCurrentSession() {
     return;
   }
   const [providerId, modelId] = (modelSelect.value || "").split("::");
+  const sessionIdAtStart = currentSessionId;
   showStatus("Compacting…", true);
   chrome.runtime.sendMessage({
     type: "COMPACT_SESSION",
-    sessionId: currentSessionId,
+    sessionId: sessionIdAtStart,
     providerId: providerId || undefined,
     modelId: modelId || undefined,
   });
-  await waitForCompaction(currentSessionId);
+  await waitForCompaction(sessionIdAtStart);
+  // Bail if the user started a new chat or switched sessions while
+  // compaction was running — don't mess with the new session's view.
+  if (currentSessionId !== sessionIdAtStart) return;
   hideStatus();
 }
 
