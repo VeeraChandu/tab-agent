@@ -78,6 +78,22 @@
     <div id="branchTreeContainer" class="branch-tree-container"></div>
   </div>
 
+  <div id="agentPopover" class="agent-popover hidden"></div>
+  <div id="instructionsPopover" class="instructions-popover hidden">
+    <div class="instructions-popover-header">
+      <span>Custom instructions for this chat</span>
+      <button id="closeInstructionsPopover" class="icon-btn" title="Close">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <p class="hint" style="margin:4px 0 8px;font-size:11px">These override your persistent instructions for this chat only. Leave empty to use the defaults from Settings.</p>
+    <textarea id="perChatInstructions" class="instructions-textarea" style="min-height:80px" placeholder="e.g. Summarize in Japanese. Skip the pricing section."></textarea>
+    <div class="field-row" style="justify-content:flex-end;margin-top:8px">
+      <span id="perChatInstructionsSaved" class="hint hidden" style="margin-right:8px">✓ Saved</span>
+      <button id="savePerChatInstructionsBtn" type="button" class="btn btn-primary btn-sm">Apply</button>
+    </div>
+  </div>
+
   <main>
     <div id="emptyState" class="empty-state">
       <p>Tell Tab Agent what to do on this tab: summarize, fill a form, find something, or check across your open tabs.</p>
@@ -87,8 +103,7 @@
 
   <footer>
     <div id="footerResizeHandle" class="footer-resize-handle" title="Drag to resize"></div>
-    <div id="agentPopover" class="agent-popover hidden"></div>
-    <div id="instructionsPopover" class="instructions-popover hidden">
+    <div id="editBanner" class="edit-banner hidden">
       <div class="instructions-popover-header">
         <span>Custom instructions for this chat</span>
         <button id="closeInstructionsPopover" class="icon-btn" title="Close">

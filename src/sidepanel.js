@@ -173,6 +173,9 @@ let attachments = []; // images: { id, name, kind:"image", mediaType, data (base
                        // pdfs:   { id, name, kind:"pdf", text, pageCount, truncated }
 let editingNodeId = null;
 let currentSessionId = null;
+// In-memory copy of the session tree, kept in sync with chrome.storage.local
+// to avoid async re-reads on every branch switch or tree re-render.
+let currentSession = null;
 // The node id of the run currently being displayed live. null means "not
 // locked onto a run yet — the next AGENT_EVENT/AGENT_PAUSED/AGENT_DONE we see
 // for the current session is it." Reset to null right before every message
@@ -506,6 +509,7 @@ settingsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
 
 function startNewChat() {
   currentSessionId = null;
+  currentSession = null;
   activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
@@ -572,6 +576,7 @@ async function clearCurrentSession() {
   fresh[freshIdx] = cleared;
   await chrome.storage.local.set({ sessions: fresh });
 
+  currentSession = null;
   activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
@@ -660,81 +665,71 @@ function renderBranchTree() {
     branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No active chat. Start a new chat first.</div>';
     return;
   }
-  chrome.storage.local.get(["sessions"], ({ sessions = [] }) => {
-    const raw = sessions.find((s) => s.id === currentSessionId);
-    if (!raw) {
-      branchTreeContainer.innerHTML = '<div class="branch-tree-empty">Session not found.</div>';
-      return;
+  if (!currentSession) {
+    branchTreeContainer.innerHTML = '<div class="branch-tree-empty">Session not loaded.</div>';
+    return;
+  }
+  const session = currentSession;
+  const activePath = computeActivePath(session);
+  const activeIdSet = new Set(activePath.map((n) => n.id));
+
+  // Walk the tree top-down, depth-first
+  const lines = [];
+  function walk(nodeIds, depth) {
+    for (const id of nodeIds) {
+      const node = session.nodes[id];
+      if (!node) continue;
+      const isActive = activeIdSet.has(id);
+      lines.push({ node, depth, isActive });
+      walk(node.childIds || [], depth + 1);
     }
-    const session = migrateSessionIfNeeded(raw);
-    const activePath = computeActivePath(session);
-    const activeIdSet = new Set(activePath.map((n) => n.id));
+  }
+  walk(session.rootChildIds || [], 0);
 
-    // Walk the tree top-down, depth-first
-    const lines = [];
-    function walk(nodeIds, depth) {
-      for (const id of nodeIds) {
-        const node = session.nodes[id];
-        if (!node) continue;
-        const isActive = activeIdSet.has(id);
-        lines.push({ node, depth, isActive });
-        walk(node.childIds || [], depth + 1);
-      }
-    }
-    walk(session.rootChildIds || [], 0);
+  if (!lines.length) {
+    branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No messages yet.</div>';
+    return;
+  }
 
-    if (!lines.length) {
-      branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No messages yet.</div>';
-      return;
-    }
+  // Render the tree into DOM
+  const items = lines.map(({ node, depth, isActive }) => {
+    const row = document.createElement("div");
+    row.className = "branch-tree-row";
+    row.setAttribute("data-node-id", node.id);
 
-    // Render the tree into DOM
-    const items = lines.map(({ node, depth, isActive }) => {
-      const row = document.createElement("div");
-      row.className = "branch-tree-row";
-      row.setAttribute("data-node-id", node.id);
+    const indent = document.createElement("div");
+    indent.className = "branch-tree-indent";
+    indent.style.paddingLeft = `${depth * 18}px`;
 
-      // Connector column: vertical pipes for the branch lines
-      // Simple approach: indent with left padding, use a thin visual indicator
-      const indent = document.createElement("div");
-      indent.className = "branch-tree-indent";
-      indent.style.paddingLeft = `${depth * 18}px`;
+    const nodeEl = document.createElement("div");
+    nodeEl.className = `branch-tree-node${isActive ? " active" : ""}`;
 
-      const nodeEl = document.createElement("div");
-      nodeEl.className = `branch-tree-node${isActive ? " active" : ""}`;
+    const dot = document.createElement("span");
+    dot.className = `branch-tree-dot${isActive ? " active" : ""}`;
+    nodeEl.appendChild(dot);
 
-      const dot = document.createElement("span");
-      dot.className = `branch-tree-dot${isActive ? " active" : ""}`;
-      nodeEl.appendChild(dot);
+    const label = document.createElement("span");
+    label.className = `branch-tree-label${isActive ? "" : " muted"}`;
+    const text = node.userText || "(no text)";
+    label.textContent = text.length > 60 ? text.slice(0, 60) + "…" : text;
+    label.title = node.userText || "";
+    nodeEl.appendChild(label);
 
-      const label = document.createElement("span");
-      label.className = `branch-tree-label${isActive ? "" : " muted"}`;
-      const text = node.userText || "(no text)";
-      label.textContent = text.length > 60 ? text.slice(0, 60) + "…" : text;
-      label.title = node.userText || "";
-      nodeEl.appendChild(label);
+    indent.appendChild(nodeEl);
+    row.appendChild(indent);
 
-      // Branch badge: show sibling count if this node has multiple children
-      // (placeholder for future badge)
-
-      indent.appendChild(nodeEl);
-      row.appendChild(indent);
-
-      // Click to switch to this node's branch
-      row.addEventListener("click", async () => {
-        if (isActive) return; // already on this branch
-        await switchToNodeBranch(node.id);
-        closeBranchTree();
-        // Re-render tree to reflect new active path
-        renderBranchTree();
-      });
-
-      return row;
+    row.addEventListener("click", async () => {
+      if (isActive) return;
+      await switchToNodeBranch(node.id);
+      closeBranchTree();
+      renderBranchTree();
     });
 
-    branchTreeContainer.innerHTML = "";
-    for (const row of items) branchTreeContainer.appendChild(row);
+    return row;
   });
+
+  branchTreeContainer.innerHTML = "";
+  for (const row of items) branchTreeContainer.appendChild(row);
 }
 
 // Switch the session's active path so that `targetNodeId` becomes the current
@@ -742,10 +737,8 @@ function renderBranchTree() {
 // the root and setting selectedChildId on each ancestor to pick the branch
 // that leads to the target.
 async function switchToNodeBranch(targetNodeId) {
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const raw = sessions.find((s) => s.id === currentSessionId);
-  if (!raw) return;
-  const session = migrateSessionIfNeeded(raw);
+  if (!currentSession) return;
+  const session = currentSession;
   const node = session.nodes[targetNodeId];
   if (!node) return;
 
@@ -764,7 +757,7 @@ async function switchToNodeBranch(targetNodeId) {
   }
 
   session.updatedAt = Date.now();
-  await chrome.storage.local.set({ sessions: sessions.map((s) => (s.id === session.id ? session : s)) });
+  await persistCurrentSession();
   renderSessionPath(session);
 }
 
@@ -1288,10 +1281,8 @@ function renderUserNode(session, node) {
 }
 
 async function switchBranch(node, direction) {
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const raw = sessions.find((s) => s.id === currentSessionId);
-  if (!raw) return;
-  const session = migrateSessionIfNeeded(raw);
+  if (!currentSession) return;
+  const session = currentSession;
 
   const siblings = node.parentId ? session.nodes[node.parentId]?.childIds || [] : session.rootChildIds || [];
   const idx = siblings.indexOf(node.id);
@@ -1303,8 +1294,20 @@ async function switchBranch(node, direction) {
   else session.rootSelectedChildId = newSelectedId;
   session.updatedAt = Date.now();
 
-  await chrome.storage.local.set({ sessions: sessions.map((s) => (s.id === session.id ? session : s)) });
+  await persistCurrentSession();
   renderSessionPath(session);
+}
+
+// Persist currentSession to chrome.storage.local — debounced via one
+// microtask per call, but the read/write round trip itself is async.
+async function persistCurrentSession() {
+  if (!currentSession) return;
+  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+  const idx = sessions.findIndex((s) => s.id === currentSession.id);
+  if (idx !== -1) {
+    sessions[idx] = currentSession;
+    await chrome.storage.local.set({ sessions });
+  }
 }
 
 function startEditingNode(node) {
@@ -1342,12 +1345,15 @@ async function refreshCurrentSessionView() {
   const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
   const raw = sessions.find((s) => s.id === currentSessionId);
   if (!raw) return;
-  renderSessionPath(migrateSessionIfNeeded(raw));
+  const session = migrateSessionIfNeeded(raw);
+  currentSession = session;
+  renderSessionPath(session);
 }
 
 function loadSessionIntoView(rawSession) {
   const session = migrateSessionIfNeeded(rawSession);
   currentSessionId = session.id;
+  currentSession = session;
   activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
@@ -3361,13 +3367,11 @@ async function retryLastMessage() {
     addEntry("info", "Info", "No conversation to retry yet.");
     return;
   }
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const raw = sessions.find((s) => s.id === currentSessionId);
-  if (!raw) {
+  const session = currentSession;
+  if (!session) {
     addEntry("info", "Info", "No conversation to retry yet.");
     return;
   }
-  const session = migrateSessionIfNeeded(raw);
   const path = computeActivePath(session);
   const lastNode = path[path.length - 1];
   if (!lastNode) {
@@ -3434,10 +3438,8 @@ async function compactCurrentSession() {
 // below triggering a storage refresh.
 async function maybeAutoCompact() {
   if (!currentSessionId) return;
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const raw = sessions.find((s) => s.id === currentSessionId);
-  if (!raw) return;
-  const session = migrateSessionIfNeeded(raw);
+  const session = currentSession;
+  if (!session) return;
   const path = computeActivePath(session);
   const lastNode = path[path.length - 1];
   const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
