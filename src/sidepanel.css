@@ -606,7 +606,7 @@ main {
 
 .entry.assistant .msg-header { margin-bottom: 2px; }
 .entry.assistant .msg-avatar { background: var(--text); color: #fff; }
-.entry.assistant .msg-label { font-weight: 600; font-size: 11px; margin: 0; color: var(--accent); }
+.entry.assistant .msg-label { font-weight: 600; font-size: 11px; margin: 0; color: var(--text); }
 .entry.assistant .msg-time { color: var(--text-faint); }
 
 /* --- Tool card (agent's tool calls) --------------------------------- */
