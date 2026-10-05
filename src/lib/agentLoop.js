@@ -265,6 +265,64 @@ export function compactHistory(history, cacheEnabled) {
   });
 }
 
+// --- Page-content-only compaction ------------------------------------------
+// Unlike the full-history LLM summarization this replaced, compactPageContent
+// strips only the heavy page-scan data from tool results — visible_text,
+// inline page.content, chunk text — while keeping user messages, assistant
+// reasoning, tool-call decisions, and non-page results intact. The agent can
+// re-read any page via recall_page (cached) or read_page (live), so losing
+// the text is reversible. Losing the conversation is not.
+//
+// Called from the /compact command path (background.js). Returns the number
+// of bytes collapsed (0 if nothing was done).
+
+export function compactPageContent(history) {
+  // Build tool_use_id → name map so we know what each tool_result belongs to
+  const idToName = new Map();
+  for (const turn of history) {
+    if (turn.role !== "assistant") continue;
+    for (const block of turn.content || []) {
+      if (block.type === "tool_use") idToName.set(block.id, block.name);
+    }
+  }
+
+  let collapsed = 0;
+
+  for (const turn of history) {
+    if (turn.role !== "user") continue;
+    for (const block of turn.content || []) {
+      if (block.type !== "tool_result") continue;
+      const name = idToName.get(block.tool_use_id);
+      if (!name || typeof block.content !== "string") continue;
+
+      const parsed = parseResultBlock(block);
+      if (!parsed) continue;
+
+      if (name === "read_page" || name === "recall_page") {
+        if (parsed.visible_text && typeof parsed.visible_text === "string") {
+          collapsed += parsed.visible_text.length;
+          parsed.visible_text = "[Page content removed to save context — call recall_page or read_page to re-read this page.]";
+          block.content = JSON.stringify(parsed);
+        }
+      } else if (name === "read_page_chunk" || name === "read_attachment_chunk") {
+        if (parsed.text && typeof parsed.text === "string") {
+          collapsed += parsed.text.length;
+          parsed.text = "[Chunk content removed to save context — call this same tool again if needed; it's static cached content.]";
+          block.content = JSON.stringify(parsed);
+        }
+      } else if (PAGE_EMBEDDING_TOOLS.has(name) && parsed.page) {
+        if (parsed.page.visible_text && typeof parsed.page.visible_text === "string") {
+          collapsed += parsed.page.visible_text.length;
+          parsed.page.visible_text = "[Page content removed to save context — call recall_page or read_page to re-read this page.]";
+          block.content = JSON.stringify(parsed);
+        }
+      }
+    }
+  }
+
+  return collapsed;
+}
+
 // frameId defaults to 0 (the top/main frame) everywhere — that's the exact
 // behavior this had before content_scripts gained all_frames: true (back
 // when there was only ever one content.js instance per tab to talk to).

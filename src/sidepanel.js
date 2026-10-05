@@ -3237,13 +3237,10 @@ async function compactCurrentSession() {
     addEntry("info", "Info", "No conversation to compact yet.");
     return;
   }
-  const [providerId, modelId] = (modelSelect.value || "").split("::");
   const sessionIdAtStart = currentSessionId;
   chrome.runtime.sendMessage({
     type: "COMPACT_SESSION",
     sessionId: sessionIdAtStart,
-    providerId: providerId || undefined,
-    modelId: modelId || undefined,
   });
   await waitForCompaction(sessionIdAtStart);
   if (currentSessionId !== sessionIdAtStart) {
@@ -3261,18 +3258,10 @@ async function maybeAutoCompact() {
   const raw = sessions.find((s) => s.id === currentSessionId);
   if (!raw) return;
   const session = migrateSessionIfNeeded(raw);
-  // The active leaf's own usage IS the active context size — each request is
-  // stateless and resends the full history, so its inputTokens already
-  // reflects everything accumulated so far on this path. Summing node.usage
-  // across every node in session.nodes (the old behavior) instead added up
-  // lifetime billed tokens across the whole tree, including dead retry/edit
-  // branches never even sent again - a number that only ever grows and has
-  // nothing to do with how large the next request's context actually is.
   const path = computeActivePath(session);
   const lastNode = path[path.length - 1];
   const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
   if (active <= AUTO_COMPACT_TOKEN_THRESHOLD) return;
-  addEntry("info", "Info", `This chat has grown large (~${Math.round(active / 1000)}k tokens) - compacting automatically before sending to keep costs down.`);
   await compactCurrentSession();
 }
 
