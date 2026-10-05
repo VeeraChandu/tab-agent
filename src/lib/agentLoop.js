@@ -15,6 +15,7 @@ import { recordPageRead, recallPage, isUrlCached } from "./pageCache.js";
 import { getChunk, getFullAttachment, recordAttachment, chunkText } from "./attachmentCache.js";
 import { captureStep, startRecording } from "./sessionRecorder.js";
 import { saveTabState, restoreTabState, hasSavedState } from "./statePersist.js";
+import { getCapturedDownloads } from "./downloadCapture.js";
 
 const MAX_STEPS = 20;
 const TAB_LOAD_TIMEOUT_MS = 15000;
@@ -48,16 +49,6 @@ const DEFAULT_LIMITS = {
 // background tab is auto-closed — long enough for the "closed" UI state to
 // feel like a natural consequence of finishing, not an abrupt yank.
 const BRANCH_AUTO_CLOSE_DELAY_MS = 900;
-
-// Proactive context-window budget thresholds: estimate the total token cost
-// of history + system prompt before every LLM call. This is a rough heuristic
-// (~3.5 chars per token, no per-model vocab) — not a guarantee, but it catches
-// the worst cases (30+ steps of large tool results) that would otherwise 400.
-// Anthropic's default context is 200K tokens; OpenAI models range from 128K to
-// 200K. The hard ceiling flags runs that are genuinely at risk; the warn ceiling
-// is a softer heads-up.
-const CONTEXT_WARN_TOKENS = 75000;
-const CONTEXT_HARD_CEILING = 100000;
 
 // Rough token estimate by character count: dividing by 3.5 approximates the
 // average English text token density; image blocks get a fixed 500-token
@@ -272,6 +263,64 @@ export function compactHistory(history, cacheEnabled) {
     if (turn.role !== "user") return;
     turn.content = (turn.content || []).filter((block, bi) => !block.ephemeral || `${ti}:${bi}` === lastEphemeralImageKey);
   });
+}
+
+// --- Page-content-only compaction ------------------------------------------
+// Unlike the full-history LLM summarization this replaced, compactPageContent
+// strips only the heavy page-scan data from tool results — visible_text,
+// inline page.content, chunk text — while keeping user messages, assistant
+// reasoning, tool-call decisions, and non-page results intact. The agent can
+// re-read any page via recall_page (cached) or read_page (live), so losing
+// the text is reversible. Losing the conversation is not.
+//
+// Called from the /compact command path (background.js). Returns the number
+// of bytes collapsed (0 if nothing was done).
+
+export function compactPageContent(history) {
+  // Build tool_use_id → name map so we know what each tool_result belongs to
+  const idToName = new Map();
+  for (const turn of history) {
+    if (turn.role !== "assistant") continue;
+    for (const block of turn.content || []) {
+      if (block.type === "tool_use") idToName.set(block.id, block.name);
+    }
+  }
+
+  let collapsed = 0;
+
+  for (const turn of history) {
+    if (turn.role !== "user") continue;
+    for (const block of turn.content || []) {
+      if (block.type !== "tool_result") continue;
+      const name = idToName.get(block.tool_use_id);
+      if (!name || typeof block.content !== "string") continue;
+
+      const parsed = parseResultBlock(block);
+      if (!parsed) continue;
+
+      if (name === "read_page" || name === "recall_page") {
+        if (parsed.visible_text && typeof parsed.visible_text === "string") {
+          collapsed += parsed.visible_text.length;
+          parsed.visible_text = "[Page content removed to save context — call recall_page or read_page to re-read this page.]";
+          block.content = JSON.stringify(parsed);
+        }
+      } else if (name === "read_page_chunk" || name === "read_attachment_chunk") {
+        if (parsed.text && typeof parsed.text === "string") {
+          collapsed += parsed.text.length;
+          parsed.text = "[Chunk content removed to save context — call this same tool again if needed; it's static cached content.]";
+          block.content = JSON.stringify(parsed);
+        }
+      } else if (PAGE_EMBEDDING_TOOLS.has(name) && parsed.page) {
+        if (parsed.page.visible_text && typeof parsed.page.visible_text === "string") {
+          collapsed += parsed.page.visible_text.length;
+          parsed.page.visible_text = "[Page content removed to save context — call recall_page or read_page to re-read this page.]";
+          block.content = JSON.stringify(parsed);
+        }
+      }
+    }
+  }
+
+  return collapsed;
 }
 
 // frameId defaults to 0 (the top/main frame) everywhere — that's the exact
@@ -1809,17 +1858,6 @@ async function runSubLoop({ ctx, objective, maxSteps, config, system, onStep, ga
 
     compactHistory(history, !!(ctx.sessionId && ctx.pageCacheConfig?.enabled));
 
-    if (!ctx._ctxWarned) {
-      const estimated = estimateContextTokens(history, system);
-      if (estimated >= CONTEXT_HARD_CEILING) {
-        ctx._ctxWarned = true;
-        if (ctx.onEvent) ctx.onEvent({ type: "info", message: `⚠️ This sub-task's history is estimated at ~${(estimated / 1000).toFixed(0)}K tokens — near the context limit.` });
-      } else if (estimated >= CONTEXT_WARN_TOKENS) {
-        ctx._ctxWarned = true;
-        if (ctx.onEvent) ctx.onEvent({ type: "info", message: `~${(estimated / 1000).toFixed(0)}K tokens of context in this sub-task.` });
-      }
-    }
-
     let result;
     try {
       const toolFilterCtx = {
@@ -2028,9 +2066,6 @@ async function runOneBranch(ctx, task, label, config, callId) {
     // — branches only, never the main loop or run_batch.
     explorationGuard: true,
     lockedHostname,
-    // Context-window warning flag — use the parent run's state so a warning
-    // from any branch suppresses further warnings in the same session.
-    _ctxWarned: ctx._ctxWarned,
     openedTabIds: branchOpenedTabIds,
     allowTabTools: true,
     // Page recall cache (see lib/pageCache.js) — inherited from the parent
@@ -2230,7 +2265,6 @@ export async function resumeBranch({
     pageCacheConfig,
     turnIndex,
     subAgentLabel: label,
-    _ctxWarned: false,
     openedTabIds: branchOpenedTabIds,
     allowTabTools: true,
   };
@@ -2465,9 +2499,6 @@ async function runBatch(ctx, input, callId) {
     shouldStop: ctx.shouldStop,
     shouldSkip: () => ctx.shouldSkipSubtasks && ctx.shouldSkipSubtasks(),
     lockedHostname: hostnameOf(startTab?.url),
-    // Context-window warning flag — inherit from parent so one warning
-    // covers the whole session.
-    _ctxWarned: ctx._ctxWarned,
     // Page recall cache — same inheritance rationale as branchCtx above.
     sessionId: ctx.sessionId,
     pageCacheConfig: ctx.pageCacheConfig,
@@ -2522,7 +2553,7 @@ async function runBatch(ctx, input, callId) {
  * later tool call in the run (and the caller, once the run ends) automatically
  * targets whatever tab the agent last moved to.
  */
-async function executeTool(ctx, name, input, callId) {
+export async function executeTool(ctx, name, input, callId) {
   switch (name) {
     case "read_page": {
       const streakBlock = checkExplorationStreak(ctx, "read_page");
@@ -3136,7 +3167,6 @@ async function executeTool(ctx, name, input, callId) {
       return { ok: true };
 
     case "get_downloads": {
-      const { getCapturedDownloads } = await import("./downloadCapture.js");
       const downloads = getCapturedDownloads();
       return { ok: true, downloads };
     }
@@ -3314,9 +3344,6 @@ export async function runAgentTask({
     visionConfig: visionConfig || null,
     visionCapable: looksVisionCapable(config?.model),
     hasAttachments: attachments && attachments.length > 0,
-    // Context-window warning flag: set once per run to avoid spamming the UI
-    // with repeated "context is large" warnings on every step once over threshold.
-    _ctxWarned: false,
     grantedDomains: granted,
     config,
     onEvent,
@@ -3485,19 +3512,6 @@ export async function runAgentTask({
     await onEvent({ type: "thinking", step });
 
     compactHistory(history, !!(ctx.sessionId && ctx.pageCacheConfig?.enabled));
-
-    // Warn once per run if the context is getting large, so the user has
-    // advance notice before the provider's limit is actually hit.
-    if (!ctx._ctxWarned) {
-      const estimated = estimateContextTokens(history, system);
-      if (estimated >= CONTEXT_HARD_CEILING) {
-        ctx._ctxWarned = true;
-        await onEvent({ type: "info", message: `⚠️ The conversation history is estimated at ~${(estimated / 1000).toFixed(0)}K tokens — approaching or past the provider's context window. Consider using /compact to summarize older turns, or starting a new chat.` });
-      } else if (estimated >= CONTEXT_WARN_TOKENS) {
-        ctx._ctxWarned = true;
-        await onEvent({ type: "info", message: `~${(estimated / 1000).toFixed(0)}K tokens of context so far. If the model starts to struggle, use /compact to summarize older material.` });
-      }
-    }
 
     let result;
     try {

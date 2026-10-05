@@ -18,10 +18,6 @@ const historyPanel = document.getElementById("historyPanel");
 const historyList = document.getElementById("historyList");
 const historySearch = document.getElementById("historySearch");
 const warningBanner = document.getElementById("warningBanner");
-const privacyNotice = document.getElementById("privacyNotice");
-const privacyNoticeDismiss = document.getElementById("privacyNoticeDismiss");
-const statusBar = document.getElementById("statusBar");
-const statusText = document.getElementById("statusText");
 const topProgress = document.getElementById("topProgress");
 const modelSelect = document.getElementById("modelSelect");
 const attachBtn = document.getElementById("attachBtn");
@@ -160,6 +156,7 @@ function docIcon(format) {
 }
 
 let running = false;
+let sending = false; // guards against re-entrance during async setup (e.g. maybeAutoCompact)
 let stepThroughEnabled = false;
 let autoScroll = true;
 let attachments = []; // images: { id, name, kind:"image", mediaType, data (base64, no prefix), previewUrl }
@@ -401,26 +398,6 @@ function checkConfig(providers, options) {
   }
 }
 
-// --- data-use disclosure ------------------------------------------------
-// Bump this when what Tab Agent accesses or where it sends data actually
-// changes — a stored ack from an older version won't suppress the notice
-// for a newer one, so a material change gets surfaced again rather than
-// silently inheriting a prior "Got it" click. See PRIVACY_POLICY.md.
-const PRIVACY_NOTICE_VERSION = 1;
-
-async function checkPrivacyNotice() {
-  const { privacyNoticeAckVersion } = await chrome.storage.local.get(["privacyNoticeAckVersion"]);
-  if (privacyNoticeAckVersion === PRIVACY_NOTICE_VERSION) return;
-  privacyNotice.classList.remove("hidden");
-}
-
-privacyNoticeDismiss.addEventListener("click", () => {
-  privacyNotice.classList.add("hidden");
-  chrome.storage.local.set({ privacyNoticeAckVersion: PRIVACY_NOTICE_VERSION });
-});
-
-checkPrivacyNotice();
-
 loadProviders();
 
 // A task started before this panel was closed (or before it was ever
@@ -430,8 +407,8 @@ loadProviders();
 // defaults to a blank new chat with zero indication that anything is
 // happening, other than the toolbar's pulsing dot — the only signal
 // available is the tool-call log inside a chat this panel isn't showing.
-// Re-attaching means loading that chat AND telling the UI it's running
-// (setRunning/showStatus/showTypingBubble), the same way clicking
+  // Re-attaching means loading that chat AND telling the UI it's running
+  // (setRunning/showTypingBubble), the same way clicking
 // "Continue" on a step-limit prompt already resumes a known node — a live
 // AGENT_EVENT broadcast could be seconds away, or over a minute (still
 // within the watchdog's grace period — see setRunning), so there's nothing
@@ -467,7 +444,6 @@ function findMostRecentPausedSession(sessions) {
     loadSessionIntoView(raw);
     activeRunNodeId = nodeId || null;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
     return;
   }
@@ -642,7 +618,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (document.activeElement === taskInput && !agentPopover.classList.contains("hidden")) return;
   if (running) {
-    showStatus("Stopping…");
     chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId });
     return;
   }
@@ -682,6 +657,35 @@ document.addEventListener("keydown", (e) => {
     }
   }
 });
+
+// --- Footer resize (drag handle) ----------------------------------------
+(function initFooterResize() {
+  const handle = document.getElementById("footerResizeHandle");
+  const footer = document.querySelector("footer");
+  if (!handle || !footer) return;
+  let startY = 0;
+  let startH = 0;
+  const onMove = (e) => {
+    const delta = startY - e.clientY;
+    const newH = Math.max(80, Math.min(window.innerHeight * 0.7, startH + delta));
+    footer.style.height = `${newH}px`;
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startY = e.clientY;
+    startH = footer.offsetHeight;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+})();
 
 function relativeTime(ts) {
   const diff = Date.now() - ts;
@@ -759,9 +763,21 @@ function sessionToTranscript(session) {
     lines.push(`**You:** ${node.userText || "(attachment only)"}`, "");
     const docNames = (node.userAttachmentPreviews || []).filter((p) => p && typeof p === "object" && (p.kind === "pdf" || p.kind === "doc"));
     if (docNames.length) lines.push(`_Attached: ${docNames.map((d) => d.name).join(", ")}_`, "");
+    // Collect all assistant text from uiEvents — intermediate text
+    // (assistant_delta concatenated together), full assistant messages,
+    // and final finish/done answers.
+    let assistantText = "";
     for (const event of node.uiEvents || []) {
-      if (event.type === "finish") lines.push(event.answer || "", "");
-      else if (event.type === "done" && !event.alreadyShown) lines.push(event.finalAnswer || "", "");
+      if (event.type === "assistant" || event.type === "assistant_delta") {
+        assistantText += event.text || "";
+      } else if (event.type === "finish") {
+        lines.push(event.answer || "", "");
+      } else if (event.type === "done" && !event.alreadyShown) {
+        lines.push(event.finalAnswer || "", "");
+      }
+    }
+    if (assistantText.trim()) {
+      lines.push(`**Tab Agent:** ${assistantText.trim()}`, "");
     }
   }
   return lines.join("\n");
@@ -778,20 +794,6 @@ function downloadText(filename, text, mime) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-
-async function duplicateSession(session) {
-  const { sessions: current = [] } = await chrome.storage.local.get(["sessions"]);
-  const clone = JSON.parse(JSON.stringify(session));
-  clone.id = "s_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  clone.title = `${session.title || "New chat"} (copy)`;
-  clone.createdAt = Date.now();
-  clone.updatedAt = Date.now();
-  current.unshift(clone);
-  current.sort((a, b) => b.updatedAt - a.updatedAt);
-  await chrome.storage.local.set({ sessions: current.slice(0, HISTORY_MAX_SESSIONS) });
-  renderHistoryList(historySearch.value);
-}
-
 async function renderHistoryList(filterText = "") {
   const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
   sessions.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -823,11 +825,19 @@ async function renderHistoryList(filterText = "") {
     const dup = document.createElement("button");
     dup.type = "button";
     dup.className = "history-row-action";
-    dup.title = "Duplicate";
-    dup.textContent = "⧉";
-    dup.addEventListener("click", (e) => {
+    dup.title = "Copy transcript";
+    dup.textContent = "📋";
+    dup.addEventListener("click", async (e) => {
       e.stopPropagation();
-      duplicateSession(session);
+      try {
+        await navigator.clipboard.writeText(sessionToTranscript(session));
+        dup.textContent = "✓";
+        dup.title = "Copied!";
+        setTimeout(() => { dup.textContent = "📋"; dup.title = "Copy transcript"; }, 1500);
+      } catch {
+        dup.textContent = "✗";
+        setTimeout(() => { dup.textContent = "📋"; dup.title = "Copy transcript"; }, 1500);
+      }
     });
 
     const replay = document.createElement("button");
@@ -955,20 +965,52 @@ function renderSessionPath(session) {
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
-// Quiet, view-only usage readout pinned to the top of the composer card —
-// just for the user to glance at, not a quota/limit (the extension has no
-// concept of a spend cap since it's bring-your-own-key).
+// Context ring + click-to-compact — shows active context size as a filled
+// ring (clamped relative to AUTO_COMPACT_TOKEN_THRESHOLD). Clicking it
+// compacts the session. Only shown when there's measurable usage and only
+// active when the user is NOT mid-run.
 function updateComposerUsage(session) {
   const el = document.getElementById("composerUsage");
   if (!el) return;
-  const label = sessionUsageLabel(session).replace(/^ · /, "");
-  if (!label) {
+
+  if (!session) {
     el.classList.add("hidden");
-    el.textContent = "";
+    el.innerHTML = "";
     return;
   }
-  el.textContent = `Usage this chat: ${label}`;
+
+  const path = computeActivePath(session);
+  const lastNode = path[path.length - 1];
+  const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
+  if (!active) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+
+  const MAX = AUTO_COMPACT_TOKEN_THRESHOLD; // 250k
+  const pct = Math.min(active / MAX, 1);
+  const circumference = 2 * Math.PI * 8; // r=8
+  const dashOffset = circumference * (1 - pct);
+  const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+  el.innerHTML = `
+    <button id="contextCompactBtn" class="context-ring-btn" title="Active context: ~${fmtNum(active)} / ${fmtNum(MAX)} tokens — click to compact">
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="context-ring-bg" cx="12" cy="12" r="8"/>
+        <circle class="context-ring-fg" cx="12" cy="12" r="8" stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>
+      </svg>
+      <span class="context-ring-label"><strong>${fmtNum(active)}</strong> / ${fmtNum(MAX)} · compact</span>
+    </button>`;
   el.classList.remove("hidden");
+
+  const btn = document.getElementById("contextCompactBtn");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      if (running) return;
+      compactCurrentSession();
+    });
+  }
 }
 
 function renderUserNode(session, node) {
@@ -976,31 +1018,26 @@ function renderUserNode(session, node) {
   div.className = "entry user";
   div.dataset.nodeId = node.id;
 
-  const toolbar = document.createElement("div");
-  toolbar.className = "user-entry-toolbar";
-  const label = document.createElement("span");
-  label.className = "label";
-  label.textContent = "You";
-  toolbar.appendChild(label);
-
-  const actions = document.createElement("span");
-  actions.className = "user-entry-actions";
-
-  actions.appendChild(createCopyButton(() => node.userText, "light"));
-
-  const editBtn = document.createElement("button");
-  editBtn.type = "button";
-  editBtn.className = "edit-msg-btn";
-  editBtn.title = "Edit this message";
-  editBtn.innerHTML = "✎";
-  editBtn.addEventListener("click", () => startEditingNode(node));
-  actions.appendChild(editBtn);
-
-  toolbar.appendChild(actions);
-  div.appendChild(toolbar);
+  // Avatar + header row
+  const headerRow = document.createElement("div");
+  headerRow.className = "msg-header";
+  const avatar = document.createElement("span");
+  avatar.className = "msg-avatar user-avatar";
+  avatar.title = "You";
+  avatar.innerHTML = `
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
+    </svg>`;
+  headerRow.appendChild(avatar);
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(node.createdAt);
+  headerRow.appendChild(time);
+  div.appendChild(headerRow);
 
   const body = document.createElement("div");
-  body.className = "body";
+  body.className = "body user-body";
   body.textContent = node.userText;
   div.appendChild(body);
 
@@ -1020,6 +1057,10 @@ function renderUserNode(session, node) {
   }
 
   const siblings = node.parentId ? session.nodes[node.parentId]?.childIds || [] : session.rootChildIds || [];
+  const footer = document.createElement("div");
+  footer.className = "msg-footer";
+
+  // Branch switcher (left side)
   if (siblings.length > 1) {
     const idx = siblings.indexOf(node.id);
     const switcher = document.createElement("div");
@@ -1043,8 +1084,25 @@ function renderUserNode(session, node) {
     switcher.appendChild(prevBtn);
     switcher.appendChild(countLabel);
     switcher.appendChild(nextBtn);
-    div.appendChild(switcher);
+    footer.appendChild(switcher);
   }
+
+  // Actions toolbar (copy, edit) — right side
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
+
+  actions.appendChild(createCopyButton(() => node.userText, "light"));
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "edit-msg-btn";
+  editBtn.title = "Edit this message";
+  editBtn.innerHTML = "✎";
+  editBtn.addEventListener("click", () => startEditingNode(node));
+  actions.appendChild(editBtn);
+
+  footer.appendChild(actions);
+  div.appendChild(footer);
 
   logEl.appendChild(div);
 }
@@ -1151,9 +1209,9 @@ function addCopyButtonsToLinks(body) {
 function createCopyButton(getText, variant = "muted") {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = variant === "light" ? "copy-msg-btn light" : "copy-msg-btn";
+  btn.className = variant === "light" ? "msg-copy-btn light" : "msg-copy-btn";
   btn.title = "Copy to clipboard";
-  btn.innerHTML = "⧉";
+  btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
   btn.addEventListener("click", async () => {
     const text = getText();
     if (!text) return;
@@ -1177,13 +1235,53 @@ function createCopyButton(getText, variant = "muted") {
       document.body.removeChild(ta);
     }
     btn.classList.add("copied");
-    btn.innerHTML = "✓";
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
     setTimeout(() => {
       btn.classList.remove("copied");
-      btn.innerHTML = "⧉";
+      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     }, 1200);
   });
   return btn;
+}
+
+function formatTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const opts = { hour: "2-digit", minute: "2-digit" };
+  if (d.toDateString() !== now.toDateString()) {
+    opts.month = "short";
+    opts.day = "numeric";
+  }
+  return d.toLocaleTimeString([], opts);
+}
+
+function addPendingTool(id, name, input) {
+  hideEmptyState();
+  const div = document.createElement("div");
+  div.className = "entry tool pending";
+  if (id) div.id = `tool-${id}`;
+
+  const inner = document.createElement("div");
+  inner.className = "tool-card";
+
+  const headerEl = document.createElement("div");
+  headerEl.className = "tool-card-header";
+  headerEl.innerHTML = toolIcon(name) + '<span class="tool-card-name">' + toolLabel(name) + '</span>';
+  inner.appendChild(headerEl);
+
+  const body = document.createElement("div");
+  body.className = "tool-card-body tool-body";
+  const summary = summarizeInput(name, input);
+  const spinner = document.createElement("span");
+  spinner.className = "spinner-inline";
+  body.appendChild(spinner);
+  body.appendChild(buildToolTextSpan(name, input, summary, summary ? " — running…" : "running…"));
+  inner.appendChild(body);
+
+  div.appendChild(inner);
+  logEl.appendChild(div);
+  scrollToBottomIfNeeded();
 }
 
 function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) {
@@ -1191,28 +1289,48 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
   const div = document.createElement("div");
   div.className = `entry ${kind}`;
 
-  // Copy button only on the user's own message and the actual final answer —
-  // not on intermediate assistant narration bubbles, which are transient
-  // "thinking out loud" text rather than something worth copying on its own.
-  const copyableKind = kind === "user" || kind === "final";
-  if (copyableKind) {
-    const toolbar = document.createElement("div");
-    toolbar.className = kind === "user" ? "user-entry-toolbar" : "entry-toolbar";
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "label";
-    labelSpan.textContent = label;
-    toolbar.appendChild(labelSpan);
-    toolbar.appendChild(createCopyButton(() => text, kind === "user" ? "light" : "muted"));
-    div.appendChild(toolbar);
+  // Avatar + header row
+  const headerRow = document.createElement("div");
+  headerRow.className = "msg-header";
+
+  const avatar = document.createElement("span");
+  if (kind === "user") {
+    avatar.className = "msg-avatar user-avatar";
+    avatar.title = "You";
+    avatar.innerHTML = `
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+        <circle cx="12" cy="7" r="4"/>
+      </svg>`;
   } else {
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "label";
-    labelSpan.textContent = label;
-    div.appendChild(labelSpan);
+    avatar.className = "msg-avatar agent-avatar";
+    avatar.textContent = "T";
+  }
+  headerRow.appendChild(avatar);
+
+  const labelSpan = document.createElement("span");
+  labelSpan.className = "msg-label";
+  if (label) labelSpan.textContent = label;
+  headerRow.appendChild(labelSpan);
+
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(Date.now());
+  headerRow.appendChild(time);
+
+  // Copy button on user messages (light variant)
+  if (kind === "user") {
+    headerRow.appendChild(createCopyButton(() => text, "light"));
+  }
+  // Copy button on all other text entries (assistant/final/error/info)
+  if (kind === "assistant" || kind === "final" || kind === "error" || kind === "info") {
+    headerRow.appendChild(createCopyButton(() => text, "muted"));
   }
 
+  div.appendChild(headerRow);
+
   const body = document.createElement("div");
-  body.className = "body";
+  body.className = kind === "user" ? "body user-body" : "body";
   if (markdown) {
     body.innerHTML = renderMarkdown(text);
     addCopyButtonsToLinks(body);
@@ -1287,59 +1405,35 @@ function buildToolTextSpan(name, input, summaryText, suffix = "") {
   return span;
 }
 
-function addPendingTool(id, name, input) {
-  hideEmptyState();
-  const div = document.createElement("div");
-  div.className = "entry tool pending";
-  if (id) div.id = `tool-${id}`;
-
-  const labelSpan = document.createElement("span");
-  labelSpan.className = "label";
-  labelSpan.textContent = toolIcon(name) + " " + toolLabel(name);
-  div.appendChild(labelSpan);
-
-  const body = document.createElement("div");
-  body.className = "tool-body";
-  const summary = summarizeInput(name, input);
-  const spinner = document.createElement("span");
-  spinner.className = "spinner-inline";
-  body.appendChild(spinner);
-  body.appendChild(buildToolTextSpan(name, input, summary, summary ? " - running…" : "running…"));
-  div.appendChild(body);
-
-  logEl.appendChild(div);
-  scrollToBottomIfNeeded();
-}
-
 function toolIcon(name) {
-  const icons = {
-    read_page: "🔍",
-    click: "🖱️",
-    type_text: "⌨️",
-    select_option: "🔽",
-    fill_form: "📝",
-    press_key: "🎹",
-    hover: "🖐️",
-    wait_for: "⏳",
-    find_in_page: "🔎",
-    drag: "🫳",
-    upload_file: "📎",
-    scroll: "↕️",
-    navigate: "🔗",
-    list_tabs: "🗂️",
-    switch_tab: "↪️",
-    open_tab: "➕",
-    close_tab: "✖️",
-    view_image: "👁️",
-    filter_images: "🖼️",
-    screenshot: "📸",
-    read_tabs: "🗂️",
-    extract_table: "📋",
-    copy_to_clipboard: "📤",
-    read_clipboard: "📥",
-    create_file: "📄",
+  const SVG_ICONS = {
+    read_page: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>',
+    click: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 2v8l-4-2-2 4 6 3 2 6 4-2 1-7z"/></svg>',
+    type_text: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h4M6 14h8"/></svg>',
+    select_option: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>',
+    fill_form: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8M8 16h5"/></svg>',
+    press_key: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="2 12 7 17 13 7"/></svg>',
+    hover: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>',
+    wait_for: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+    find_in_page: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>',
+    scroll: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="8 15 12 19 16 15"/><polyline points="8 9 12 5 16 9"/></svg>',
+    navigate: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    open_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    switch_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>',
+    list_tabs: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>',
+    close_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg>',
+    read_tabs: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>',
+    view_image: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+    screenshot: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="3"/></svg>',
+    copy_to_clipboard: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    read_clipboard: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><path d="M12 15l2 2 4-4"/></svg>',
+    create_file: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    extract_table: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>',
+    upload_file: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+    parallel_investigate: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 12h.01M19 12h.01M12 5h.01M12 19h.01"/></svg>',
+    run_batch: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>',
   };
-  return icons[name] || "⚙️";
+  return SVG_ICONS[name] || '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>';
 }
 
 // User-facing phrasing for each tool name — shown in the status bar and on
@@ -1407,16 +1501,29 @@ function updateToolEntry(id, name, result, input) {
   const text = ok ? summarizeResult(name, result, input) : `Error: ${result?.error || "unknown error"}`;
 
   if (!div) {
-    addEntry(`tool ${ok ? "ok" : "error"}`, `${toolIcon(name)} ${toolLabel(name)}`, text);
+    addEntry(`tool ${ok ? "ok" : "error"}`, "Tab Agent", text);
     return;
   }
 
   div.classList.remove("pending");
   div.classList.add(ok ? "ok" : "error");
-  const body = div.querySelector(".tool-body");
-  if (body) {
-    body.innerHTML = "";
-    body.appendChild(buildToolTextSpan(name, input, text));
+  const inner = div.querySelector(".tool-card");
+  if (inner) {
+    // Replace header with done/error state
+    const header = inner.querySelector(".tool-card-header");
+    if (header) {
+      if (!ok) {
+        header.style.color = "var(--error-text)";
+      }
+    }
+    const body = inner.querySelector(".tool-body");
+    if (body) {
+      body.innerHTML = "";
+      body.appendChild(buildToolTextSpan(name, input, text));
+      if (!ok) {
+        body.style.color = "var(--error-text)";
+      }
+    }
   }
   scrollToBottomIfNeeded();
 }
@@ -2293,15 +2400,6 @@ function resetStreamingText() {
   body.classList.remove("streaming-text");
 }
 
-function showStatus(text, animated = false) {
-  statusText.innerHTML = animated ? `${escapeHtml(text)} ${typingDotsHtml()}` : escapeHtml(text);
-  statusBar.classList.remove("hidden");
-}
-
-function hideStatus() {
-  statusBar.classList.add("hidden");
-}
-
 function setProgressActive(state) {
   topProgress.classList.toggle("active", state);
 }
@@ -2835,7 +2933,6 @@ async function respondToStepLimit(nodeId, doContinue) {
     autoScroll = true;
     activeRunNodeId = nodeId;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
   }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -2921,7 +3018,6 @@ async function respondToSiteGate(nodeId, approve) {
     autoScroll = true;
     activeRunNodeId = nodeId;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
   }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -2946,7 +3042,6 @@ async function submitAnswer(toolUseId, answer) {
   // node the very next event for this session belongs to.
   activeRunNodeId = null;
   setRunning(true);
-  showStatus("Thinking", true);
   showTypingBubble();
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -2978,7 +3073,6 @@ function setRunning(state) {
   if (state) {
     lastRunEventAt = Date.now();
   } else {
-    hideStatus();
     removeTypingBubble();
   }
 }
@@ -3017,7 +3111,6 @@ function declareRunStalled(nodeId, reason) {
 // instantly) before deciding it's actually case (2) and forcing the UI back
 // to normal with an explanation instead of hanging silently.
 function stopCurrentRun() {
-  showStatus("Stopping…");
   const stoppedNodeId = activeRunNodeId;
   chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId }, (res) => {
     if (chrome.runtime.lastError) return; // panel closed/reloaded mid-call — nothing to update
@@ -3144,16 +3237,15 @@ async function compactCurrentSession() {
     addEntry("info", "Info", "No conversation to compact yet.");
     return;
   }
-  const [providerId, modelId] = (modelSelect.value || "").split("::");
-  showStatus("Compacting…", true);
+  const sessionIdAtStart = currentSessionId;
   chrome.runtime.sendMessage({
     type: "COMPACT_SESSION",
-    sessionId: currentSessionId,
-    providerId: providerId || undefined,
-    modelId: modelId || undefined,
+    sessionId: sessionIdAtStart,
   });
-  await waitForCompaction(currentSessionId);
-  hideStatus();
+  await waitForCompaction(sessionIdAtStart);
+  if (currentSessionId !== sessionIdAtStart) {
+    return;
+  }
 }
 
 // Checked at the top of every send — keeps a long-running chat's per-message
@@ -3166,18 +3258,10 @@ async function maybeAutoCompact() {
   const raw = sessions.find((s) => s.id === currentSessionId);
   if (!raw) return;
   const session = migrateSessionIfNeeded(raw);
-  // The active leaf's own usage IS the active context size — each request is
-  // stateless and resends the full history, so its inputTokens already
-  // reflects everything accumulated so far on this path. Summing node.usage
-  // across every node in session.nodes (the old behavior) instead added up
-  // lifetime billed tokens across the whole tree, including dead retry/edit
-  // branches never even sent again - a number that only ever grows and has
-  // nothing to do with how large the next request's context actually is.
   const path = computeActivePath(session);
   const lastNode = path[path.length - 1];
   const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
   if (active <= AUTO_COMPACT_TOKEN_THRESHOLD) return;
-  addEntry("info", "Info", `This chat has grown large (~${Math.round(active / 1000)}k tokens) - compacting automatically before sending to keep costs down.`);
   await compactCurrentSession();
 }
 
@@ -3220,7 +3304,8 @@ function showHelp() {
 // --- send / stop -----------------------------------------------------
 
 async function sendTask() {
-  if (running) return;
+  if (running || sending) return;
+  sending = true;
   hidePopover();
 
   // Sending stops any in-progress dictation right away — abort() (not
@@ -3231,7 +3316,10 @@ async function sendTask() {
   if (listening) recognizer?.abort();
 
   let task = taskInput.value.trim();
-  if (!task && attachments.length === 0) return;
+  if (!task && attachments.length === 0) {
+    sending = false;
+    return;
+  }
 
   // Built-in commands (/clear, /stop, /retry, /compact, /model, /help) never
   // get sent to the model — intercept them here whether typed via the
@@ -3242,6 +3330,7 @@ async function sendTask() {
     const arg = (builtinMatch[2] || "").trim();
     taskInput.value = "";
     autoResize();
+    sending = false;
     runBuiltinCommand(slug, arg);
     return;
   }
@@ -3256,67 +3345,71 @@ async function sendTask() {
     }
   }
 
-  await maybeAutoCompact();
+  try {
+    await maybeAutoCompact();
 
-  const imageAttachments = attachments.filter((a) => a.kind !== "pdf" && a.kind !== "doc");
-  const docAttachments = attachments.filter((a) => a.kind === "pdf" || a.kind === "doc");
+    const imageAttachments = attachments.filter((a) => a.kind !== "pdf" && a.kind !== "doc");
+    const docAttachments = attachments.filter((a) => a.kind === "pdf" || a.kind === "doc");
 
-  // The user's chat bubble stays exactly what they typed — the extracted
-  // text rides separately to the background page, which appends it (chunked,
-  // see lib/attachmentCache.js — nothing is trimmed) to what the MODEL sees
-  // (same "shown to user" vs "sent to model" split already used for the
-  // tab-switch note and the vision-fallback image description).
-  const effectiveTask = task || "Describe / act on the attached file(s).";
-  const outgoingDocAttachments = docAttachments.map((a) => ({
-    id: a.id,
-    name: a.name,
-    format: a.format,
-    text: a.text,
-    pageCount: a.pageCount,
-  }));
+    // The user's chat bubble stays exactly what they typed — the extracted
+    // text rides separately to the background page, which appends it (chunked,
+    // see lib/attachmentCache.js — nothing is trimmed) to what the MODEL sees
+    // (same "shown to user" vs "sent to model" split already used for the
+    // tab-switch note and the vision-fallback image description).
+    const effectiveTask = task || "Describe / act on the attached file(s).";
+    const outgoingDocAttachments = docAttachments.map((a) => ({
+      id: a.id,
+      name: a.name,
+      format: a.format,
+      text: a.text,
+      pageCount: a.pageCount,
+    }));
 
-  const previewUrls = imageAttachments.map((a) => a.previewUrl);
-  const outgoingAttachments = imageAttachments.map((a) => ({ mediaType: a.mediaType, data: a.data, name: a.name }));
-  const docPreviews = docAttachments.map((a) => ({ kind: a.kind, format: a.format, name: a.name, pageCount: a.pageCount }));
+    const previewUrls = imageAttachments.map((a) => a.previewUrl);
+    const outgoingAttachments = imageAttachments.map((a) => ({ mediaType: a.mediaType, data: a.data, name: a.name }));
+    const docPreviews = docAttachments.map((a) => ({ kind: a.kind, format: a.format, name: a.name, pageCount: a.pageCount }));
 
-  const editNodeId = editingNodeId;
-  editingNodeId = null;
-  editBanner.classList.add("hidden");
+    const editNodeId = editingNodeId;
+    editingNodeId = null;
+    editBanner.classList.add("hidden");
 
-  addEntry("user", "You", effectiveTask, false, [...previewUrls, ...docPreviews]);
+    addEntry("user", "", effectiveTask, false, [...previewUrls, ...docPreviews]);
 
-  taskInput.value = "";
-  autoResize();
-  attachments = [];
-  renderAttachments();
+    taskInput.value = "";
+    autoResize();
+    attachments = [];
+    renderAttachments();
 
-  autoScroll = true; // resume auto-follow for this new run
-  // The new (or branched-to) node's id is generated server-side and not
-  // known yet here — null tells the AGENT_EVENT listener to lock onto
-  // whichever node the first event for this session belongs to, instead of
-  // still accepting stray events tagged with a PREVIOUS/abandoned node id
-  // (e.g. a sibling branch this edit just replaced, or an earlier run that
-  // hadn't fully finished stopping yet).
-  activeRunNodeId = null;
-  setRunning(true);
-  showStatus("Thinking", true);
-  showTypingBubble();
+    autoScroll = true; // resume auto-follow for this new run
+    // The new (or branched-to) node's id is generated server-side and not
+    // known yet here — null tells the AGENT_EVENT listener to lock onto
+    // whichever node the first event for this session belongs to, instead of
+    // still accepting stray events tagged with a PREVIOUS/abandoned node id
+    // (e.g. a sibling branch this edit just replaced, or an earlier run that
+    // hadn't fully finished stopping yet).
+    activeRunNodeId = null;
+    setRunning(true);
+    sending = false; // running guard takes over from here
+    showTypingBubble();
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const [providerId, modelId] = (modelSelect.value || "").split("::");
-  chrome.runtime.sendMessage({
-    type: "RUN_TASK",
-    task: effectiveTask,
-    tabId: tab?.id,
-    sessionId: currentSessionId || undefined,
-    editNodeId: editNodeId || undefined,
-    providerId: providerId || undefined,
-    modelId: modelId || undefined,
-    agentId: activeAgent?.id || undefined,
-    stepThrough: stepThroughEnabled,
-    attachments: outgoingAttachments,
-    docAttachments: outgoingDocAttachments,
-  });
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [providerId, modelId] = (modelSelect.value || "").split("::");
+    chrome.runtime.sendMessage({
+      type: "RUN_TASK",
+      task: effectiveTask,
+      tabId: tab?.id,
+      sessionId: currentSessionId || undefined,
+      editNodeId: editNodeId || undefined,
+      providerId: providerId || undefined,
+      modelId: modelId || undefined,
+      agentId: activeAgent?.id || undefined,
+      stepThrough: stepThroughEnabled,
+      attachments: outgoingAttachments,
+      docAttachments: outgoingDocAttachments,
+    });
+  } finally {
+    if (sending) sending = false; // safety net — shouldn't normally reach here
+  }
 }
 
 // --- replay overlay -----------------------------------------------------
@@ -3443,13 +3536,12 @@ stepThroughToggle.addEventListener("click", () => {
 function applyAgentEvent(event, isReplay = false, nodeId = null) {
   switch (event.type) {
     case "user_message":
-      addEntry("user", "You", event.text, false, event.attachmentPreviews || []);
+      addEntry("user", "", event.text, false, event.attachmentPreviews || []);
       break;
 
     case "thinking":
       removeTypingBubble();
       showTypingBubble();
-      if (!isReplay) showStatus("Thinking", true);
       break;
 
     case "assistant_delta":
@@ -3459,7 +3551,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "assistant": {
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       // If this same turn also calls finish, its answer is the authoritative
       // final message and is about to render its own bubble right after this
       // one — showing the model's prose here too would just duplicate it
@@ -3481,7 +3572,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
     }
 
     case "tool_start":
-      if (!isReplay) showStatus(toolLabel(event.name), true);
       break;
 
     case "tool_result":
@@ -3531,31 +3621,26 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "error":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("error", "Error", event.message);
       break;
 
     case "stopped":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("stopped", "Stopped", "Run stopped by user.");
       break;
 
     case "finish":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("final", event.success ? "Done" : "Ended", event.answer, true);
       break;
 
     case "ask_user":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderAskUserCard(event);
       break;
 
     case "step_confirm":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderStepConfirmCard(event);
       break;
 
@@ -3565,7 +3650,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "confirm_continue":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderConfirmContinueCard(event, nodeId);
       break;
 
@@ -3575,7 +3659,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "confirm_site_category":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderConfirmSiteCategoryCard(event, nodeId);
       break;
 
@@ -3637,7 +3720,8 @@ chrome.runtime.onMessage.addListener((msg) => {
     // since navigated away from would silently overwrite currentSessionId
     // to match it, which then makes that type's OWN "is this my chat?"
     // check further down trivially true and yanks the view back to it.
-    if (msg.sessionId) currentSessionId = msg.sessionId;
+    // Similarly, SESSION_COMPACTED is not a run message and must not adopt.
+    if (msg.sessionId && msg.type !== "SESSION_COMPACTED") currentSessionId = msg.sessionId;
   }
 
   if (msg.type === "AGENT_EVENT") {

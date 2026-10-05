@@ -3,6 +3,8 @@
 // an automated macro sequence. Macros are stored as named sequences of
 // { action, target, value } steps that get converted to tool calls on replay.
 
+import { executeTool } from "./agentLoop.js";
+
 const MACROS_KEY = "savedMacros"; // persisted named macros
 
 // --- recording (volatile, per session) ---
@@ -124,7 +126,6 @@ export async function playMacro(macroName, ctx, onEvent) {
     }
     await onEvent({ type: "macro_step", name: toolCall.name, input: toolCall.input, index: completed, total: macro.steps.length });
     try {
-      const { executeTool } = await import("./agentLoop.js");
       const result = await executeTool(ctx, toolCall.name, toolCall.input, `macro-${macroName}-${completed}`);
       await onEvent({ type: "macro_step_result", index: completed, ok: result?.ok, error: result?.error });
       completed++;

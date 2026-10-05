@@ -6,11 +6,8 @@
   <link rel="stylesheet" href="sidepanel.css" />
 </head>
 <body>
-  <header>
-    <!-- No title/logo here on purpose — Chrome's own side panel chrome
-         already shows the extension's name and icon above this page, so a
-         second "Tab Agent" heading here was just a duplicate. -->
-    <div class="header-actions">
+  <div id="toolbar" class="toolbar">
+    <div class="toolbar-actions">
       <button id="themeBtn" class="icon-btn" title="Theme">
         <svg id="themeIconDark" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
@@ -43,28 +40,11 @@
         </svg>
       </button>
     </div>
-  </header>
+  </div>
 
   <div id="topProgress" class="top-progress"><div class="bar"></div></div>
 
   <div id="warningBanner" class="banner hidden"></div>
-
-  <!-- Data-use disclosure — shown once (per PRIVACY_NOTICE_VERSION in
-       sidepanel.js), dismissed and remembered in chrome.storage.local.
-       Kept as a normal, always-visible banner rather than a blocking modal
-       overlay so it doesn't get in the way of an existing chat, but it's
-       still on-screen (not a tooltip/aria-only aside) until the user
-       explicitly dismisses it — see PRIVACY_POLICY.md for the full text
-       this summarizes. -->
-  <div id="privacyNotice" class="privacy-notice hidden" role="status">
-    <p>
-      Tab Agent sends the page content, screenshots, and tab details a task needs to the AI provider you configure
-      in Settings, using your own API key - that data goes directly to your provider, never to Tab Agent's
-      developer. Everything else (your key, chat history, settings) is stored only in your browser.
-      See Settings → Privacy for details.
-    </p>
-    <button id="privacyNoticeDismiss" type="button" class="privacy-notice-dismiss">Got it</button>
-  </div>
 
   <div id="historyPanel" class="history-panel hidden">
     <div class="history-panel-header">
@@ -84,12 +64,8 @@
     <div id="log" class="log" aria-live="polite" aria-atomic="false"></div>
   </main>
 
-  <div id="statusBar" class="status-bar hidden" role="status" aria-live="polite">
-    <span class="spinner"></span>
-    <span id="statusText">Thinking…</span>
-  </div>
-
   <footer>
+    <div id="footerResizeHandle" class="footer-resize-handle" title="Drag to resize"></div>
     <div id="agentPopover" class="agent-popover hidden"></div>
     <div id="editBanner" class="edit-banner hidden">
       <span>✎ Editing a previous message - sending will branch from here</span>
@@ -98,15 +74,6 @@
     <div id="attachmentsRow" class="attachments-row hidden"></div>
 
     <div class="composer">
-      <!-- Persistent (never dismissed) — distinct from #privacyNotice above,
-           which is a one-time banner shown once per PRIVACY_NOTICE_VERSION
-           and then dismissed for good. This stays put right above the input
-           on every message as a standing reminder of where a task's data
-           goes, since a dismiss-once banner easily gets forgotten. -->
-      <div id="composerPrivacyNote" class="composer-privacy-note" title="Page content, screenshots, and tab details a task needs are sent to the AI provider you configure in Settings, using your own API key.">
-        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-        <span>Page data for this task goes to the AI provider you configure in Settings - see Settings → Privacy.</span>
-      </div>
       <div id="composerUsage" class="composer-usage hidden"></div>
       <div id="agentChip" class="agent-chip hidden">
         <span class="agent-chip-icon">🤖</span>

@@ -9,8 +9,8 @@
 // old branch stays intact and reachable while the new one becomes active —
 // like ChatGPT's "edit and regenerate" behavior.
 
-import { runAgentTask, resumeBranch } from "./lib/agentLoop.js";
-import { describeImage, summarizeHistory } from "./lib/providers.js";
+import { runAgentTask, resumeBranch, compactPageContent } from "./lib/agentLoop.js";
+import { describeImage } from "./lib/providers.js";
 import { looksVisionCapable } from "./lib/vision.js";
 import { startMediaSniffer } from "./lib/mediaSniffer.js";
 import { startNavErrorTracking } from "./lib/navErrors.js";
@@ -21,6 +21,7 @@ import { getRecording, deleteRecording } from "./lib/sessionRecorder.js";
 import { deleteSessionState } from "./lib/statePersist.js";
 import { initCustomTools } from "./lib/tools.js";
 import { startRecording, stopRecording, saveMacro, deleteMacro, listMacros, playMacro } from "./lib/macroRecorder.js";
+import { initDownloadCapture } from "./lib/downloadCapture.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
@@ -39,7 +40,6 @@ chrome.runtime.onInstalled.addListener(async () => {
     await chrome.storage.local.set({ agents: [] });
   }
   await initCustomTools();
-  const { initDownloadCapture } = await import("./lib/downloadCapture.js");
   initDownloadCapture();
 });
 
@@ -1261,55 +1261,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return;
       }
 
-      const config = await getConfig(msg.providerId, msg.modelId);
-      if (!config || !config.model) {
-        chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId: msg.sessionId, event: { type: "error", message: "No provider/model configured. Open Settings (⚙)." } });
-        return;
-      }
-
       const beforeTokens = (node.usage?.inputTokens || 0) + (node.usage?.outputTokens || 0);
-      let summary, compactUsage;
-      try {
-        ({ summary, usage: compactUsage } = await summarizeHistory(config, node.cumulativeHistory));
-      } catch (err) {
-        chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId: msg.sessionId, event: { type: "error", message: `Could not compact this chat: ${err.message || err}` } });
+      const collapsed = compactPageContent(node.cumulativeHistory);
+
+      if (!collapsed) {
+        chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId: msg.sessionId, event: { type: "info", message: "No page content to compact." } });
         return;
       }
 
-      // Compacting shrinks the ACTIVE context going forward, but it must
-      // never make the chat's lifetime token total go down — that would
-      // misrepresent money already spent. So before this node's own usage
-      // gets cleared, fold it (plus the summarization call's own cost,
-      // which would otherwise go untracked) into a running ledger on the
-      // session that persists across every future compact too. sidepanel.js
-      // adds this ledger on top of the per-node sum to show "total this
-      // chat", while node.usage below becomes the "active" figure.
+      // Stripped page content was already billed — fold the estimated token
+      // equivalent into the session's lifetime ledger so totals don't drop.
+      const collapsedTokens = Math.ceil(collapsed / 4);
       const carry = session.compactedUsage || { inputTokens: 0, outputTokens: 0 };
-      carry.inputTokens += (node.usage?.inputTokens || 0) + (compactUsage?.inputTokens || 0);
-      carry.outputTokens += (node.usage?.outputTokens || 0) + (compactUsage?.outputTokens || 0);
-      carry.model = node.usage?.model || carry.model;
-      carry.provider = node.usage?.provider || carry.provider;
+      carry.inputTokens += collapsedTokens;
       session.compactedUsage = carry;
 
-      // Collapsed to a clean two-turn exchange, not a partial trim — this
-      // sidesteps the API's tool_use/tool_result pairing requirement
-      // entirely (nothing here is a tool call), so there's no risk of
-      // leaving a dangling tool_use with no matching result.
-      node.cumulativeHistory = [
-        { role: "user", content: [{ type: "text", text: `[Earlier conversation summarized to save context]\n\n${summary}` }] },
-        { role: "assistant", content: [{ type: "text", text: "Got it - I have the summary of our conversation so far and will continue from there." }] },
-      ];
-      // The new "active" context isn't actually empty — it's this short
-      // exchange — so estimate its size (~4 chars/token) rather than
-      // showing 0. This estimate gets replaced by a real measured value the
-      // moment the next message runs, since that turn's own agent run
-      // reports real usage for node.usage as normal.
       const activeEstimate = Math.ceil(JSON.stringify(node.cumulativeHistory).length / 4);
-      node.usage = { inputTokens: activeEstimate, outputTokens: 0, model: config.model, provider: config.provider };
       const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
       const infoEvent = {
         type: "info",
-        message: `📦 Compacted this chat's context${beforeTokens ? ` (~${fmtK(beforeTokens)} → ~${fmtK(activeEstimate)} active tokens)` : ""} to save cost on future messages.`,
+        message: `📦 Compacted page data${beforeTokens ? ` (~${fmtK(beforeTokens)} → ~${fmtK(activeEstimate)} active tokens)` : ""} — conversation intact, agent can re-read pages if needed.`,
       };
       node.uiEvents.push(infoEvent);
       node.updatedAt = Date.now();

@@ -1,56 +1,42 @@
 * { box-sizing: border-box; }
 
 :root {
-  --accent: #4f46e5;
-  --accent-dark: #4338ca;
-  --accent-light: #eef2ff;
-  --accent-rgb: 79, 70, 229;
+  --accent: #0066ff;
+  --accent-dark: #0052cc;
+  --accent-light: rgba(0, 102, 255, 0.08);
+  --accent-rgb: 0, 102, 255;
 
-  --bg: #f7f5f2;
+  --bg: #fafaf9;
   --card: #ffffff;
-  --card-alt: #f4f1ec;
-  --border: #e9e4dc;
-  --border-strong: #ddd6ca;
+  --card-alt: #f5f5f4;
+  --border: #e6e4e0;
+  --border-strong: #d4d2cd;
 
-  --text: #24211d;
-  /* Both darkened slightly from their original values — an audit found
-     text-muted borderline (3.64:1 on --card-alt, below the 4.5:1 body-text
-     bar) and text-faint failing outright (down to 2.34:1, below even the
-     3:1 floor for large/UI text) against both card surfaces. Same hue,
-     just less light, so the faint/muted visual hierarchy is unchanged. */
-  --text-muted: #71695f;
-  --text-faint: #7e766c;
+  --text: #18181b;
+  --text-muted: #737373;
+  --text-faint: #a8a8a3;
 
-  --success-bg: #e8f6ee;
-  --success-border: #c1e6cf;
-  --success-text: #1c6b41;
+  --success-bg: #f0fdf4;
+  --success-border: #b8f0c8;
+  --success-text: #15803d;
 
-  --error-bg: #fdedec;
-  --error-border: #f5c6c1;
-  --error-text: #b23c2e;
+  --error-bg: #fef2f2;
+  --error-border: #fccccc;
+  --error-text: #dc2626;
 
-  --warn-bg: #fff6e6;
-  --warn-border: #f1dcac;
-  --warn-text: #8a5c00;
+  --warn-bg: #fffbeb;
+  --warn-border: #fde68a;
+  --warn-text: #b45309;
 
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --shadow-sm: 0 1px 2px rgba(30, 25, 15, 0.05);
-  --shadow-md: 0 4px 16px rgba(30, 25, 15, 0.08);
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --overlay: rgba(0, 0, 0, 0.55);
 
-  /* Gemini-style multicolor gradient, used for "AI is active" surfaces:
-     header dot, thinking indicator, user bubble, send button, spinner. */
-  --grad-blue: #4285f4;
-  --grad-blue-rgb: 66, 133, 244;
-  --grad-purple: #9b72cb;
-  --grad-purple-rgb: 155, 114, 203;
-  --grad-pink: #d96570;
-  --grad-pink-rgb: 217, 101, 112;
-  --grad-amber: #f9ab00;
-  --grad-amber-rgb: 249, 171, 0;
-  --gradient-brand: linear-gradient(120deg, var(--grad-blue) 0%, var(--grad-purple) 35%, var(--grad-pink) 65%, var(--grad-amber) 100%);
-  --gradient-brand-soft: linear-gradient(120deg, rgba(var(--grad-blue-rgb), 0.16), rgba(var(--grad-purple-rgb), 0.16), rgba(var(--grad-pink-rgb), 0.16), rgba(var(--grad-amber-rgb), 0.16));
+  --accent-gradient: linear-gradient(135deg, #0066ff, #3b82f6);
 }
 
 /* Dark variables shared by both the automatic (system-preference) path and
@@ -64,89 +50,76 @@
    - Manual dark override (dark chosen while system is light): :root[data-theme="dark"] */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
-    --accent: #818cf8;
-    --accent-dark: #a5b4fc;
-    --accent-light: rgba(129, 140, 248, 0.16);
-    --accent-rgb: 129, 140, 248;
+    --accent: #3b82f6;
+    --accent-dark: #60a5fa;
+    --accent-light: rgba(59, 130, 246, 0.15);
+    --accent-rgb: 59, 130, 246;
 
-    --bg: #1c1a17;
-    --card: #26231f;
-    --card-alt: #2c2822;
-    --border: #3a352d;
-    --border-strong: #453f36;
+    --bg: #18181b;
+    --card: #27272a;
+    --card-alt: #2c2c30;
+    --border: #3f3f46;
+    --border-strong: #52525b;
 
-    --text: #ede8e0;
-    --text-muted: #a89d8d;
-    /* Lightened from #746a5c — failed contrast (down to 2.76:1) against
-       both dark-mode card surfaces; text-muted here already passed so it's
-       untouched. */
-    --text-faint: #9d8f7c;
+    --text: #fafafa;
+    --text-muted: #a1a1aa;
+    --text-faint: #7f7f88;
 
-    --success-bg: #16281e;
-    --success-border: #24402f;
-    --success-text: #7cd6a0;
+    --success-bg: #052e16;
+    --success-border: #166534;
+    --success-text: #86efac;
 
-    --error-bg: #2e1a18;
-    --error-border: #4a2622;
-    --error-text: #f0938a;
+    --error-bg: #450a0a;
+    --error-border: #7f1d1d;
+    --error-text: #fca5a5;
 
-    --warn-bg: #2c2311;
-    --warn-border: #493a17;
-    --warn-text: #f0c876;
+    --warn-bg: #451a03;
+    --warn-border: #78350f;
+    --warn-text: #fde047;
 
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
-    --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+    --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --overlay: rgba(0, 0, 0, 0.6);
 
-    --grad-blue: #7bb0ff;
-    --grad-blue-rgb: 123, 176, 255;
-    --grad-purple: #c9a4ee;
-    --grad-purple-rgb: 201, 164, 238;
-    --grad-pink: #ff97a3;
-    --grad-pink-rgb: 255, 151, 163;
-    --grad-amber: #ffcf6b;
-    --grad-amber-rgb: 255, 207, 107;
+    --accent-gradient: linear-gradient(135deg, #3b82f6, #60a5fa);
   }
 }
 
 :root[data-theme="dark"] {
-  --accent: #818cf8;
-  --accent-dark: #a5b4fc;
-  --accent-light: rgba(129, 140, 248, 0.16);
-  --accent-rgb: 129, 140, 248;
+  --accent: #3b82f6;
+  --accent-dark: #60a5fa;
+  --accent-light: rgba(59, 130, 246, 0.15);
+  --accent-rgb: 59, 130, 246;
 
-  --bg: #1c1a17;
-  --card: #26231f;
-  --card-alt: #2c2822;
-  --border: #3a352d;
-  --border-strong: #453f36;
+  --bg: #18181b;
+  --card: #27272a;
+  --card-alt: #2c2c30;
+  --border: #3f3f46;
+  --border-strong: #52525b;
 
-  --text: #ede8e0;
-  --text-muted: #a89d8d;
-  --text-faint: #9d8f7c;
+  --text: #fafafa;
+  --text-muted: #a1a1aa;
+  --text-faint: #7f7f88;
 
-  --success-bg: #16281e;
-  --success-border: #24402f;
-  --success-text: #7cd6a0;
+  --success-bg: #052e16;
+  --success-border: #166534;
+  --success-text: #86efac;
 
-  --error-bg: #2e1a18;
-  --error-border: #4a2622;
-  --error-text: #f0938a;
+  --error-bg: #450a0a;
+  --error-border: #7f1d1d;
+  --error-text: #fca5a5;
 
-  --warn-bg: #2c2311;
-  --warn-border: #493a17;
-  --warn-text: #f0c876;
+  --warn-bg: #451a03;
+  --warn-border: #78350f;
+  --warn-text: #fde047;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --overlay: rgba(0, 0, 0, 0.6);
 
-  --grad-blue: #7bb0ff;
-  --grad-blue-rgb: 123, 176, 255;
-  --grad-purple: #c9a4ee;
-  --grad-purple-rgb: 201, 164, 238;
-  --grad-pink: #ff97a3;
-  --grad-pink-rgb: 255, 151, 163;
-  --grad-amber: #ffcf6b;
-  --grad-amber-rgb: 255, 207, 107;
+  --accent-gradient: linear-gradient(135deg, #3b82f6, #60a5fa);
 }
 
 html, body { height: 100%; }
@@ -214,31 +187,26 @@ textarea:focus-visible,
   }
 }
 
-/* --- header ------------------------------------------------------- */
+/* --- toolbar (icon row under Chrome's native header) ----------------- */
 
-header {
+.toolbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end; /* was space-between, back when a title lived on the left */
-  padding: 11px 14px;
-  /* No border/background here on purpose — Chrome's own side panel bar sits
-     directly above this, so keeping our bar visually flush with the page
-     background (instead of a distinct --card surface with its own border)
-     makes the two read as one continuous strip rather than a second header. */
-  background: transparent;
+  justify-content: flex-end;
+  padding: 4px 10px;
   flex-shrink: 0;
   position: relative;
   z-index: 3;
 }
 
-.header-actions { display: flex; align-items: center; gap: 2px; }
+.toolbar-actions { display: flex; align-items: center; gap: 2px; }
 
 .icon-btn {
   background: none;
   border: none;
   cursor: pointer;
   color: var(--text-muted);
-  padding: 6px;
+  padding: 5px;
   border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
@@ -264,7 +232,7 @@ header {
 .top-progress .bar {
   height: 100%;
   width: 100%;
-  background: var(--gradient-brand);
+  background: var(--accent-gradient);
   background-size: 300% 100%;
   opacity: 0;
 }
@@ -289,39 +257,6 @@ header {
   flex-shrink: 0;
 }
 .banner.hidden { display: none; }
-
-/* --- privacy/data-use notice ------------------------------------------ */
-
-.privacy-notice {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
-  padding: 8px 12px;
-  flex-shrink: 0;
-}
-.privacy-notice.hidden { display: none; }
-.privacy-notice p {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--text);
-  opacity: 0.8;
-  flex: 1;
-}
-.privacy-notice-dismiss {
-  flex: 0 0 auto;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.privacy-notice-dismiss:hover { opacity: 0.9; }
 
 /* --- history panel --------------------------------------------------- */
 
@@ -444,16 +379,13 @@ main {
 }
 .empty-state.hidden { display: none; }
 
-.log { display: flex; flex-direction: column; gap: 10px; }
+.log { display: flex; flex-direction: column; gap: 6px; }
+
+/* --- Shared message styles (user + assistant) ----------------------- */
 
 .entry {
-  border-radius: var(--radius-md);
-  padding: 9px 12px;
-  line-height: 1.5;
-  font-size: 12.5px;
-  word-break: break-word;
-  max-width: 92%;
   animation: tabagent-rise 0.16s ease-out;
+  max-width: 92%;
 }
 
 @keyframes tabagent-rise {
@@ -461,87 +393,117 @@ main {
   to { opacity: 1; transform: translateY(0); }
 }
 
-.entry.user {
+/* Header row shared by user & agent messages */
+.msg-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.msg-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.user-avatar {
   background: var(--accent);
   color: #fff;
-  align-self: flex-end;
-  white-space: pre-wrap;
-  border-bottom-right-radius: 4px;
-  box-shadow: var(--shadow-sm);
 }
-.entry.user .label { color: rgba(255,255,255,0.75); }
 
-.user-entry-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.user-entry-actions { display: flex; align-items: center; gap: 4px; }
-.edit-msg-btn {
-  background: rgba(255,255,255,0.16);
-  border: none;
-  color: #fff;
-  border-radius: 6px;
-  font-size: 10.5px;
-  padding: 2px 6px;
-  cursor: pointer;
-  opacity: 0.8;
-  line-height: 1.4;
-  transition: background 0.15s, opacity 0.15s;
+.agent-avatar {
+  background: var(--text);
+  color: var(--bg);
 }
-.edit-msg-btn:hover { opacity: 1; background: rgba(255,255,255,0.28); }
 
-/* Copy button — shared by user bubbles (.light variant, white-on-accent,
-   same visual family as .edit-msg-btn beside it) and assistant/final
-   bubbles (default/muted variant, matching .icon-btn's tone). */
-.copy-msg-btn {
-  background: none;
-  border: none;
-  color: var(--text-faint);
-  border-radius: 6px;
+.msg-label {
   font-size: 11px;
-  padding: 2px 6px;
-  cursor: pointer;
-  opacity: 0.75;
-  line-height: 1.4;
-  transition: background 0.15s, opacity 0.15s, color 0.15s;
+  font-weight: 600;
+  color: var(--text);
 }
-.copy-msg-btn:hover { opacity: 1; background: var(--card-alt); color: var(--text); }
 
-/* Per-link copy button injected after every rendered link in a markdown
-   body (see addCopyButtonsToLinks in sidepanel.js) — same button, just
-   inline-sized and vertically centered against the surrounding text/code
-   instead of sitting in its own toolbar row. */
-.link-copy-btn {
-  font-size: 9.5px;
-  padding: 1px 4px;
-  margin-left: 3px;
-  vertical-align: middle;
+.msg-time {
+  font-size: 10px;
+  color: var(--text-faint);
+  margin-left: auto;
 }
-.copy-msg-btn.copied { opacity: 1; color: var(--success-text); }
-.copy-msg-btn.light {
-  background: rgba(255,255,255,0.16);
-  color: #fff;
-  font-size: 10.5px;
-  opacity: 0.8;
-}
-.copy-msg-btn.light:hover { opacity: 1; background: rgba(255,255,255,0.28); color: #fff; }
-.copy-msg-btn.light.copied { opacity: 1; color: #fff; background: rgba(255,255,255,0.32); }
 
-/* Assistant/final bubble toolbar — label on the left, copy button on the
-   right, same row shape as .user-entry-toolbar but themed for a light card
-   background instead of the accent-colored user bubble. */
-.entry-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-
-.branch-switcher {
+.msg-actions {
   display: flex;
   align-items: center;
   gap: 4px;
   margin-top: 6px;
-  justify-content: flex-end;
-  font-size: 10.5px;
-  color: rgba(255,255,255,0.85);
+  opacity: 0;
+  transition: opacity 0.12s;
 }
-.branch-switcher button {
-  background: rgba(255,255,255,0.16);
+
+.entry:hover .msg-actions {
+  opacity: 1;
+}
+
+.msg-copy-btn {
+  background: none;
   border: none;
-  color: #fff;
+  cursor: pointer;
+  color: var(--text-faint);
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, background 0.12s;
+}
+
+.msg-copy-btn:hover { color: var(--text); background: var(--card-alt); }
+
+/* --- User message --------------------------------------------------- */
+
+.entry.user {
+  background: var(--card-alt);
+  color: var(--text);
+  align-self: flex-end;
+  padding: 9px 12px;
+  border-radius: var(--radius-md) var(--radius-md) 4px var(--radius-md);
+  line-height: 1.5;
+  font-size: 12.5px;
+  word-break: break-word;
+  white-space: pre-wrap;
+  box-shadow: var(--shadow-sm);
+  max-width: 85%;
+  border: 1px solid var(--border);
+}
+
+.entry.user .msg-header { margin-bottom: 2px; }
+
+.entry.user .msg-label { color: var(--text-muted); }
+
+.entry.user .msg-time { color: var(--text-faint); }
+
+.entry.user .body {
+  word-break: break-word;
+}
+
+.user-body { white-space: pre-wrap; }
+
+.entry.user .branch-switcher {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+}
+
+.entry.user .branch-switcher button {
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
   border-radius: 5px;
   width: 16px;
   height: 16px;
@@ -552,48 +514,139 @@ main {
   justify-content: center;
   padding: 0;
 }
-.branch-switcher button:hover:not(:disabled) { background: rgba(255,255,255,0.3); }
-.branch-switcher button:disabled { opacity: 0.35; cursor: default; }
+
+.entry.user .branch-switcher button:hover:not(:disabled) { background: var(--border); }
+.entry.user .branch-switcher button:disabled { opacity: 0.35; cursor: default; }
+
+/* Footer row: branch switcher left, actions right */
+.entry.user .msg-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 6px;
+  min-height: 20px;
+}
+
+.entry.user .msg-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 0;
+  margin-left: auto;
+  opacity: 1;
+}
+
+.entry.user .msg-copy-btn { color: var(--text-faint); }
+.entry.user .msg-copy-btn:hover { color: var(--text); background: var(--card-alt); }
+
+.edit-msg-btn {
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 6px;
+  font-size: 10.5px;
+  padding: 2px 6px;
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background 0.15s, color 0.15s;
+}
+
+.edit-msg-btn:hover { color: var(--text); background: var(--border); }
+
+/* --- Assistant / final message -------------------------------------- */
 
 .entry.assistant {
+  align-self: flex-start;
   background: var(--card);
   border: 1px solid var(--border);
-  align-self: flex-start;
-  border-bottom-left-radius: 4px;
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-md) var(--radius-md) var(--radius-md) 4px;
+  padding: 9px 12px;
   box-shadow: var(--shadow-sm);
 }
 
+.entry.assistant .body, .entry.final .body {
+  line-height: 1.5;
+  font-size: 12.5px;
+  word-break: break-word;
+}
+
 .entry.assistant.typing { padding: 11px 14px; }
+.entry.assistant.typing .body { padding: 0; }
+
+.entry.assistant .msg-header { margin-bottom: 2px; }
+.entry.assistant .msg-avatar { background: var(--text); color: #fff; }
+.entry.assistant .msg-label { font-weight: 600; font-size: 11px; margin: 0; color: var(--text); }
+.entry.assistant .msg-time { color: var(--text-faint); }
+
+/* --- Tool card (agent's tool calls) --------------------------------- */
 
 .entry.tool {
-  background: var(--card-alt);
-  color: var(--text-muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  white-space: pre-wrap;
-  word-break: break-word;
   align-self: flex-start;
-  border-radius: var(--radius-sm);
-  padding: 6px 10px;
   max-width: 96%;
 }
-.entry.tool.pending {
-  color: var(--warn-text);
-  /* Same moving-gradient technique as .top-progress .bar (see
-     tabagent-progress-pulse below) — soft/translucent here since this sits
-     under readable text, not a bare 2px bar. */
-  background: var(--gradient-brand-soft), var(--card-alt);
+
+.tool-card {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--card-alt);
+  overflow: hidden;
+}
+
+.entry.tool.pending .tool-card {
+  background: var(--accent-light), var(--card-alt);
   background-size: 300% 100%;
   animation: tabagent-progress-pulse 1.7s ease-in-out infinite;
 }
-.entry.tool.ok { color: var(--success-text); background: var(--success-bg); }
-.entry.tool.error { color: var(--error-text); background: var(--error-bg); }
+
+.entry.tool.ok .tool-card {
+  border-left-color: var(--success-text);
+  background: var(--success-bg);
+}
+
+.entry.tool.error .tool-card {
+  border-left-color: var(--error-text);
+  background: var(--error-bg);
+}
+
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  background: var(--card-alt);
+  border-bottom: 1px solid var(--border);
+}
+
+.entry.tool.ok .tool-card-header { color: var(--success-text); }
+.entry.tool.error .tool-card-header { color: var(--error-text); }
+
+.tool-card-name { color: inherit; }
+
+.tool-card-body {
+  padding: 6px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.entry.tool.ok .tool-card-body { color: var(--success-text); }
+.entry.tool.error .tool-card-body { color: var(--error-text); }
 
 /* Inline link for navigate/open_tab steps — same font as the surrounding
-   .tool-text (inherited), just colored and underlined like a link. Focusing/
-   focus-error mirror the feedback states already used by .tab-row/
-   .branch-row-view for the same reopen-a-tab action (see reopenTab in
-   sidepanel.js). */
+   .tool-card-body (inherited), just colored and underlined like a link. */
 .tool-link {
   font: inherit;
   color: var(--accent-dark);
@@ -613,36 +666,45 @@ main {
 .entry.error {
   background: var(--error-bg);
   color: var(--error-text);
-  white-space: pre-wrap;
   align-self: flex-start;
   border: 1px solid var(--error-border);
+  border-left: 2px solid var(--error-text);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
 }
-.entry.final {
-  background: var(--success-bg);
-  border: 1px solid var(--success-border);
-  color: var(--success-text);
+.entry.error .msg-header { margin-bottom: 2px; }
+.entry.error .msg-label { font-weight: 600; font-size: 11px; margin: 0; }
+.entry.error .msg-time { color: var(--text-faint); }
+
+.entry.info {
   align-self: flex-start;
+  background: var(--card-alt);
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-light);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
 }
+.entry.info .msg-header { margin-bottom: 2px; }
+.entry.info .msg-label { color: var(--text-muted); font-size: 10.5px; font-weight: 600; }
+.entry.info .msg-time { color: var(--text-faint); }
+.entry.info .body { color: var(--text); white-space: pre-wrap; word-break: break-word; }
+
 .entry.stopped {
   background: var(--card-alt);
   color: var(--text-muted);
   font-style: italic;
   align-self: flex-start;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
 }
+.entry.stopped .msg-header { margin-bottom: 2px; }
 
-.entry .label {
-  font-weight: 650;
-  display: block;
-  margin-bottom: 3px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  opacity: 0.55;
-}
-
-.tool-body { display: flex; align-items: center; gap: 6px; }
-
-/* Rendered markdown inside assistant/final entries */
+/* Rendered markdown inside assistant/final entries
+   (background/border/radius defined above on .entry.assistant / .entry.final) */
 .entry.assistant .body, .entry.final .body { white-space: normal; }
 .entry.assistant .body p, .entry.final .body p { margin: 0 0 8px; }
 .entry.assistant .body p:last-child, .entry.final .body p:last-child { margin-bottom: 0; }
@@ -725,7 +787,7 @@ main {
   object-fit: cover;
   margin-top: 6px;
   margin-right: 6px;
-  border: 1px solid rgba(255,255,255,0.4);
+  border: 1px solid var(--border);
 }
 
 .entry .attachment-doc-thumb {
@@ -737,8 +799,8 @@ main {
   border-radius: 8px;
   margin-top: 6px;
   margin-right: 6px;
-  background: rgba(255,255,255,0.12);
-  border: 1px solid rgba(255,255,255,0.3);
+  background: var(--card-alt);
+  border: 1px solid var(--border);
   max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
@@ -753,9 +815,9 @@ main {
   opacity: 0.55;
   animation: tabagent-bounce 1.1s ease-in-out infinite;
 }
-.dots span:nth-child(1) { background: var(--grad-blue); }
-.dots span:nth-child(2) { background: var(--grad-purple); animation-delay: 0.15s; }
-.dots span:nth-child(3) { background: var(--grad-pink); animation-delay: 0.3s; }
+.dots span:nth-child(1) { background: var(--accent); }
+.dots span:nth-child(2) { background: var(--accent); animation-delay: 0.15s; }
+.dots span:nth-child(3) { background: var(--accent); animation-delay: 0.3s; }
 
 @keyframes tabagent-bounce {
   0%, 60%, 100% { opacity: 0.35; transform: translateY(0); }
@@ -769,14 +831,6 @@ main {
   color: var(--text);
   white-space: normal;
   word-break: break-word;
-}
-
-.entry.info {
-  background: var(--card-alt);
-  color: var(--text-muted);
-  font-size: 11.5px;
-  align-self: flex-start;
-  border: 1px solid var(--border);
 }
 
 /* --- ask_user inline forms ------------------------------------------ */
@@ -847,8 +901,8 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  background: var(--gradient-brand-soft);
-  border: 1px solid rgba(var(--grad-purple-rgb), 0.3);
+  background: var(--accent-light);
+  border: 1px solid rgba(var(--accent-rgb), 0.3);
   border-radius: 999px;
   padding: 3px 6px 3px 10px;
   font-size: 11.5px;
@@ -859,7 +913,7 @@ main {
 .agent-chip.hidden { display: none; }
 .agent-chip-icon { font-size: 12px; }
 #agentChipName {
-  background: var(--gradient-brand);
+  background: var(--accent-gradient);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -867,14 +921,14 @@ main {
 .agent-chip-clear {
   background: none;
   border: none;
-  color: var(--grad-purple);
+  color: var(--accent);
   cursor: pointer;
   font-size: 10px;
   padding: 3px 5px;
   border-radius: 50%;
   opacity: 0.7;
 }
-.agent-chip-clear:hover { opacity: 1; background: rgba(var(--grad-purple-rgb), 0.18); }
+.agent-chip-clear:hover { opacity: 1; background: rgba(var(--accent-rgb), 0.18); }
 
 .agent-popover {
   position: absolute;
@@ -1139,13 +1193,13 @@ main {
   font-weight: 650;
   padding: 3px 8px;
   border-radius: 999px;
-  border: 1px solid rgba(var(--grad-purple-rgb), 0.35);
-  background: var(--gradient-brand-soft);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+  background: var(--accent-light);
   color: var(--text);
   cursor: pointer;
   transition: border-color 0.15s, opacity 0.15s;
 }
-.branch-row-resume:hover { border-color: var(--grad-purple); }
+.branch-row-resume:hover { border-color: var(--accent); }
 .branch-row-resume:disabled { opacity: 0.55; cursor: default; }
 .branch-row-resume.hidden { display: none; }
 
@@ -1223,13 +1277,13 @@ main {
    .entry.tool.pending, applied to the row background instead of the whole
    entry so several rows can each show their own independent sweep. */
 .branch-row.active, .entry.batch-card.active .batch-card-main {
-  background: var(--gradient-brand-soft), var(--card);
+  background: var(--accent-light), var(--card);
   background-size: 300% 100%;
   animation: tabagent-progress-pulse 1.7s ease-in-out infinite;
 }
 .branch-row.active .branch-row-dot, .entry.batch-card.active .branch-row-dot {
-  background: var(--gradient-brand);
-  box-shadow: 0 0 0 3px rgba(var(--grad-purple-rgb), 0.18);
+  background: var(--accent-gradient);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18);
 }
 .branch-row.active .branch-row-caption { color: var(--text); }
 
@@ -1273,39 +1327,52 @@ main {
 .entry.batch-card.skipped .branch-row-dot { background: var(--text-faint); }
 .entry.batch-card.skipped .batch-card-caption { color: var(--text-faint); font-style: italic; }
 
-/* --- status bar --------------------------------------------------------- */
+/* --- composer ------------------------------------------------------- */
 
-.status-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 16px;
-  font-size: 12px;
-  color: var(--warn-text);
-  background: var(--warn-bg);
-  border-top: 1px solid var(--warn-border);
-  flex-shrink: 0;
-}
-.status-bar.hidden { display: none; }
-
-.spinner, .spinner-inline {
+/* Inline spinner used inside tool cards */
+.spinner-inline {
   display: inline-block;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
-  background: conic-gradient(from 0deg, var(--grad-blue), var(--grad-purple), var(--grad-pink), var(--grad-amber), var(--grad-blue));
+  background: conic-gradient(from 0deg, var(--accent), var(--accent), var(--accent), var(--accent), var(--accent));
   -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
   mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
   animation: tabagent-spin 0.85s linear infinite;
   flex-shrink: 0;
 }
-.spinner-inline { width: 10px; height: 10px; }
 
 @keyframes tabagent-spin {
   to { transform: rotate(360deg); }
 }
 
-/* --- composer ------------------------------------------------------- */
+/* Resize handle for the footer — draggable strip across the full width */
+.footer-resize-handle {
+  position: absolute;
+  top: -3px;
+  left: 0;
+  right: 0;
+  height: 5px;
+  cursor: ns-resize;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.footer-resize-handle::after {
+  content: "";
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  opacity: 0.3;
+  transition: opacity 0.12s;
+}
+.footer-resize-handle:hover::after,
+.footer-resize-handle:active::after {
+  opacity: 0.7;
+  background: var(--accent);
+}
 
 footer {
   border-top: 1px solid var(--border);
@@ -1316,6 +1383,9 @@ footer {
   gap: 8px;
   flex-shrink: 0;
   position: relative;
+  min-height: 80px;
+  max-height: 70vh;
+  overflow: hidden;
 }
 
 .edit-banner {
@@ -1359,7 +1429,7 @@ footer {
   position: absolute;
   top: 0; right: 0;
   width: 16px; height: 16px;
-  background: rgba(0,0,0,0.6);
+  background: var(--overlay);
   color: #fff;
   border: none;
   border-radius: 0 0 0 6px;
@@ -1390,11 +1460,17 @@ footer {
 
 .composer {
   border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg);
+  border-radius: var(--radius-md);
+  background: var(--card);
   padding: 8px 10px 6px;
-  transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.12s, box-shadow 0.12s;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
 }
+
 .composer-usage {
   font-size: 10.5px;
   color: var(--text-faint);
@@ -1403,31 +1479,33 @@ footer {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
 }
+
 .composer-usage.hidden { display: none; }
 
-/* Persistent (never dismissed) privacy line above the input — see the HTML
-   comment above #composerPrivacyNote for how this differs from the one-time
-   #privacyNotice banner higher up the panel. Kept small/muted so it doesn't
-   compete with the actual composer on every single use. */
-.composer-privacy-note {
-  font-size: 10px;
-  line-height: 1.35;
-  color: var(--text-faint);
-  padding: 0 2px 6px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: flex-start;
+/* Context ring — SVG circular progress showing active context usage */
+.context-ring-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
   gap: 5px;
+  color: var(--text-faint);
+  transition: color 0.12s;
 }
-.composer-privacy-note svg { flex: none; margin-top: 1.5px; opacity: 0.8; }
+.context-ring-btn:hover { color: var(--text); }
+.context-ring-btn svg { display: block; }
+.context-ring-bg { fill: none; stroke: var(--border); stroke-width: 2.5; }
+.context-ring-fg { fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; transform: rotate(-90deg); transform-origin: 50% 50%; }
+.context-ring-label { font-size: 10px; color: inherit; }
+.context-ring-label strong { font-weight: 600; }
 
 .composer:focus-within {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-light);
-  background: var(--card);
 }
 
 textarea#taskInput {
@@ -1439,10 +1517,12 @@ textarea#taskInput {
   padding: 4px 4px 6px;
   border: none;
   background: transparent;
-  max-height: 140px;
   overflow-y: auto;
   display: block;
+  flex: 1;
+  min-height: 20px;
 }
+
 textarea#taskInput::placeholder { color: var(--text-faint); }
 textarea#taskInput:focus { outline: none; }
 textarea#taskInput:disabled { opacity: 0.6; }
@@ -1669,7 +1749,7 @@ button.step-through-toggle.active {
   font-size: 9px;
   line-height: 1;
   padding: 1px 3px;
-  background: rgba(0,0,0,0.55);
+  background: var(--overlay);
   color: #fff;
   white-space: nowrap;
   overflow: hidden;
@@ -1683,7 +1763,7 @@ button.step-through-toggle.active {
   align-items: center;
   justify-content: center;
   overflow: auto;
-  background: #eeece8;
+  background: var(--card-alt);
   min-height: 0;
 }
 .replay-screenshot img {
