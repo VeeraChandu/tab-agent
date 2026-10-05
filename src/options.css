@@ -116,6 +116,24 @@ label > input, label > select, label > textarea { display: block; margin-top: 4p
    38px toggle into one that fills the entire remaining row width. */
 .field-row > label:not(.switch) { flex: 1; min-width: 200px; }
 
+.field-label { font-size: 12.5px; font-weight: 600; margin: 12px 0 6px; }
+
+.instructions-textarea {
+  width: 100%;
+  min-height: 140px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.6;
+  background: var(--card);
+  color: var(--text);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.instructions-textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+
 /* A single on/off row (label text left, control right on the same line) —
    used instead of a plain checkbox for the page-recall enable toggle. Not a
    <label class="field-row"> like the numeric fields above, specifically to

@@ -1729,7 +1729,7 @@ function subAgentToolNames(allowTabTools) {
   return [...SUB_AGENT_ALLOWED_TOOLS, ...(allowTabTools ? TAB_TOOLS : [])];
 }
 
-function subAgentSystemPrompt(objective, roleDescription, allowTabTools = false) {
+function subAgentSystemPrompt(objective, roleDescription, allowTabTools = false, customInstructions = "") {
   const toolsList = `${subAgentToolNames(allowTabTools).join(", ")}, and finish`;
   const tabToolsGuidance = allowTabTools
     ? `If you've applied filters/search on a listing page and now need to check several individual results one at a ` +
@@ -1741,7 +1741,7 @@ function subAgentSystemPrompt(objective, roleDescription, allowTabTools = false)
       `tab's own listing page away from its filtered state just to peek at one result. `
     : `Stay on this one tab for the whole task — navigate within it as needed rather than opening new tabs. `;
   return (
-    `${buildSystemPrompt(null)}\n\n---\n${roleDescription} Your objective for this specific tab is:\n\n"${objective}"\n\n` +
+    `${buildSystemPrompt(null, customInstructions)}\n\n---\n${roleDescription} Your objective for this specific tab is:\n\n"${objective}"\n\n` +
     `Tools available to you here: ${toolsList}. ask_user and screenshot are NOT available in this context — there is ` +
     `nobody to answer a question and this tab may not be visible. If you need information only a person could give ` +
     `you, or hit something that looks risky/hard-to-undo (the click tool will refuse those automatically), stop and ` +
@@ -2083,7 +2083,8 @@ async function runOneBranch(ctx, task, label, config, callId) {
   const system = subAgentSystemPrompt(
     task.objective,
     "You are one of several independent, parallel investigations running as part of a larger task — you only see this one tab.",
-    true
+    true,
+    ctx.customInstructions
   );
 
   const branchMaxSteps = Math.max(1, ctx.limits?.branchMaxSteps || DEFAULT_LIMITS.branchMaxSteps);
@@ -2242,6 +2243,7 @@ export async function resumeBranch({
   sessionId,
   pageCacheConfig,
   turnIndex,
+  customInstructions,
 }) {
   if (onEvent) onEvent({ type: "branch_active", callId, label, tabId, url });
 
@@ -2272,7 +2274,8 @@ export async function resumeBranch({
   const system = subAgentSystemPrompt(
     `Continue this investigation — an earlier attempt ran out of steps before finishing: ${objective}\n\nStart by reading the current page to see what's already been found or done, then keep going. Don't redo work that's already visible on the page.`,
     "You are resuming one branch of a larger multi-source investigation — you only see this one tab.",
-    true
+    true,
+    customInstructions
   );
 
   const branchMaxSteps = Math.max(1, limits?.branchMaxSteps || DEFAULT_LIMITS.branchMaxSteps);
@@ -2508,7 +2511,9 @@ async function runBatch(ctx, input, callId) {
 
   const system = subAgentSystemPrompt(
     objective,
-    "You are running a focused, repetitive batch task on the tab the user is already looking at — stay on this tab (navigate within it as needed) rather than opening new ones."
+    "You are running a focused, repetitive batch task on the tab the user is already looking at — stay on this tab (navigate within it as needed) rather than opening new ones.",
+    false,
+    ctx.customInstructions
   );
 
   const stepCaptions = [];
@@ -3291,19 +3296,26 @@ export async function runAgentTask({
   pageCacheConfig,
   trustedInputEnabled,
   stepThrough,
+  customInstructions,
 }) {
   // Ensure custom tools are loaded (MV3 may wake without onInstalled firing)
   await initCustomTools();
 
-  const system = buildSystemPrompt(agentContext);
+  // Load persistent custom instructions from storage, then prefer a per-chat
+  // override if provided (side panel's instructions popover takes precedence).
+  const { customInstructions: storedInstructions = "" } = await chrome.storage.local.get(["customInstructions"]);
+  const effectiveInstructions = customInstructions || storedInstructions;
+
+  const system = buildSystemPrompt(agentContext, effectiveInstructions);
   const granted = grantedDomains || new Set();
   const effectiveLimits = { ...DEFAULT_LIMITS, ...(limits || {}) };
   const maxSteps = Math.max(1, effectiveLimits.mainMaxSteps || MAX_STEPS);
   // mutable — switch_tab/open_tab update ctx.tabId in place. config/onEvent/
-  // shouldStop/limits ride along here too so parallel_investigate/run_batch
-  // (which only receive ctx, not the full runAgentTask arg list) can reach
-  // the model config, report live progress, honor Stop, and read the
-  // configured caps without needing their own separate plumbing.
+  // shouldStop/limits/customInstructions ride along here too so
+  // parallel_investigate/run_batch (which only receive ctx, not the full
+  // runAgentTask arg list) can reach the model config, report live progress,
+  // honor Stop, read the configured caps, and use the user's persistent
+  // instructions without needing their own separate plumbing.
   // shouldSkipSubtasks/resetSkipSubtasks are ONLY ever read by branchCtx/
   // batchCtx (via runOneBranch/resumeBranch/runBatch) — the main loop below
   // never calls them, which is exactly what keeps "skip subtasks" scoped to
@@ -3374,6 +3386,10 @@ export async function runAgentTask({
     // calls in the tool-result loop don't try to record before the index
     // is initialized.
     _recordingStarted: false,
+    // Persistent custom instructions from Settings → Instructions, passed to
+    // sub-agent system prompts (the main loop's system prompt is built above
+    // directly with effectiveInstructions).
+    customInstructions: effectiveInstructions,
   };
   let history;
 

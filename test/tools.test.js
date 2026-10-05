@@ -32,7 +32,7 @@ describe("TOOLS schema", () => {
 
 describe("buildSystemPrompt", () => {
   test("starts with the base SYSTEM_PROMPT and stamps today's date when there is no agent context", () => {
-    for (const result of [buildSystemPrompt(undefined), buildSystemPrompt(null)]) {
+    for (const result of [buildSystemPrompt(undefined), buildSystemPrompt(null), buildSystemPrompt(null, "")]) {
       expect(result.startsWith(SYSTEM_PROMPT)).toBe(true);
       expect(result).toMatch(/Today's date is/);
     }
@@ -43,5 +43,27 @@ describe("buildSystemPrompt", () => {
     expect(result.startsWith(SYSTEM_PROMPT)).toBe(true);
     expect(result).toContain('running as the "Test Agent" agent');
     expect(result).toContain("Only ever answer in haiku.");
+  });
+
+  test("appends custom instructions section without agent context", () => {
+    const result = buildSystemPrompt(null, "Always include source links.");
+    expect(result).toContain("## Custom instructions");
+    expect(result).toContain("Always include source links.");
+  });
+
+  test("appends custom instructions after agent context when both are given", () => {
+    const result = buildSystemPrompt({ name: "Agent X" }, "Be concise.");
+    expect(result).toContain('running as the "Agent X" agent');
+    expect(result).toContain("## Custom instructions");
+    expect(result).toContain("Be concise.");
+    // Custom instructions should come after the agent section
+    const agentIdx = result.indexOf("Agent X");
+    const customIdx = result.indexOf("## Custom instructions");
+    expect(customIdx).toBeGreaterThan(agentIdx);
+  });
+
+  test("omits custom instructions section when empty", () => {
+    const result = buildSystemPrompt({ name: "Agent X" });
+    expect(result).not.toContain("## Custom instructions");
   });
 });
