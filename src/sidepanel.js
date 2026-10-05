@@ -18,8 +18,6 @@ const historyPanel = document.getElementById("historyPanel");
 const historyList = document.getElementById("historyList");
 const historySearch = document.getElementById("historySearch");
 const warningBanner = document.getElementById("warningBanner");
-const statusBar = document.getElementById("statusBar");
-const statusText = document.getElementById("statusText");
 const topProgress = document.getElementById("topProgress");
 const modelSelect = document.getElementById("modelSelect");
 const attachBtn = document.getElementById("attachBtn");
@@ -409,8 +407,8 @@ loadProviders();
 // defaults to a blank new chat with zero indication that anything is
 // happening, other than the toolbar's pulsing dot — the only signal
 // available is the tool-call log inside a chat this panel isn't showing.
-// Re-attaching means loading that chat AND telling the UI it's running
-// (setRunning/showStatus/showTypingBubble), the same way clicking
+  // Re-attaching means loading that chat AND telling the UI it's running
+  // (setRunning/showTypingBubble), the same way clicking
 // "Continue" on a step-limit prompt already resumes a known node — a live
 // AGENT_EVENT broadcast could be seconds away, or over a minute (still
 // within the watchdog's grace period — see setRunning), so there's nothing
@@ -446,7 +444,6 @@ function findMostRecentPausedSession(sessions) {
     loadSessionIntoView(raw);
     activeRunNodeId = nodeId || null;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
     return;
   }
@@ -621,7 +618,6 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (document.activeElement === taskInput && !agentPopover.classList.contains("hidden")) return;
   if (running) {
-    showStatus("Stopping…");
     chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId });
     return;
   }
@@ -2395,15 +2391,6 @@ function resetStreamingText() {
   body.classList.remove("streaming-text");
 }
 
-function showStatus(text, animated = false) {
-  statusText.innerHTML = animated ? `${escapeHtml(text)} ${typingDotsHtml()}` : escapeHtml(text);
-  statusBar.classList.remove("hidden");
-}
-
-function hideStatus() {
-  statusBar.classList.add("hidden");
-}
-
 function setProgressActive(state) {
   topProgress.classList.toggle("active", state);
 }
@@ -2937,7 +2924,6 @@ async function respondToStepLimit(nodeId, doContinue) {
     autoScroll = true;
     activeRunNodeId = nodeId;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
   }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -3023,7 +3009,6 @@ async function respondToSiteGate(nodeId, approve) {
     autoScroll = true;
     activeRunNodeId = nodeId;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
   }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -3048,7 +3033,6 @@ async function submitAnswer(toolUseId, answer) {
   // node the very next event for this session belongs to.
   activeRunNodeId = null;
   setRunning(true);
-  showStatus("Thinking", true);
   showTypingBubble();
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -3080,7 +3064,6 @@ function setRunning(state) {
   if (state) {
     lastRunEventAt = Date.now();
   } else {
-    hideStatus();
     removeTypingBubble();
   }
 }
@@ -3119,7 +3102,6 @@ function declareRunStalled(nodeId, reason) {
 // instantly) before deciding it's actually case (2) and forcing the UI back
 // to normal with an explanation instead of hanging silently.
 function stopCurrentRun() {
-  showStatus("Stopping…");
   const stoppedNodeId = activeRunNodeId;
   chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId }, (res) => {
     if (chrome.runtime.lastError) return; // panel closed/reloaded mid-call — nothing to update
@@ -3248,7 +3230,6 @@ async function compactCurrentSession() {
   }
   const [providerId, modelId] = (modelSelect.value || "").split("::");
   const sessionIdAtStart = currentSessionId;
-  showStatus("Compacting…", true);
   chrome.runtime.sendMessage({
     type: "COMPACT_SESSION",
     sessionId: sessionIdAtStart,
@@ -3257,10 +3238,8 @@ async function compactCurrentSession() {
   });
   await waitForCompaction(sessionIdAtStart);
   if (currentSessionId !== sessionIdAtStart) {
-    hideStatus();
     return;
   }
-  hideStatus();
 }
 
 // Checked at the top of every send — keeps a long-running chat's per-message
@@ -3413,7 +3392,6 @@ async function sendTask() {
     activeRunNodeId = null;
     setRunning(true);
     sending = false; // running guard takes over from here
-    showStatus("Thinking", true);
     showTypingBubble();
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -3566,7 +3544,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
     case "thinking":
       removeTypingBubble();
       showTypingBubble();
-      if (!isReplay) showStatus("Thinking", true);
       break;
 
     case "assistant_delta":
@@ -3576,7 +3553,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "assistant": {
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       // If this same turn also calls finish, its answer is the authoritative
       // final message and is about to render its own bubble right after this
       // one — showing the model's prose here too would just duplicate it
@@ -3598,7 +3574,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
     }
 
     case "tool_start":
-      if (!isReplay) showStatus(toolLabel(event.name), true);
       break;
 
     case "tool_result":
@@ -3648,31 +3623,26 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "error":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("error", "Error", event.message);
       break;
 
     case "stopped":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("stopped", "Stopped", "Run stopped by user.");
       break;
 
     case "finish":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("final", event.success ? "Done" : "Ended", event.answer, true);
       break;
 
     case "ask_user":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderAskUserCard(event);
       break;
 
     case "step_confirm":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderStepConfirmCard(event);
       break;
 
@@ -3682,7 +3652,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "confirm_continue":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderConfirmContinueCard(event, nodeId);
       break;
 
@@ -3692,7 +3661,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "confirm_site_category":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderConfirmSiteCategoryCard(event, nodeId);
       break;
 
