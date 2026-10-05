@@ -763,9 +763,21 @@ function sessionToTranscript(session) {
     lines.push(`**You:** ${node.userText || "(attachment only)"}`, "");
     const docNames = (node.userAttachmentPreviews || []).filter((p) => p && typeof p === "object" && (p.kind === "pdf" || p.kind === "doc"));
     if (docNames.length) lines.push(`_Attached: ${docNames.map((d) => d.name).join(", ")}_`, "");
+    // Collect all assistant text from uiEvents — intermediate text
+    // (assistant_delta concatenated together), full assistant messages,
+    // and final finish/done answers.
+    let assistantText = "";
     for (const event of node.uiEvents || []) {
-      if (event.type === "finish") lines.push(event.answer || "", "");
-      else if (event.type === "done" && !event.alreadyShown) lines.push(event.finalAnswer || "", "");
+      if (event.type === "assistant" || event.type === "assistant_delta") {
+        assistantText += event.text || "";
+      } else if (event.type === "finish") {
+        lines.push(event.answer || "", "");
+      } else if (event.type === "done" && !event.alreadyShown) {
+        lines.push(event.finalAnswer || "", "");
+      }
+    }
+    if (assistantText.trim()) {
+      lines.push(`**Tab Agent:** ${assistantText.trim()}`, "");
     }
   }
   return lines.join("\n");
@@ -782,20 +794,6 @@ function downloadText(filename, text, mime) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-
-async function duplicateSession(session) {
-  const { sessions: current = [] } = await chrome.storage.local.get(["sessions"]);
-  const clone = JSON.parse(JSON.stringify(session));
-  clone.id = "s_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  clone.title = `${session.title || "New chat"} (copy)`;
-  clone.createdAt = Date.now();
-  clone.updatedAt = Date.now();
-  current.unshift(clone);
-  current.sort((a, b) => b.updatedAt - a.updatedAt);
-  await chrome.storage.local.set({ sessions: current.slice(0, HISTORY_MAX_SESSIONS) });
-  renderHistoryList(historySearch.value);
-}
-
 async function renderHistoryList(filterText = "") {
   const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
   sessions.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -827,11 +825,19 @@ async function renderHistoryList(filterText = "") {
     const dup = document.createElement("button");
     dup.type = "button";
     dup.className = "history-row-action";
-    dup.title = "Duplicate";
-    dup.textContent = "⧉";
-    dup.addEventListener("click", (e) => {
+    dup.title = "Copy transcript";
+    dup.textContent = "📋";
+    dup.addEventListener("click", async (e) => {
       e.stopPropagation();
-      duplicateSession(session);
+      try {
+        await navigator.clipboard.writeText(sessionToTranscript(session));
+        dup.textContent = "✓";
+        dup.title = "Copied!";
+        setTimeout(() => { dup.textContent = "📋"; dup.title = "Copy transcript"; }, 1500);
+      } catch {
+        dup.textContent = "✗";
+        setTimeout(() => { dup.textContent = "📋"; dup.title = "Copy transcript"; }, 1500);
+      }
     });
 
     const replay = document.createElement("button");
@@ -1312,10 +1318,13 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
   time.textContent = formatTime(Date.now());
   headerRow.appendChild(time);
 
-  // Copy button on user/final messages (reuses existing createCopyButton)
-  const copyableKind = kind === "user" || kind === "final";
-  if (copyableKind) {
-    headerRow.appendChild(createCopyButton(() => text, kind === "user" ? "light" : "muted"));
+  // Copy button on user messages (light variant)
+  if (kind === "user") {
+    headerRow.appendChild(createCopyButton(() => text, "light"));
+  }
+  // Copy button on all other text entries (assistant/final/error/info)
+  if (kind === "assistant" || kind === "final" || kind === "error" || kind === "info") {
+    headerRow.appendChild(createCopyButton(() => text, "muted"));
   }
 
   div.appendChild(headerRow);
