@@ -1056,11 +1056,10 @@ main {
 .agent-chip-clear:hover { opacity: 1; background: rgba(var(--accent-rgb), 0.18); }
 
 .agent-popover {
-  position: absolute;
+  position: fixed;
   left: 14px;
   right: 14px;
-  bottom: 100%;
-  margin-bottom: 8px;
+  bottom: 80px; /* sits just above the footer */
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
@@ -1068,7 +1067,7 @@ main {
   overflow: hidden;
   max-height: 220px;
   overflow-y: auto;
-  z-index: 5;
+  z-index: 999;
 }
 .agent-popover.hidden { display: none; }
 
@@ -1109,17 +1108,16 @@ main {
 /* --- instructions popover (per-chat override) ------------------------- */
 
 .instructions-popover {
-  position: absolute;
+  position: fixed;
   left: 14px;
   right: 14px;
-  bottom: 100%;
-  margin-bottom: 8px;
+  bottom: 80px;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
   padding: 14px;
-  z-index: 5;
+  z-index: 999;
 }
 .instructions-popover.hidden { display: none; }
 
