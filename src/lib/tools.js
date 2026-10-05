@@ -1155,19 +1155,26 @@ function currentDateLine() {
 
 /**
  * Builds the full system prompt for a run, optionally layering an agent's
- * own instructions (and default site) on top of the base behavior above.
+ * own instructions (and default site) on top of the base behavior above,
+ * and appending the user's persistent custom instructions last.
  * @param {{ name?: string, instructions?: string, targetUrl?: string } | null} agentContext
+ * @param {string} [customInstructions] - Persistent instructions from Settings → Instructions
  */
-export function buildSystemPrompt(agentContext) {
+export function buildSystemPrompt(agentContext, customInstructions = "") {
   const base = `${SYSTEM_PROMPT}\n\n${currentDateLine()}`;
-  if (!agentContext) return base;
-  const lines = [base, "", "---", `You are currently running as the "${agentContext.name}" agent. Follow its instructions below in addition to everything above; if they conflict, prefer the agent's instructions for how to approach the task.`];
-  if (agentContext.instructions) lines.push(agentContext.instructions.trim());
-  if (agentContext.targetUrl) {
-    lines.push(`This agent's default site is ${agentContext.targetUrl}. If the active tab isn't already on a relevant page there, navigate to it (or open_tab) before proceeding, unless the current page already has what you need.`);
+  const sections = [base];
+  if (agentContext) {
+    sections.push("", "---", `You are currently running as the "${agentContext.name}" agent. Follow its instructions below in addition to everything above; if they conflict, prefer the agent's instructions for how to approach the task.`);
+    if (agentContext.instructions) sections.push(agentContext.instructions.trim());
+    if (agentContext.targetUrl) {
+      sections.push(`This agent's default site is ${agentContext.targetUrl}. If the active tab isn't already on a relevant page there, navigate to it (or open_tab) before proceeding, unless the current page already has what you need.`);
+    }
+    sections.push("---");
   }
-  lines.push("---");
-  return lines.join("\n");
+  if (customInstructions) {
+    sections.push("", "---", "## Custom instructions", "", customInstructions.trim(), "---");
+  }
+  return sections.join("\n");
 }
 
 /**

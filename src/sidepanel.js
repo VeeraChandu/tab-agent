@@ -28,6 +28,12 @@ const agentChip = document.getElementById("agentChip");
 const agentChipName = document.getElementById("agentChipName");
 const agentChipClear = document.getElementById("agentChipClear");
 const agentPopover = document.getElementById("agentPopover");
+const instructionsBtn = document.getElementById("instructionsBtn");
+const instructionsPopover = document.getElementById("instructionsPopover");
+const closeInstructionsPopover = document.getElementById("closeInstructionsPopover");
+const perChatInstructions = document.getElementById("perChatInstructions");
+const savePerChatInstructionsBtn = document.getElementById("savePerChatInstructionsBtn");
+const perChatInstructionsSaved = document.getElementById("perChatInstructionsSaved");
 const editBanner = document.getElementById("editBanner");
 const editBannerCancel = document.getElementById("editBannerCancel");
 const themeBtn = document.getElementById("themeBtn");
@@ -217,7 +223,40 @@ function hidePopover() {
   agentPopover.classList.add("hidden");
   agentPopover.innerHTML = "";
   popoverMatches = [];
+  instructionsPopover.classList.add("hidden");
 }
+
+// --- per-chat instructions --------------------------------------------
+// These override the persistent instructions from Settings for just this one
+// chat session — stored in memory, not persisted to chrome.storage (they're
+// ephemeral by design). The value flows into system prompts via the RUN_TASK
+// message → background.js → drive() → runAgentTask.
+let perChatInstructionsValue = "";
+
+instructionsBtn.addEventListener("click", () => {
+  // Toggle the popover
+  const isOpen = !instructionsPopover.classList.contains("hidden");
+  if (isOpen) {
+    instructionsPopover.classList.add("hidden");
+  } else {
+    perChatInstructions.value = perChatInstructionsValue;
+    instructionsPopover.classList.remove("hidden");
+    perChatInstructionsSaved.classList.add("hidden");
+    perChatInstructions.focus();
+  }
+});
+
+closeInstructionsPopover.addEventListener("click", () => {
+  instructionsPopover.classList.add("hidden");
+});
+
+savePerChatInstructionsBtn.addEventListener("click", () => {
+  perChatInstructionsValue = perChatInstructions.value.trim();
+  perChatInstructionsSaved.classList.remove("hidden");
+  setTimeout(() => perChatInstructionsSaved.classList.add("hidden"), 2000);
+  // Keep the popover open so the user sees the confirmation, then close
+  instructionsPopover.classList.add("hidden");
+});
 
 // headerLabel + a fixed trigger char (not per-item) because / and @ now open
 // two entirely separate, single-purpose pickers — see checkForSlashCommand
@@ -3406,6 +3445,7 @@ async function sendTask() {
       stepThrough: stepThroughEnabled,
       attachments: outgoingAttachments,
       docAttachments: outgoingDocAttachments,
+      customInstructions: perChatInstructionsValue || undefined,
     });
   } finally {
     if (sending) sending = false; // safety net — shouldn't normally reach here

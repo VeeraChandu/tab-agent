@@ -70,6 +70,11 @@ const importSettingsBtn = document.getElementById("importSettingsBtn");
 const importFileInput = document.getElementById("importFileInput");
 const backupStatus = document.getElementById("backupStatus");
 
+// --- custom instructions (Settings → Instructions tab) --------------------
+const customInstructionsInput = document.getElementById("customInstructionsInput");
+const saveInstructionsBtn = document.getElementById("saveInstructionsBtn");
+const instructionsSavedHint = document.getElementById("instructionsSaved");
+
 const backupSectionsOverlay = document.getElementById("backupSectionsOverlay");
 const backupSectionsTitle = document.getElementById("backupSectionsTitle");
 const backupSectionsList = document.getElementById("backupSectionsList");
@@ -87,6 +92,7 @@ const BACKUP_SECTION_LABELS = {
   siteAccessGrants: "site access grants",
   scheduledTasks: "scheduled checks",
   themePreference: "theme",
+  customInstructions: "custom instructions",
 };
 const BACKUP_SECTION_NOTES = { providers: "includes API keys" };
 
@@ -471,6 +477,7 @@ async function load() {
     "visionFallback",
     "scheduledTasks",
     "limits",
+    "customInstructions",
   ]);
 
   if (stored.providers !== undefined) {
@@ -514,6 +521,8 @@ async function load() {
   pageCacheMaxEntriesInput.value = pageCache.maxEntries;
 
   trustedInputEnabledInput.checked = !!stored.trustedInputFallback?.enabled;
+
+  customInstructionsInput.value = stored.customInstructions || "";
 
   renderProviders();
   renderAgents();
@@ -583,6 +592,17 @@ trustedInputEnabledInput.addEventListener("change", async () => {
     if (trustedInputSavedHint.textContent === "Saved.") trustedInputSavedHint.textContent = "";
   }, 1500);
 });
+
+// --- custom instructions -------------------------------------------------
+
+async function saveCustomInstructions() {
+  const instructions = customInstructionsInput.value.trim();
+  await chrome.storage.local.set({ customInstructions: instructions });
+  instructionsSavedHint.classList.remove("hidden");
+  setTimeout(() => instructionsSavedHint.classList.add("hidden"), 2000);
+}
+
+saveInstructionsBtn.addEventListener("click", saveCustomInstructions);
 
 // --- providers ------------------------------------------------------
 

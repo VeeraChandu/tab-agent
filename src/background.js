@@ -1166,6 +1166,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         pageCacheConfig,
         trustedInputEnabled,
         stepThrough: !!msg.stepThrough,
+        customInstructions: msg.customInstructions || "",
         onEvent: (event) => persistAgentEvent(session, newNode, event),
       });
 
@@ -1495,6 +1496,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           onEvent: (event) => persistAgentEvent(session, node, event),
           shouldStop: () => runState.stop === true,
           shouldSkipSubtasks: () => runState.skipSubtasks === true,
+          customInstructions: msg.customInstructions || "",
         });
         sendResponse({ ok: true, result });
       } catch (err) {

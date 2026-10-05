@@ -15,6 +15,7 @@
       <button id="tabbtn-automation" class="tab-btn" type="button" data-tab="automation" role="tab" aria-selected="false" aria-controls="tab-automation" tabindex="-1">Automation</button>
       <button id="tabbtn-limits" class="tab-btn" type="button" data-tab="limits" role="tab" aria-selected="false" aria-controls="tab-limits" tabindex="-1">Limits</button>
       <button id="tabbtn-privacy" class="tab-btn" type="button" data-tab="privacy" role="tab" aria-selected="false" aria-controls="tab-privacy" tabindex="-1">Privacy</button>
+      <button id="tabbtn-instructions" class="tab-btn" type="button" data-tab="instructions" role="tab" aria-selected="false" aria-controls="tab-instructions" tabindex="-1">Instructions</button>
       <button id="tabbtn-usage" class="tab-btn" type="button" data-tab="usage" role="tab" aria-selected="false" aria-controls="tab-usage" tabindex="-1">Usage</button>
       <button id="tabbtn-about" class="tab-btn" type="button" data-tab="about" role="tab" aria-selected="false" aria-controls="tab-about" tabindex="-1">Backup &amp; About</button>
     </div>
@@ -183,6 +184,28 @@
         <button type="button" class="info-icon" data-tooltip="Tab Agent pauses to confirm before operating on sites that look like adult content or financial services, then remembers your answer per domain so it only asks once. This list is best-effort detection, not a guarantee - revoke anything below to be asked again next time.">ⓘ</button>
       </h2>
       <div id="siteAccessList" class="site-access-list"></div>
+    </section>
+
+    <section id="tab-instructions" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-instructions" tabindex="0">
+      <h2>
+        Custom instructions
+        <button type="button" class="info-icon" data-tooltip="These instructions are injected into every new session's system prompt — like setting preferences that should always apply. You can also set or override instructions per-chat from the side panel's &bull;&bull;&bull; menu. Changing these doesn't affect a running session; it takes effect on the next new chat.">ⓘ</button>
+      </h2>
+      <p class="hint">Tell Tab Agent how you'd like it to behave by default. For example:</p>
+      <ul class="hint" style="margin: 4px 0 12px 20px;">
+        <li>Tasks to check &quot;what did my code change&quot; — only show changed lines, not the whole file</li>
+        <li>Comparison shopping — include the price, shipping, and a direct link for each item</li>
+        <li>Summarizing articles — respond in bullet points, max 5 lines each</li>
+        <li>Code questions — prefer TypeScript, use functional style, assume React 19</li>
+      </ul>
+
+      <label for="customInstructionsInput" class="field-label">Persistent instructions</label>
+      <textarea id="customInstructionsInput" class="instructions-textarea" placeholder="e.g. Always include source links. Use British English. Ask before navigating away from a form with unsaved input." spellcheck="true"></textarea>
+
+      <div class="field-row" style="justify-content:flex-end;margin-top:12px">
+        <span id="instructionsSaved" class="hint hidden" style="margin-right:12px">✓ Saved</span>
+        <button id="saveInstructionsBtn" type="button" class="btn btn-primary">Save instructions</button>
+      </div>
     </section>
 
     <section id="tab-usage" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-usage" tabindex="0">
