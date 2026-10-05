@@ -160,6 +160,7 @@ function docIcon(format) {
 }
 
 let running = false;
+let sending = false; // guards against re-entrance during async setup (e.g. maybeAutoCompact)
 let stepThroughEnabled = false;
 let autoScroll = true;
 let attachments = []; // images: { id, name, kind:"image", mediaType, data (base64, no prefix), previewUrl }
@@ -3348,7 +3349,8 @@ function showHelp() {
 // --- send / stop -----------------------------------------------------
 
 async function sendTask() {
-  if (running) return;
+  if (running || sending) return;
+  sending = true;
   hidePopover();
 
   // Sending stops any in-progress dictation right away — abort() (not
@@ -3359,7 +3361,10 @@ async function sendTask() {
   if (listening) recognizer?.abort();
 
   let task = taskInput.value.trim();
-  if (!task && attachments.length === 0) return;
+  if (!task && attachments.length === 0) {
+    sending = false;
+    return;
+  }
 
   // Built-in commands (/clear, /stop, /retry, /compact, /model, /help) never
   // get sent to the model — intercept them here whether typed via the
@@ -3370,6 +3375,7 @@ async function sendTask() {
     const arg = (builtinMatch[2] || "").trim();
     taskInput.value = "";
     autoResize();
+    sending = false;
     runBuiltinCommand(slug, arg);
     return;
   }
@@ -3384,67 +3390,72 @@ async function sendTask() {
     }
   }
 
-  await maybeAutoCompact();
+  try {
+    await maybeAutoCompact();
 
-  const imageAttachments = attachments.filter((a) => a.kind !== "pdf" && a.kind !== "doc");
-  const docAttachments = attachments.filter((a) => a.kind === "pdf" || a.kind === "doc");
+    const imageAttachments = attachments.filter((a) => a.kind !== "pdf" && a.kind !== "doc");
+    const docAttachments = attachments.filter((a) => a.kind === "pdf" || a.kind === "doc");
 
-  // The user's chat bubble stays exactly what they typed — the extracted
-  // text rides separately to the background page, which appends it (chunked,
-  // see lib/attachmentCache.js — nothing is trimmed) to what the MODEL sees
-  // (same "shown to user" vs "sent to model" split already used for the
-  // tab-switch note and the vision-fallback image description).
-  const effectiveTask = task || "Describe / act on the attached file(s).";
-  const outgoingDocAttachments = docAttachments.map((a) => ({
-    id: a.id,
-    name: a.name,
-    format: a.format,
-    text: a.text,
-    pageCount: a.pageCount,
-  }));
+    // The user's chat bubble stays exactly what they typed — the extracted
+    // text rides separately to the background page, which appends it (chunked,
+    // see lib/attachmentCache.js — nothing is trimmed) to what the MODEL sees
+    // (same "shown to user" vs "sent to model" split already used for the
+    // tab-switch note and the vision-fallback image description).
+    const effectiveTask = task || "Describe / act on the attached file(s).";
+    const outgoingDocAttachments = docAttachments.map((a) => ({
+      id: a.id,
+      name: a.name,
+      format: a.format,
+      text: a.text,
+      pageCount: a.pageCount,
+    }));
 
-  const previewUrls = imageAttachments.map((a) => a.previewUrl);
-  const outgoingAttachments = imageAttachments.map((a) => ({ mediaType: a.mediaType, data: a.data, name: a.name }));
-  const docPreviews = docAttachments.map((a) => ({ kind: a.kind, format: a.format, name: a.name, pageCount: a.pageCount }));
+    const previewUrls = imageAttachments.map((a) => a.previewUrl);
+    const outgoingAttachments = imageAttachments.map((a) => ({ mediaType: a.mediaType, data: a.data, name: a.name }));
+    const docPreviews = docAttachments.map((a) => ({ kind: a.kind, format: a.format, name: a.name, pageCount: a.pageCount }));
 
-  const editNodeId = editingNodeId;
-  editingNodeId = null;
-  editBanner.classList.add("hidden");
+    const editNodeId = editingNodeId;
+    editingNodeId = null;
+    editBanner.classList.add("hidden");
 
-  addEntry("user", "", effectiveTask, false, [...previewUrls, ...docPreviews]);
+    addEntry("user", "", effectiveTask, false, [...previewUrls, ...docPreviews]);
 
-  taskInput.value = "";
-  autoResize();
-  attachments = [];
-  renderAttachments();
+    taskInput.value = "";
+    autoResize();
+    attachments = [];
+    renderAttachments();
 
-  autoScroll = true; // resume auto-follow for this new run
-  // The new (or branched-to) node's id is generated server-side and not
-  // known yet here — null tells the AGENT_EVENT listener to lock onto
-  // whichever node the first event for this session belongs to, instead of
-  // still accepting stray events tagged with a PREVIOUS/abandoned node id
-  // (e.g. a sibling branch this edit just replaced, or an earlier run that
-  // hadn't fully finished stopping yet).
-  activeRunNodeId = null;
-  setRunning(true);
-  showStatus("Thinking", true);
-  showTypingBubble();
+    autoScroll = true; // resume auto-follow for this new run
+    // The new (or branched-to) node's id is generated server-side and not
+    // known yet here — null tells the AGENT_EVENT listener to lock onto
+    // whichever node the first event for this session belongs to, instead of
+    // still accepting stray events tagged with a PREVIOUS/abandoned node id
+    // (e.g. a sibling branch this edit just replaced, or an earlier run that
+    // hadn't fully finished stopping yet).
+    activeRunNodeId = null;
+    setRunning(true);
+    sending = false; // running guard takes over from here
+    showStatus("Thinking", true);
+    showTypingBubble();
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const [providerId, modelId] = (modelSelect.value || "").split("::");
-  chrome.runtime.sendMessage({
-    type: "RUN_TASK",
-    task: effectiveTask,
-    tabId: tab?.id,
-    sessionId: currentSessionId || undefined,
-    editNodeId: editNodeId || undefined,
-    providerId: providerId || undefined,
-    modelId: modelId || undefined,
-    agentId: activeAgent?.id || undefined,
-    stepThrough: stepThroughEnabled,
-    attachments: outgoingAttachments,
-    docAttachments: outgoingDocAttachments,
-  });
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [providerId, modelId] = (modelSelect.value || "").split("::");
+    chrome.runtime.sendMessage({
+      type: "RUN_TASK",
+      task: effectiveTask,
+      tabId: tab?.id,
+      sessionId: currentSessionId || undefined,
+      editNodeId: editNodeId || undefined,
+      providerId: providerId || undefined,
+      modelId: modelId || undefined,
+      agentId: activeAgent?.id || undefined,
+      stepThrough: stepThroughEnabled,
+      attachments: outgoingAttachments,
+      docAttachments: outgoingDocAttachments,
+    });
+  } finally {
+    if (sending) sending = false; // safety net — shouldn't normally reach here
+  }
 }
 
 // --- replay overlay -----------------------------------------------------
