@@ -17,6 +17,10 @@ const closeHistoryBtn = document.getElementById("closeHistoryBtn");
 const historyPanel = document.getElementById("historyPanel");
 const historyList = document.getElementById("historyList");
 const historySearch = document.getElementById("historySearch");
+const branchTreeBtn = document.getElementById("branchTreeBtn");
+const closeBranchTreeBtn = document.getElementById("closeBranchTreeBtn");
+const branchTreePanel = document.getElementById("branchTreePanel");
+const branchTreeContainer = document.getElementById("branchTreeContainer");
 const warningBanner = document.getElementById("warningBanner");
 const topProgress = document.getElementById("topProgress");
 const modelSelect = document.getElementById("modelSelect");
@@ -634,6 +638,136 @@ function closeHistory() {
   historyBtn.setAttribute("aria-expanded", "false");
 }
 
+// --- branch tree panel -------------------------------------------------
+
+branchTreeBtn.addEventListener("click", () => {
+  const isOpen = !branchTreePanel.classList.contains("hidden");
+  if (isOpen) {
+    closeBranchTree();
+  } else {
+    renderBranchTree();
+    branchTreePanel.classList.remove("hidden");
+  }
+});
+closeBranchTreeBtn.addEventListener("click", closeBranchTree);
+
+function closeBranchTree() {
+  branchTreePanel.classList.add("hidden");
+}
+
+function renderBranchTree() {
+  if (!currentSessionId) {
+    branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No active chat. Start a new chat first.</div>';
+    return;
+  }
+  chrome.storage.local.get(["sessions"], ({ sessions = [] }) => {
+    const raw = sessions.find((s) => s.id === currentSessionId);
+    if (!raw) {
+      branchTreeContainer.innerHTML = '<div class="branch-tree-empty">Session not found.</div>';
+      return;
+    }
+    const session = migrateSessionIfNeeded(raw);
+    const activePath = computeActivePath(session);
+    const activeIdSet = new Set(activePath.map((n) => n.id));
+
+    // Walk the tree top-down, depth-first
+    const lines = [];
+    function walk(nodeIds, depth) {
+      for (const id of nodeIds) {
+        const node = session.nodes[id];
+        if (!node) continue;
+        const isActive = activeIdSet.has(id);
+        lines.push({ node, depth, isActive });
+        walk(node.childIds || [], depth + 1);
+      }
+    }
+    walk(session.rootChildIds || [], 0);
+
+    if (!lines.length) {
+      branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No messages yet.</div>';
+      return;
+    }
+
+    // Render the tree into DOM
+    const items = lines.map(({ node, depth, isActive }) => {
+      const row = document.createElement("div");
+      row.className = "branch-tree-row";
+      row.setAttribute("data-node-id", node.id);
+
+      // Connector column: vertical pipes for the branch lines
+      // Simple approach: indent with left padding, use a thin visual indicator
+      const indent = document.createElement("div");
+      indent.className = "branch-tree-indent";
+      indent.style.paddingLeft = `${depth * 18}px`;
+
+      const nodeEl = document.createElement("div");
+      nodeEl.className = `branch-tree-node${isActive ? " active" : ""}`;
+
+      const dot = document.createElement("span");
+      dot.className = `branch-tree-dot${isActive ? " active" : ""}`;
+      nodeEl.appendChild(dot);
+
+      const label = document.createElement("span");
+      label.className = `branch-tree-label${isActive ? "" : " muted"}`;
+      const text = node.userText || "(no text)";
+      label.textContent = text.length > 60 ? text.slice(0, 60) + "…" : text;
+      label.title = node.userText || "";
+      nodeEl.appendChild(label);
+
+      // Branch badge: show sibling count if this node has multiple children
+      // (placeholder for future badge)
+
+      indent.appendChild(nodeEl);
+      row.appendChild(indent);
+
+      // Click to switch to this node's branch
+      row.addEventListener("click", async () => {
+        if (isActive) return; // already on this branch
+        await switchToNodeBranch(node.id);
+        closeBranchTree();
+        // Re-render tree to reflect new active path
+        renderBranchTree();
+      });
+
+      return row;
+    });
+
+    branchTreeContainer.innerHTML = "";
+    for (const row of items) branchTreeContainer.appendChild(row);
+  });
+}
+
+// Switch the session's active path so that `targetNodeId` becomes the current
+// tip of the active branch — works by navigating from the target node up to
+// the root and setting selectedChildId on each ancestor to pick the branch
+// that leads to the target.
+async function switchToNodeBranch(targetNodeId) {
+  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+  const raw = sessions.find((s) => s.id === currentSessionId);
+  if (!raw) return;
+  const session = migrateSessionIfNeeded(raw);
+  const node = session.nodes[targetNodeId];
+  if (!node) return;
+
+  // Walk up from target to root, setting selectedChildId on each parent
+  // to point to the child on the path, so computeActivePath() reaches target.
+  let cur = node;
+  while (cur) {
+    if (cur.parentId) {
+      const parent = session.nodes[cur.parentId];
+      if (parent) parent.selectedChildId = cur.id;
+    } else {
+      // Root level
+      session.rootSelectedChildId = cur.id;
+    }
+    cur = cur.parentId ? session.nodes[cur.parentId] : null;
+  }
+
+  session.updatedAt = Date.now();
+  await chrome.storage.local.set({ sessions: sessions.map((s) => (s.id === session.id ? session : s)) });
+  renderSessionPath(session);
+}
+
 // Click-outside-to-close — historyPanel is a positioned popup (absolute,
 // no backdrop element covering the rest of the UI), so nothing was closing
 // it on an outside click before this; only Escape and the panel's own X
@@ -644,9 +778,11 @@ function closeHistory() {
 // while the panel is open would close it here and then immediately reopen
 // it via the click handler right after.
 document.addEventListener("mousedown", (e) => {
-  if (historyPanel.classList.contains("hidden")) return;
-  if (historyPanel.contains(e.target) || historyBtn.contains(e.target)) return;
-  closeHistory();
+  const bp = branchTreePanel.classList.contains("hidden");
+  const hp = historyPanel.classList.contains("hidden");
+  if (hp && bp) return;
+  if (!hp && !historyPanel.contains(e.target) && !historyBtn.contains(e.target)) closeHistory();
+  if (!bp && !branchTreePanel.contains(e.target) && !branchTreeBtn.contains(e.target)) closeBranchTree();
 });
 
 // Global Escape: stop a running task if one is in progress, otherwise close
@@ -662,6 +798,11 @@ document.addEventListener("keydown", (e) => {
   }
   if (!historyPanel.classList.contains("hidden")) {
     closeHistory();
+    return;
+  }
+  if (!branchTreePanel.classList.contains("hidden")) {
+    closeBranchTree();
+    return;
   }
 });
 

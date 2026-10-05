@@ -33,6 +33,17 @@
           <path d="M12 7v5l3.5 3.5"/>
         </svg>
       </button>
+      <button id="branchTreeBtn" class="icon-btn" title="Branch tree" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="3" x2="6" y2="15"/>
+          <circle cx="18" cy="6" r="3"/>
+          <circle cx="6" cy="6" r="3"/>
+          <circle cx="18" cy="18" r="3"/>
+          <line x1="8.5" y1="7.5" x2="15.5" y2="16.5"/>
+          <line x1="6" y1="9" x2="6" y2="15"/>
+          <line x1="6" y1="15" x2="15" y2="16.5"/>
+        </svg>
+      </button>
       <button id="settingsBtn" class="icon-btn" title="Settings">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="12" cy="12" r="3"/>
@@ -55,6 +66,16 @@
     </div>
     <input id="historySearch" class="history-search" type="text" placeholder="Search chats…" />
     <div id="historyList" class="history-list"></div>
+  </div>
+
+  <div id="branchTreePanel" class="branch-tree-panel hidden">
+    <div class="branch-tree-header">
+      <span>Branch tree</span>
+      <button id="closeBranchTreeBtn" class="icon-btn" title="Close">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="branchTreeContainer" class="branch-tree-container"></div>
   </div>
 
   <main>
