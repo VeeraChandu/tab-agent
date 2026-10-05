@@ -288,39 +288,6 @@ header {
 }
 .banner.hidden { display: none; }
 
-/* --- privacy/data-use notice ------------------------------------------ */
-
-.privacy-notice {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: var(--card);
-  border-bottom: 1px solid var(--border);
-  padding: 8px 12px;
-  flex-shrink: 0;
-}
-.privacy-notice.hidden { display: none; }
-.privacy-notice p {
-  margin: 0;
-  font-size: 11.5px;
-  line-height: 1.4;
-  color: var(--text);
-  opacity: 0.8;
-  flex: 1;
-}
-.privacy-notice-dismiss {
-  flex: 0 0 auto;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 5px 12px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-.privacy-notice-dismiss:hover { opacity: 0.9; }
-
 /* --- history panel --------------------------------------------------- */
 
 .history-panel {

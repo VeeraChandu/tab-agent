@@ -50,23 +50,6 @@
 
   <div id="warningBanner" class="banner hidden"></div>
 
-  <!-- Data-use disclosure — shown once (per PRIVACY_NOTICE_VERSION in
-       sidepanel.js), dismissed and remembered in chrome.storage.local.
-       Kept as a normal, always-visible banner rather than a blocking modal
-       overlay so it doesn't get in the way of an existing chat, but it's
-       still on-screen (not a tooltip/aria-only aside) until the user
-       explicitly dismisses it — see PRIVACY_POLICY.md for the full text
-       this summarizes. -->
-  <div id="privacyNotice" class="privacy-notice hidden" role="status">
-    <p>
-      Tab Agent sends the page content, screenshots, and tab details a task needs to the AI provider you configure
-      in Settings, using your own API key - that data goes directly to your provider, never to Tab Agent's
-      developer. Everything else (your key, chat history, settings) is stored only in your browser.
-      See Settings → Privacy for details.
-    </p>
-    <button id="privacyNoticeDismiss" type="button" class="privacy-notice-dismiss">Got it</button>
-  </div>
-
   <div id="historyPanel" class="history-panel hidden">
     <div class="history-panel-header">
       <span>History</span>

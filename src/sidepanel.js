@@ -18,8 +18,6 @@ const historyPanel = document.getElementById("historyPanel");
 const historyList = document.getElementById("historyList");
 const historySearch = document.getElementById("historySearch");
 const warningBanner = document.getElementById("warningBanner");
-const privacyNotice = document.getElementById("privacyNotice");
-const privacyNoticeDismiss = document.getElementById("privacyNoticeDismiss");
 const statusBar = document.getElementById("statusBar");
 const statusText = document.getElementById("statusText");
 const topProgress = document.getElementById("topProgress");
@@ -401,26 +399,6 @@ function checkConfig(providers, options) {
     warningBanner.classList.add("hidden");
   }
 }
-
-// --- data-use disclosure ------------------------------------------------
-// Bump this when what Tab Agent accesses or where it sends data actually
-// changes — a stored ack from an older version won't suppress the notice
-// for a newer one, so a material change gets surfaced again rather than
-// silently inheriting a prior "Got it" click. See PRIVACY_POLICY.md.
-const PRIVACY_NOTICE_VERSION = 1;
-
-async function checkPrivacyNotice() {
-  const { privacyNoticeAckVersion } = await chrome.storage.local.get(["privacyNoticeAckVersion"]);
-  if (privacyNoticeAckVersion === PRIVACY_NOTICE_VERSION) return;
-  privacyNotice.classList.remove("hidden");
-}
-
-privacyNoticeDismiss.addEventListener("click", () => {
-  privacyNotice.classList.add("hidden");
-  chrome.storage.local.set({ privacyNoticeAckVersion: PRIVACY_NOTICE_VERSION });
-});
-
-checkPrivacyNotice();
 
 loadProviders();
 
