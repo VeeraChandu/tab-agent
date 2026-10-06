@@ -924,7 +924,12 @@ function sessionUsageLabel(session) {
   if (!session.compactedUsage) return ` · ~${fmt(total)} tokens${costPart}`;
 
   const activeNode = computeActivePath(session).at(-1);
-  const active = activeNode?.usage ? (activeNode.usage.inputTokens || 0) + (activeNode.usage.outputTokens || 0) : 0;
+  let active = activeNode?.usage ? (activeNode.usage.inputTokens || 0) + (activeNode.usage.outputTokens || 0) : 0;
+  // After compaction the billed token count doesn't shrink — estimate actual
+  // context size from cumulativeHistory instead.
+  if (session.compactedUsage && activeNode?.cumulativeHistory?.length) {
+    active = Math.ceil(JSON.stringify(activeNode.cumulativeHistory).length / 4);
+  }
   return ` · ~${fmt(total)} total${costPart} · ~${fmt(active)} active`;
 }
 
@@ -1154,7 +1159,16 @@ function updateComposerUsage(session) {
 
   const path = computeActivePath(session);
   const lastNode = path[path.length - 1];
-  const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
+
+  // When compaction has happened, "active" context is the actual
+  // cumulativeHistory size, not the billed token count (which never
+  // decreases).  Before compaction they are the same number.
+  let active;
+  if (session.compactedUsage && lastNode?.cumulativeHistory?.length) {
+    active = Math.ceil(JSON.stringify(lastNode.cumulativeHistory).length / 4);
+  } else {
+    active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
+  }
   if (!active) {
     el.classList.add("hidden");
     el.innerHTML = "";
