@@ -737,13 +737,10 @@ export const TOOLS = [
     name: "parallel_investigate",
     description:
       "Investigate up to several independent sources AT THE SAME TIME, each in its own background tab — use this for " +
-      "explicit multi-source tasks ('compare X across sites A, B, C', 'check these N pages'). Each task gets a focused " +
-      "sub-agent that reads/clicks/scrolls on just that one tab and reports back findings, run concurrently rather " +
-      "than one after another, so it's much faster than switch_tab-ing between them yourself. Also works for large " +
-      "sets of items on the SAME site when you've already enumerated a concrete, non-overlapping list of individually-" +
-      "addressable item URLs (e.g. from a read_page/extract_table scan) — but only when items don't depend on being " +
-      "visited in order (no shared cart/session state) and you're confident about non-overlap, since concurrent hits " +
-      "on one site are more likely to trigger rate-limiting than the same concurrency spread across different sites. " +
+      "explicit multi-source tasks where each source lives on a DIFFERENT site ('compare X across sites A, B, C', " +
+      "'check these N pages/tabs'). Each task gets a focused sub-agent that reads/clicks/scrolls on just that one tab " +
+      "and reports back findings, run concurrently rather than one after another, so it's much faster than " +
+      "switch_tab-ing between them yourself. " +
       "Processes only a limited number of tasks per call — if you gave more than that, the result includes " +
       "remaining_tasks and a note telling you to call this again with those to run the next round. Also capped " +
       "across the WHOLE task (not just per call) on total sources investigated — once that's reached, further calls " +
@@ -753,7 +750,13 @@ export const TOOLS = [
       "branch's result includes pages: every distinct page that branch actually visited, as {title, url} in the " +
       "order it saw them — when a branch's findings mention more than one item (a comparison, a list of what else " +
       "a site had), match each item to its page by title/product name and link to that url, don't just reuse href " +
-      "(a single best-guess link, usually the last page visited) for everything.",
+      "(a single best-guess link, usually the last page visited) for everything. " +
+      "Do NOT use parallel_investigate for a large set of items all on the SAME site — that's what run_batch is for. " +
+      "A sub-agent launched by parallel_investigate has only a small step budget (enough for a few clicks and reads), " +
+      "so putting many items on a single site into parallel_investigate tasks will either exhaust every branch's " +
+      "budget immediately (each item needs a navigate → read → back cycle, which takes many steps) or flood the target " +
+      "site with concurrent requests and trigger rate-limits. If all items live on one site, use run_batch instead, which " +
+      "stays on a single tab, processes items sequentially, and has a much larger step budget for exactly that shape of work.",
     input_schema: {
       type: "object",
       properties: {
@@ -795,13 +798,17 @@ export const TOOLS = [
   {
     name: "run_batch",
     description:
-      "Run a focused, repetitive task on the CURRENT tab across many steps — use this instead of doing dozens or " +
-      "hundreds of individual click/read_page/type_text calls yourself when a task means 'do this for every item in " +
-      "a large list' (e.g. 'process each of these 300 rows', 'go through every page of results'). Gets its own step " +
-      "budget, separate from and much larger than your own, so it won't burn through your step allowance or need a " +
-      "check-in every 20 actions. Stays on the tab you're already on — it does not open new tabs. If it can't finish " +
-      "everything within its step budget, it comes back with incomplete: true and a summary of what it got through — " +
-      "call run_batch again, describing what's already done and what's left in the objective, to continue from there.",
+      "Run a focused, repetitive task on the CURRENT tab across many items — the right tool when ALL items to " +
+      "process live on ONE site ('process each of these 300 rows', 'go through every page of results', 'check " +
+      "all 150 product pages for a spec'). Gets its own step budget, separate from and much larger than yours, " +
+      "so it won't burn through your step allowance or need a check-in every 20 actions. Stays on the tab you're " +
+      "already on — it does not open new tabs. If it can't finish everything within its step budget, it comes " +
+      "back with incomplete: true and a summary of what it got through — call run_batch again, describing what's " +
+      "already done and what's left in the objective, to continue from there. " +
+      "Do NOT use run_batch for items spread across MULTIPLE different sites — that's what parallel_investigate is for. " +
+      "run_batch stays on ONE tab and has no awareness of other tabs or sites. If your sources are independent pages " +
+      "on different domains (e.g. 'check Amazon, Best Buy, and eBay'), use parallel_investigate instead so each source " +
+      "gets its own isolated tab and sub-agent.",
     input_schema: {
       type: "object",
       properties: {
@@ -1129,11 +1136,11 @@ Working through a list of items — collect the list first, then check each one:
 Multi-source and large repetitive tasks (parallel_investigate / run_batch):
 - If a later message in this same conversation asks for a DIFFERENT detail about sources you already checked (e.g. "check 10 profiles for X" earlier, now "what about Y for those same ones"), try recall_page on the URLs you already have (from the earlier findings/pages) before relaunching parallel_investigate/run_batch to re-visit them — often cheaper and faster than a full re-run, though it only has whatever the original read actually captured, so fall back to a real re-visit if recall comes back empty or the question needs something that requires a fresh interaction.
 - These are for two specific shapes of task, not everyday browsing — most tasks are still a normal single-tab read_page → act → finish loop. Reach for these only when the shape actually fits:
-  - parallel_investigate: the task explicitly names or clearly implies multiple independent sources to check ("compare X across sites A/B/C", "check these N pages/tabs"). It runs each source as its own small, focused sub-agent concurrently, then hands you back everything it found so you can synthesize one answer — much faster than switch_tab-ing between sites yourself, and each sub-agent's tab context is fully isolated so there's no risk of it acting on the wrong tab.
+  - parallel_investigate: items on DIFFERENT sites (or different tabs/domains). Each source runs in its own background tab concurrently. Small step budget per branch — enough for a quick lookup (a few clicks and reads), not a deep dive.
+  - run_batch: many items all on ONE site / ONE tab. Sequential, large step budget — use when processing 10+ items on the same domain where each item takes several actions (navigate → read → go back).
 - Before calling parallel_investigate for a request that goes beyond the current tab (comparison shopping, "check other stores too", aggregating across sources), say in your own reply that you're about to check multiple sites and name them (or say how many/what kind if you don't have exact names yet) — don't silently kick it off. The tool call itself also surfaces a heads-up line in the transcript, but that's not a substitute for you telling the user in plain language what you're doing and why before you do it. Say this ONCE, in the same turn you actually make the call — not while you're still working through an earlier site on a single tab. Repeating "I'll also check other retailers in parallel" on turn after turn of ordinary one-tab work reads to the user as if that parallel work is already underway when nothing has been launched yet. Until you actually call it, describe only what you are doing right now.
 - Give each parallel_investigate task a url that's already ON the specific source it's meant to check (that retailer/site's own homepage or search results), never a shared generic search-engine query reused across tasks — a sub-agent only sees its own url and objective, never which source it's "supposed" to represent, so a neutral starting point lets its own click/search choices drift onto whichever result looks best overall (often the same one or two dominant sites across every task), silently defeating the whole comparison.
 - For an open-ended request ("check every possible retailer", "search everywhere") there's no natural stopping point on its own, so impose one yourself: a handful of well-known, relevant sources (roughly 5-10) checked thoroughly counts as a complete answer — don't keep launching more rounds just because more sources theoretically exist. If several sources independently agree on a finding (especially a negative one, like "this configuration isn't offered anywhere"), treat that agreement as sufficient evidence and stop searching rather than continuing to look for a source that contradicts it. If exactly one source reports something that conflicts with everything else you've found, that's more likely a mistake (a sub-agent misreading the page, or the wrong product) than a genuine outlier — re-check that ONE claim cheaply (re-read that same source, or check the manufacturer's own official page) before deciding it's worth launching a whole new round of sources chasing it.
-  - run_batch: the task means doing the same small thing many times on ONE site/tab ("process every row", "go through all N items"), enough that doing it yourself one click/read_page at a time would burn through dozens of your own steps. It runs on its own separate, much larger step budget, so it won't force you into repeated step-limit check-ins the way manually repeating the same actions 100+ times would.
 - Both sub-agents cannot use ask_user or screenshot, and cannot themselves call parallel_investigate or run_batch — if a branch or batch run reports it got stuck needing user input or hit something risky, treat that as a real signal (surface it in your final answer) rather than retrying it yourself in a way that bypasses the safeguard that stopped it.
 - Both are capped (parallel_investigate to a limited number of concurrent tasks per call AND a total across the whole task, run_batch to a step budget per call) — a result telling you there's more to do (remaining_tasks, or incomplete: true) means call the same tool again for the next round, not that the task failed. A result telling you the total-source cap is reached means stop calling it and answer with what you have — that one isn't a "call again" signal.
 - parallel_investigate's per-branch step budget is deliberately much smaller than run_batch's — each branch is meant for a quick, focused lookup on one source (a few clicks and reads), not a deep multi-step task. If a branch reports it hit its step limit before finishing, that's a signal the objective you gave it was too broad for a single source-check — narrow it, or if the real need is many steps on ONE site, use run_batch instead (it has a much larger budget for exactly that).
