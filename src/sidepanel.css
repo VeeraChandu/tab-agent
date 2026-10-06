@@ -2150,3 +2150,261 @@ button.step-through-toggle.active {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+
+/* === MCP Banner ===================================================== */
+
+.mcp-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  margin: 4px 8px;
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  border-radius: 6px;
+  font-size: 12px;
+  animation: tabagent-fade-in 0.2s ease;
+}
+
+.mcp-banner-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mcp-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2e7d32;
+  animation: mcp-pulse 2s infinite;
+}
+
+@keyframes mcp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.mcp-banner-label {
+  color: #1b5e20;
+  font-weight: 600;
+}
+
+.mcp-banner-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mcp-log-toggle,
+.mcp-stop-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.mcp-log-toggle:hover {
+  background: #c8e6c9;
+}
+
+.mcp-stop-btn {
+  color: #c62828;
+  font-weight: 600;
+}
+
+.mcp-stop-btn:hover {
+  background: #ffcdd2;
+  border-color: #ef9a9a;
+}
+
+/* === MCP Activity Log ================================================ */
+
+.mcp-activity-log {
+  margin: 0 8px 4px;
+  padding: 6px 8px;
+  background: #f5f5f5;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 11px;
+}
+
+.mcp-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mcp-activity-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px;
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-activity-entry:hover {
+  background: #e8e8e8;
+}
+
+.mcp-activity-entry .mcp-entry-tool {
+  font-weight: 600;
+  color: #1565c0;
+}
+
+.mcp-activity-entry .mcp-entry-args {
+  color: #616161;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mcp-activity-entry.mcp-entry-done {
+  opacity: 0.6;
+}
+
+.mcp-activity-entry.mcp-entry-done .mcp-entry-tool {
+  color: #388e3c;
+}
+
+.mcp-activity-entry.mcp-entry-error .mcp-entry-tool {
+  color: #d32f2f;
+}
+
+/* === MCP Confirm Overlay ============================================= */
+
+.mcp-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: tabagent-fade-in 0.15s ease;
+}
+
+.mcp-confirm-dialog {
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.2);
+  max-width: 320px;
+  width: 90%;
+  overflow: hidden;
+}
+
+.mcp-confirm-header {
+  padding: 10px 14px;
+  background: #fff3e0;
+  font-size: 13px;
+  font-weight: 700;
+  color: #e65100;
+  border-bottom: 1px solid #ffe0b2;
+}
+
+.mcp-confirm-body {
+  padding: 12px 14px;
+}
+
+.mcp-confirm-tool {
+  margin-bottom: 6px;
+}
+
+.mcp-confirm-tool-name {
+  font-family: monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: #333;
+}
+
+.mcp-confirm-args {
+  margin: 0;
+  padding: 6px 8px;
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 4px;
+  font-size: 11px;
+  max-height: 100px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mcp-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px 14px;
+  border-top: 1px solid #eee;
+}
+
+/* === Dark theme overrides ============================================ */
+
+body.dark .mcp-banner {
+  background: #1b3d1b;
+  border-color: #388e3c;
+}
+
+body.dark .mcp-banner-label {
+  color: #a5d6a7;
+}
+
+body.dark .mcp-banner-dot {
+  background: #66bb6a;
+}
+
+body.dark .mcp-log-toggle:hover {
+  background: #2e5c2e;
+}
+
+body.dark .mcp-stop-btn:hover {
+  background: #4e1a1a;
+}
+
+body.dark .mcp-activity-log {
+  background: #252525;
+  border-color: #444;
+}
+
+body.dark .mcp-activity-entry:hover {
+  background: #333;
+}
+
+body.dark .mcp-activity-entry .mcp-entry-tool {
+  color: #64b5f6;
+}
+
+body.dark .mcp-activity-entry .mcp-entry-args {
+  color: #9e9e9e;
+}
+
+body.dark .mcp-confirm-overlay {
+  background: rgba(0, 0, 0, 0.55);
+}
+
+body.dark .mcp-confirm-dialog {
+  background: #2d2d2d;
+}
+
+body.dark .mcp-confirm-header {
+  background: #3e2a1a;
+  color: #ffb74d;
+  border-color: #5a3e1a;
+}
+
+body.dark .mcp-confirm-args {
+  background: #1a1a1a;
+  border-color: #444;
+  color: #ccc;
+}
+
+body.dark .mcp-confirm-actions {
+  border-color: #444;
+}

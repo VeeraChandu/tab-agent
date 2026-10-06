@@ -14,6 +14,7 @@
       <button id="tabbtn-agents" class="tab-btn" type="button" data-tab="agents" role="tab" aria-selected="false" aria-controls="tab-agents" tabindex="-1">Agents</button>
       <button id="tabbtn-automation" class="tab-btn" type="button" data-tab="automation" role="tab" aria-selected="false" aria-controls="tab-automation" tabindex="-1">Automation</button>
       <button id="tabbtn-limits" class="tab-btn" type="button" data-tab="limits" role="tab" aria-selected="false" aria-controls="tab-limits" tabindex="-1">Limits</button>
+      <button id="tabbtn-mcp" class="tab-btn" type="button" data-tab="mcp" role="tab" aria-selected="false" aria-controls="tab-mcp" tabindex="-1">MCP</button>
       <button id="tabbtn-privacy" class="tab-btn" type="button" data-tab="privacy" role="tab" aria-selected="false" aria-controls="tab-privacy" tabindex="-1">Privacy</button>
       <button id="tabbtn-instructions" class="tab-btn" type="button" data-tab="instructions" role="tab" aria-selected="false" aria-controls="tab-instructions" tabindex="-1">Instructions</button>
       <button id="tabbtn-usage" class="tab-btn" type="button" data-tab="usage" role="tab" aria-selected="false" aria-controls="tab-usage" tabindex="-1">Usage</button>
@@ -150,6 +151,56 @@
         </label>
       </div>
       <p class="hint" id="trustedInputSavedHint"></p>
+    </section>
+
+    <section id="tab-mcp" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-mcp" tabindex="0">
+      <h2>
+        MCP (Model Context Protocol)
+        <button type="button" class="info-icon" data-tooltip="Expose Tab Agent's browser control as MCP tools. An MCP host (Cursor, Claude Desktop, Cline) spawns the bridge process and calls tools like navigate, read_page, and click. The auth token and domain allowlist keep it secure.">ⓘ</button>
+      </h2>
+      <p class="hint">Enable AI coding assistants to control your browser through the MCP protocol. The bridge runs locally and only accepts connections with your auth token.</p>
+
+      <h3>Configuration</h3>
+
+      <label class="field-row">
+        <span>Bridge port</span>
+        <input id="mcpPort" type="number" value="58732" min="1024" max="65535" style="width:100px" />
+      </label>
+
+      <label class="field-row">
+        <span>Auth token</span>
+        <input id="mcpToken" type="text" readonly style="flex:1;font-family:monospace;font-size:12px" />
+        <button id="mcpRegenTokenBtn" type="button" class="btn btn-secondary btn-sm">Regenerate</button>
+        <button id="mcpCopyTokenBtn" type="button" class="btn btn-secondary btn-sm">Copy</button>
+      </label>
+
+      <label class="field-row">
+        <span>Bridge path</span>
+        <input id="mcpBridgePath" type="text" readonly style="flex:1;font-family:monospace;font-size:12px" />
+        <button id="mcpCopyBridgePathBtn" type="button" class="btn btn-secondary btn-sm">Copy</button>
+      </label>
+
+      <hr />
+      <h3>MCP host config</h3>
+      <p class="hint">Add this to your MCP host config (e.g., <code>claude_desktop_config.json</code>):</p>
+      <pre id="mcpConfigBlock" class="config-block" style="background:#f5f5f5;padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-all"></pre>
+      <button id="mcpCopyConfigBtn" type="button" class="btn btn-secondary btn-sm">Copy config</button>
+
+      <hr />
+      <h3>Allowed domains</h3>
+      <p class="hint">Comma-separated list of domains the MCP client is allowed to navigate to and interact with. Leave empty to block all navigation. Supports <code>*.example.com</code> wildcards.</p>
+      <input id="mcpAllowedDomains" type="text" placeholder="github.com,gitlab.com,*.docs.example.com" style="width:100%" />
+      <p class="hint" id="mcpDomainsSavedHint"></p>
+
+      <hr />
+      <h3>Tools</h3>
+      <p class="hint">The following tools are exposed via MCP. Tools marked <strong>Sensitive</strong> require your confirmation in the side panel before executing.</p>
+      <div class="mcp-tools-list">
+        <div><strong>Default (no prompt):</strong> <code>read_page</code>, <code>navigate</code>, <code>list_tabs</code>, <code>get_tab_info</code>, <code>scroll</code>, <code>hover</code>, <code>get_element_text</code></div>
+        <div style="margin-top:4px"><strong>Sensitive (prompts you):</strong> <code>click</code>, <code>type_text</code>, <code>execute_script</code>, <code>capture_screenshot</code></div>
+      </div>
+      <button id="mcpCheckBtn" type="button" class="btn btn-secondary" style="margin-top:8px">Check bridge status…</button>
+      <span id="mcpCheckResult" class="hint" style="margin-left:8px"></span>
     </section>
 
     <section id="tab-privacy" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-privacy" tabindex="0">

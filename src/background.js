@@ -22,12 +22,14 @@ import { deleteSessionState } from "./lib/statePersist.js";
 import { initCustomTools } from "./lib/tools.js";
 import { startRecording, stopRecording, saveMacro, deleteMacro, listMacros, playMacro } from "./lib/macroRecorder.js";
 import { initDownloadCapture } from "./lib/downloadCapture.js";
+import mcp from "./lib/mcp-client.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
 // to be registered during the worker's initial evaluation.
 startMediaSniffer();
 startNavErrorTracking();
+initMCP();
 
 const MAX_SESSIONS = 30;
 
@@ -42,6 +44,58 @@ chrome.runtime.onInstalled.addListener(async () => {
   await initCustomTools();
   initDownloadCapture();
 });
+
+// --- MCP Bridge setup --------------------------------------------------
+// Sets up callbacks so the side panel UI gets notified when MCP status
+// changes and when tools execute. Also wires the user confirmation prompt.
+
+let _mcpPendingConfirm = null; // { tool, args, resolve }
+
+function initMCP() {
+  mcp.onStatusChange((connected) => {
+    chrome.runtime.sendMessage({
+      type: "MCP_STATUS_CHANGE",
+      connected,
+    }).catch(() => {});
+  });
+
+  mcp.onToolCallStart((callId, tool, args) => {
+    chrome.runtime.sendMessage({
+      type: "MCP_TOOL_START",
+      callId,
+      tool,
+      args,
+    }).catch(() => {});
+  });
+
+  mcp.onToolCallEnd((callId, result) => {
+    chrome.runtime.sendMessage({
+      type: "MCP_TOOL_END",
+      callId,
+      result,
+    }).catch(() => {});
+  });
+
+  mcp.needsUserConfirm(async (tool, args) => {
+    return new Promise((resolve) => {
+      _mcpPendingConfirm = { tool, args, resolve };
+
+      chrome.runtime.sendMessage({
+        type: "MCP_SHOW_CONFIRM",
+        tool,
+        args,
+      }).catch(() => resolve(false));
+
+      // Timeout: auto-deny after 30 seconds if user doesn't respond
+      setTimeout(() => {
+        if (_mcpPendingConfirm) {
+          _mcpPendingConfirm.resolve(false);
+          _mcpPendingConfirm = null;
+        }
+      }, 30_000);
+    });
+  });
+}
 
 // Global keyboard shortcuts (manifest.json "commands") — these fire even
 // when the side panel isn't the focused surface (or isn't open at all),
@@ -1702,6 +1756,61 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
   // Auto-add queued RUN_TASK messages to the queue — already handled above.
   // These handlers let the side panel query/clear without sending a full task.
+
+  // --- MCP Bridge handlers --------------------------------------------
+
+  if (msg.type === "MCP_CONNECT") {
+    (async () => {
+      try {
+        // msg.port and msg.token come from the side panel (which reads them
+        // from chrome.storage.local or the bridge temp file)
+        mcp.connect(msg.port, msg.token);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "MCP_DISCONNECT") {
+    mcp.disconnect();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.type === "MCP_GET_STATUS") {
+    sendResponse({
+      connected: mcp.isConnected,
+      port: mcp.port,
+    });
+    return;
+  }
+
+  if (msg.type === "MCP_CONFIRM_TOOL") {
+    // The side panel UI asks for user confirmation for a sensitive tool.
+    // We broadcast an AGENT_EVENT that the side panel shows as a dialog.
+    // The side panel responds with MCP_CONFIRM_REPLY.
+    // This two-message handshake is needed because sidepanel.js can't
+    // return a value synchronously from a runtime.sendMessage.
+    chrome.runtime.sendMessage({
+      type: "MCP_SHOW_CONFIRM",
+      callId: msg.callId,
+      tool: msg.tool,
+      args: msg.args,
+    });
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.type === "MCP_CONFIRM_REPLY") {
+    if (_mcpPendingConfirm) {
+      _mcpPendingConfirm.resolve(msg.allowed === true);
+      _mcpPendingConfirm = null;
+    }
+    sendResponse({ ok: true });
+    return;
+  }
 
   return false;
 });

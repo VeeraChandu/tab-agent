@@ -52,6 +52,19 @@ const themeIconAuto = document.getElementById("themeIconAuto");
 
 const { renderMarkdown, escapeHtml } = window.TabAgentMarkdown;
 
+// --- MCP UI elements ---------------------------------------------------
+const mcpBanner = document.getElementById("mcpBanner");
+const mcpBannerLabel = document.getElementById("mcpBannerLabel");
+const mcpStopBtn = document.getElementById("mcpStopBtn");
+const mcpLogToggleBtn = document.getElementById("mcpLogToggleBtn");
+const mcpActivityLog = document.getElementById("mcpActivityLog");
+const mcpActivityList = document.getElementById("mcpActivityList");
+const mcpConfirmOverlay = document.getElementById("mcpConfirmOverlay");
+const mcpConfirmToolName = document.getElementById("mcpConfirmToolName");
+const mcpConfirmArgs = document.getElementById("mcpConfirmArgs");
+const mcpConfirmAllowBtn = document.getElementById("mcpConfirmAllowBtn");
+const mcpConfirmDenyBtn = document.getElementById("mcpConfirmDenyBtn");
+
 // --- theme (light / dark / system) -----------------------------------
 // "System" (stored as null) tracks prefers-color-scheme via the plain
 // @media block in sidepanel.css; "light"/"dark" pin data-theme regardless of
@@ -4117,4 +4130,110 @@ chrome.runtime.onMessage.addListener((msg) => {
     applyScheduledTaskPrefill(msg);
     chrome.storage.local.remove("pendingScheduledTaskPrefill").catch(() => {});
   }
+
+  // --- MCP message handlers -------------------------------------------
+
+  if (msg.type === "MCP_STATUS_CHANGE") {
+    mcpSetConnected(msg.connected);
+  }
+
+  if (msg.type === "MCP_TOOL_START") {
+    mcpAddActivity(msg.callId, msg.tool, msg.args, "running");
+  }
+
+  if (msg.type === "MCP_TOOL_END") {
+    mcpUpdateActivity(msg.callId, msg.result?.error ? "error" : "done");
+  }
+
+  if (msg.type === "MCP_SHOW_CONFIRM") {
+    mcpShowConfirm(msg.tool, msg.args);
+  }
 });
+
+// === MCP Client UI ====================================================
+// Manages the connection banner, activity log, and confirmation dialog.
+
+function mcpSetConnected(connected) {
+  mcpBanner.classList.toggle("hidden", !connected);
+  if (!connected) {
+    mcpActivityLog.classList.add("hidden");
+  }
+}
+
+function mcpAddActivity(callId, tool, args, status) {
+  mcpActivityLog.classList.remove("hidden");
+  const entry = document.createElement("div");
+  entry.className = `mcp-activity-entry mcp-entry-${status}`;
+  entry.dataset.callId = callId;
+  entry.innerHTML = `
+    <span class="mcp-entry-tool">${escapeHtml(tool)}</span>
+    <span class="mcp-entry-args">${escapeHtml(JSON.stringify(args || {}).slice(0, 80))}</span>
+  `;
+  mcpActivityList.prepend(entry);
+
+  // Keep max 30 entries
+  while (mcpActivityList.children.length > 30) {
+    mcpActivityList.lastChild.remove();
+  }
+}
+
+function mcpUpdateActivity(callId, status) {
+  const entry = mcpActivityList.querySelector(`[data-call-id="${callId}"]`);
+  if (entry) {
+    entry.className = `mcp-activity-entry mcp-entry-${status}`;
+  }
+}
+
+function mcpShowConfirm(tool, args) {
+  mcpConfirmToolName.textContent = tool;
+  mcpConfirmArgs.textContent = JSON.stringify(args, null, 2);
+
+  const onAllow = () => {
+    cleanup();
+    chrome.runtime.sendMessage({ type: "MCP_CONFIRM_REPLY", allowed: true });
+  };
+  const onDeny = () => {
+    cleanup();
+    chrome.runtime.sendMessage({ type: "MCP_CONFIRM_REPLY", allowed: false });
+  };
+
+  const cleanup = () => {
+    mcpConfirmAllowBtn.removeEventListener("click", onAllow);
+    mcpConfirmDenyBtn.removeEventListener("click", onDeny);
+    mcpConfirmOverlay.classList.add("hidden");
+  };
+
+  mcpConfirmAllowBtn.addEventListener("click", onAllow);
+  mcpConfirmDenyBtn.addEventListener("click", onDeny);
+  mcpConfirmOverlay.classList.remove("hidden");
+}
+
+// --- MCP Stop button and log toggle -----------------------------------
+
+mcpStopBtn.addEventListener("click", () => {
+  const confirmed = confirm("Stop the MCP client and disconnect it?");
+  if (confirmed) {
+    chrome.runtime.sendMessage({ type: "MCP_DISCONNECT" });
+    mcpSetConnected(false);
+  }
+});
+
+mcpLogToggleBtn.addEventListener("click", () => {
+  mcpActivityLog.classList.toggle("hidden");
+});
+
+// Auto-connect to MCP bridge if configured.
+// Reads the stored port and token from chrome.storage.local and connects.
+async function mcpAutoConnect() {
+  try {
+    const { mcpPort, mcpToken } = await chrome.storage.local.get(["mcpPort", "mcpToken"]);
+    if (mcpPort && mcpToken) {
+      chrome.runtime.sendMessage({ type: "MCP_CONNECT", port: mcpPort, token: mcpToken });
+    }
+  } catch {
+    // storage access may fail — ignore
+  }
+}
+
+// Attempt auto-connect after a short delay to let the service worker settle.
+setTimeout(mcpAutoConnect, 500);

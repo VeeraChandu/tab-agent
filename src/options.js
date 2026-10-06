@@ -2430,5 +2430,132 @@ clearUsageDataBtn?.addEventListener("click", async () => {
 // fine to render even when the tab isn't visible.)
 renderUsageDashboard();
 
+// === MCP Tab ===========================================================
+
+const mcpPortInput = document.getElementById("mcpPort");
+const mcpTokenInput = document.getElementById("mcpToken");
+const mcpBridgePathInput = document.getElementById("mcpBridgePath");
+const mcpRegenTokenBtn = document.getElementById("mcpRegenTokenBtn");
+const mcpCopyTokenBtn = document.getElementById("mcpCopyTokenBtn");
+const mcpConfigBlock = document.getElementById("mcpConfigBlock");
+const mcpCopyConfigBtn = document.getElementById("mcpCopyConfigBtn");
+const mcpAllowedDomainsInput = document.getElementById("mcpAllowedDomains");
+const mcpCheckBtn = document.getElementById("mcpCheckBtn");
+const mcpCheckResult = document.getElementById("mcpCheckResult");
+const mcpCopyBridgePathBtn = document.getElementById("mcpCopyBridgePathBtn");
+
+function generateToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function getBridgePath() {
+  // Best-effort guess: the bridge lives in src/mcp/mcp-bridge.mjs
+  // relative to the extension root. In a "Load unpacked" install,
+  // this is the extension source directory.
+  // We can't know the absolute path at build time, so we show a
+  // placeholder the user can adjust.
+  return "node ${EXTENSION_PATH}/src/mcp/mcp-bridge.mjs";
+}
+
+function updateMCPConfig() {
+  const port = mcpPortInput.value || "58732";
+  const token = mcpTokenInput.value || "";
+  const domains = mcpAllowedDomainsInput.value || "";
+  const bridgePath = mcpBridgePathInput.value || getBridgePath();
+
+  const config = {
+    mcpServers: {
+      "tab-agent": {
+        command: "node",
+        args: [bridgePath],
+        env: {
+          MCP_AUTH_TOKEN: token,
+          MCP_PORT: port,
+          MCP_ALLOWED_DOMAINS: domains,
+        },
+      },
+    },
+  };
+
+  mcpConfigBlock.textContent = JSON.stringify(config, null, 2);
+
+  // Store in chrome.storage.local so the side panel can auto-connect
+  chrome.storage.local.set({ mcpPort: parseInt(port, 10), mcpToken: token });
+}
+
+async function loadMCPConfig() {
+  const { mcpPort, mcpToken, mcpAllowedDomains } = await chrome.storage.local.get([
+    "mcpPort", "mcpToken", "mcpAllowedDomains",
+  ]);
+
+  if (mcpPort) mcpPortInput.value = mcpPort;
+  if (!mcpToken) {
+    mcpTokenInput.value = generateToken();
+  } else {
+    mcpTokenInput.value = mcpToken;
+  }
+  if (mcpAllowedDomains) mcpAllowedDomainsInput.value = mcpAllowedDomains;
+
+  // Bridge path is computed
+  mcpBridgePathInput.value = getBridgePath();
+
+  updateMCPConfig();
+}
+
+// Event listeners
+mcpPortInput.addEventListener("change", () => {
+  chrome.storage.local.set({ mcpPort: parseInt(mcpPortInput.value, 10) });
+  updateMCPConfig();
+});
+
+mcpRegenTokenBtn.addEventListener("click", () => {
+  mcpTokenInput.value = generateToken();
+  chrome.storage.local.set({ mcpToken: mcpTokenInput.value });
+  updateMCPConfig();
+});
+
+mcpCopyTokenBtn.addEventListener("click", () => {
+  navigator.clipboard.writeText(mcpTokenInput.value).catch(() => {});
+});
+
+mcpCopyConfigBtn.addEventListener("click", () => {
+  navigator.clipboard.writeText(mcpConfigBlock.textContent).catch(() => {});
+});
+
+mcpCopyBridgePathBtn.addEventListener("click", () => {
+  navigator.clipboard.writeText(mcpBridgePathInput.value).catch(() => {});
+});
+
+mcpAllowedDomainsInput.addEventListener("change", () => {
+  chrome.storage.local.set({ mcpAllowedDomains: mcpAllowedDomainsInput.value });
+  updateMCPConfig();
+  const hint = document.getElementById("mcpDomainsSavedHint");
+  hint.textContent = "Saved";
+  setTimeout(() => { hint.textContent = ""; }, 2000);
+});
+
+mcpCheckBtn.addEventListener("click", async () => {
+  const port = mcpPortInput.value || "58732";
+  const token = mcpTokenInput.value || "";
+  mcpCheckResult.textContent = "Checking…";
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/status?token=${encodeURIComponent(token)}`);
+    if (res.ok) {
+      const data = await res.json();
+      mcpCheckResult.textContent = data.connected
+        ? `✅ Bridge running, extension connected (${data.pendingCalls} pending calls)`
+        : `✅ Bridge running, waiting for extension to connect`;
+    } else if (res.status === 401) {
+      mcpCheckResult.textContent = "❌ Bridge reached but token rejected — check MCP_AUTH_TOKEN";
+    } else {
+      mcpCheckResult.textContent = `❌ Bridge returned ${res.status}`;
+    }
+  } catch {
+    mcpCheckResult.textContent = "❌ No bridge on that port — is the MCP host running?";
+  }
+});
+
 // Kick off full settings page load.
-load();
+load().then(() => loadMCPConfig());

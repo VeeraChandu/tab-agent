@@ -64,6 +64,22 @@
 
   <div id="warningBanner" class="banner hidden"></div>
 
+  <!-- MCP connection banner: shown when an MCP client is connected -->
+  <div id="mcpBanner" class="mcp-banner hidden">
+    <div class="mcp-banner-left">
+      <span class="mcp-banner-dot"></span>
+      <span id="mcpBannerLabel" class="mcp-banner-label">MCP connected</span>
+    </div>
+    <div class="mcp-banner-right">
+      <button id="mcpLogToggleBtn" class="mcp-log-toggle" title="Toggle activity log">📋</button>
+      <button id="mcpStopBtn" class="mcp-stop-btn" title="Stop MCP client">⏹ Stop</button>
+    </div>
+  </div>
+  <!-- MCP activity log: recent tool calls -->
+  <div id="mcpActivityLog" class="mcp-activity-log hidden">
+    <div id="mcpActivityList" class="mcp-activity-list"></div>
+  </div>
+
   <div id="historyPanel" class="history-panel hidden">
     <div class="history-panel-header">
       <span>History</span>
@@ -212,6 +228,23 @@
     <div class="replay-body">
       <div id="replayStrip" class="replay-strip"></div>
       <div id="replayScreenshot" class="replay-screenshot"></div>
+    </div>
+  </div>
+
+  <!-- MCP confirmation dialog — shown for sensitive tool calls -->
+  <div id="mcpConfirmOverlay" class="mcp-confirm-overlay hidden">
+    <div class="mcp-confirm-dialog">
+      <div class="mcp-confirm-header">Allow MCP tool?</div>
+      <div class="mcp-confirm-body">
+        <div class="mcp-confirm-tool">
+          <span id="mcpConfirmToolName" class="mcp-confirm-tool-name"></span>
+        </div>
+        <pre id="mcpConfirmArgs" class="mcp-confirm-args"></pre>
+      </div>
+      <div class="mcp-confirm-actions">
+        <button id="mcpConfirmDenyBtn" class="btn btn-sm">Deny</button>
+        <button id="mcpConfirmAllowBtn" class="btn btn-primary btn-sm">Allow</button>
+      </div>
     </div>
   </div>
 
