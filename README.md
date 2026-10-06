@@ -3,10 +3,14 @@
 [![Release](https://img.shields.io/github/v/release/VeeraChandu/tab-agent)](https://github.com/VeeraChandu/tab-agent/releases)
 
 A Chrome (Manifest V3) extension that runs an agentic AI loop directly on your
-browser - reading page content, clicking/typing/navigating, and hopping
-between open tabs as needed - with no MCP server, no local proxy, and no
-extra setup. You bring your own Anthropic or OpenAI-compatible API key(s);
+browser — reading page content, clicking/typing/navigating, and hopping
+between open tabs as needed — with no backend server and no extra setup.
+You bring your own Anthropic or OpenAI-compatible API key(s);
 the extension calls the provider directly from the browser.
+
+Tab Agent also exposes its browser control as **MCP tools** (Model Context
+Protocol), letting AI coding assistants like Claude Desktop, Cursor, or Cline
+drive the browser through a secure local bridge.
 
 ## Install (load unpacked)
 
@@ -568,6 +572,103 @@ similar anti-automation measures as a stop-and-report signal, not something
 to work around - and not to help circumvent another AI service's own safety
 restrictions. See `lib/tools.js`'s system prompt ("Scope" section) for the
 exact wording.
+
+## MCP bridge (Model Context Protocol)
+
+Tab Agent can run as an MCP server, exposing its browser control tools to
+AI coding assistants. This lets tools like **Claude Desktop**, **Cursor**,
+or **Cline** navigate and interact with websites through your browser.
+
+### Architecture
+
+```
+MCP Host (Cursor / Claude Desktop)
+    │  spawns: node src/mcp/mcp-bridge.mjs
+    │  stdin/stdout (Content-Length JSON-RPC)
+    ▼
+mcp-bridge.mjs (Node.js)
+    │  HTTP SSE server on 127.0.0.1:<port>
+    │  Token-authenticated (MCP_AUTH_TOKEN)
+    ▼
+Chrome Extension (background.js)
+    │  Domain allowlist enforcement
+    │  Two-tier tool permissions
+    │  User confirm dialog for sensitive tools
+    ▼
+    Browser (tabs API)
+```
+
+### Security
+
+- **Auth token** — a 48-character hex token generated in Settings. Every
+  connection to the bridge must present this token.
+- **Domain allowlist** — set `MCP_ALLOWED_DOMAINS` to a comma-separated list
+  of domains (e.g. `github.com,*.docs.example.com`). Empty = no pages can be
+  navigated to or interacted with.
+- **Two-tier tools** — tools are split into **Default** (read-only / low-risk)
+  and **Sensitive** categories. Sensitive tools require you to click
+  **Allow** or **Deny** in the side panel before they execute.
+- **Stop button** — the side panel shows a Stop button while MCP is connected.
+  Clicking it disconnects the MCP client immediately.
+- **Deny-all default** — before the extension receives the `connected` event,
+  all domains are blocked.
+
+### Exposed tools
+
+| Tool | Domain-checked | Requires confirm |
+|---|---|---|
+| `read_page` | ✅ | ❌ |
+| `navigate` | ✅ | ❌ |
+| `list_tabs` | ❌ (metadata only) | ❌ |
+| `get_tab_info` | ✅ | ❌ |
+| `scroll` | ✅ | ❌ |
+| `hover` | ✅ | ❌ |
+| `get_element_text` | ✅ | ❌ |
+| `click` | ✅ | ✅ |
+| `type_text` | ✅ | ✅ |
+| `execute_script` | ✅ | ✅ |
+| `capture_screenshot` | ❌ (any visible tab) | ✅ |
+
+### Setup
+
+1. Open the extension's **Settings → MCP** tab.
+2. The auth token is auto-generated. Regenerate or copy it as needed.
+3. Set the **port** (default `58732`).
+4. Set **allowed domains** — comma-separated, supports `*.example.com`.
+5. Copy the config snippet and add it to your MCP host's config file
+   (e.g. `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "tab-agent": {
+      "command": "node",
+      "args": ["path/to/src/mcp/mcp-bridge.mjs"],
+      "env": {
+        "MCP_AUTH_TOKEN": "<your-token>",
+        "MCP_PORT": "58732",
+        "MCP_ALLOWED_DOMAINS": "github.com,gitlab.com"
+      }
+    }
+  }
+}
+```
+
+6. Start the MCP host. The side panel shows a green **MCP connected** banner
+   when the bridge is active. Sensitive tool calls display a confirmation
+   overlay with the tool name and arguments.
+
+### Side panel UI
+
+When MCP is connected, the side panel shows:
+- A green banner with a pulsing dot and **Stop** button at the top.
+- An activity log (togglable) listing each tool call and its status.
+- A confirmation overlay for sensitive tools with the tool name, arguments
+  formatted as JSON, and **Allow** / **Deny** buttons.
+
+Check bridge status from **Settings → MCP → Check bridge status** — this
+pings `http://127.0.0.1:<port>/status?token=...` and reports whether the
+bridge is reachable and whether the extension is connected.
 
 ## Privacy & permissions
 

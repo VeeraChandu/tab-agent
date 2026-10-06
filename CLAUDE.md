@@ -14,14 +14,20 @@ taken. See the `concise-comments` skill for the full version.
 Tab Agent is a Chrome (Manifest V3) extension that runs an agentic read → decide → act loop directly
 in the browser: it reads the current page, asks a model (Anthropic or any OpenAI-compatible API) what
 to do next, executes the chosen tool (click, type, scroll, navigate, switch tabs, etc.), and repeats
-until the model calls `finish`. No MCP server, no backend - API calls go straight from the browser to
+until the model calls `finish`. No backend server — API calls go straight from the browser to
 whatever provider the user configured in Settings.
+
+Tab Agent also exposes its browser control as **MCP tools** (Model Context Protocol) via
+`src/mcp/mcp-bridge.mjs` (a Node.js process spawned by the MCP host) and
+`src/lib/mcp-client.js` (the extension-side connector that receives tool calls and
+executes them through the Chrome tabs/scripting API). See README.md's MCP bridge section
+for setup and tool documentation.
 
 ## Repo layout
 
 `src/` is the loadable extension - every file `chrome://extensions` → Load unpacked needs
 (`manifest.json`, `background.js`, `content.js`, `consoleCapture.js`, `options.*`, `sidepanel.*`,
-`lib/`, `icons/`) and nothing else. Everything at the repo root is dev tooling, config, or docs: `test/`, `scripts/`,
+`lib/`, `mcp/`, `icons/`) and nothing else. Everything at the repo root is dev tooling, config, or docs: `test/`, `scripts/`,
 `config/` (`eslint.config.js`, `jest.config.js`), `babel.config.js` (stays at the repo root - it's
 Jest-only and auto-discovery finding it there just works, not worth wiring a `configFile` override
 for), `.github/workflows/` (the two workflow files plus `.releaserc.json`/`release.alpha.config.json`,
@@ -443,9 +449,10 @@ Jest runs under `jest-environment-jsdom` with Babel transforming ES modules for 
 Classic-script `lib/` files (`markdown.js`, `pricing.js`) are tested by `require()`-ing them for their
 side effect of setting `window.TabAgent*`, since they don't use `export`. There's no meaningful way to
 unit-test `content.js`'s DOM scanning, `consoleCapture.js`'s MAIN-world wrapping, `background.js`'s
-message routing, or `lib/agentLoop.js`'s tab orchestration (including `lib/navErrors.js`'s
-`chrome.webNavigation` listeners and `lib/trustedInput.js`'s `chrome.debugger` calls) without a real
-Chrome environment - tests here are limited to the pure-logic `lib/` modules (pricing, markdown
+message routing, `lib/mcp-client.js`'s chrome.* API calls, `lib/agentLoop.js`'s tab orchestration
+(including `lib/navErrors.js`'s `chrome.webNavigation` listeners and `lib/trustedInput.js`'s
+`chrome.debugger` calls) or `src/mcp/mcp-bridge.mjs`'s Node.js stdio/HTTP I/O without a real
+Chrome environment or a running MCP host - tests here are limited to the pure-logic `lib/` modules (pricing, markdown
 rendering, vision-capability heuristic, site-category detection, tool schema shape, page/attachment
 cache chunking and eviction logic - the latter two fake `chrome.storage.local` with an in-memory `Map`
 rather than mocking the whole extension) plus the two exported-for-tests pieces of `lib/agentLoop.js`
