@@ -351,6 +351,199 @@ textarea:focus-visible,
   text-align: center;
 }
 
+/* --- Investigation results panel (tile view) --------------------------- */
+.investigate-panel {
+  position: absolute;
+  top: 48px;
+  left: 10px;
+  right: 10px;
+  max-height: 60%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-md);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: tabagent-pop-in 0.14s ease-out;
+}
+.investigate-panel.hidden { display: none; }
+
+.investigate-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  font-weight: 650;
+  font-size: 12.5px;
+}
+.investigate-panel-count {
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: auto;
+}
+
+.investigate-panel-body {
+  overflow-y: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.investigate-panel-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 14px 10px;
+  text-align: center;
+}
+
+/* Tile card — one per parallel_investigate call */
+.investigate-tile-group {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.investigate-tile-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  font-size: 11.5px;
+  font-weight: 600;
+  background: var(--card-alt);
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
+}
+.investigate-tile-header .collapse-icon {
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+.investigate-tile-header.collapsed .collapse-icon {
+  transform: rotate(-90deg);
+}
+.investigate-tile-header .header-count {
+  font-weight: 400;
+  color: var(--text-muted);
+  margin-left: auto;
+  font-size: 11px;
+}
+
+/* Individual result tile */
+.investigate-tile {
+  display: flex;
+  gap: 10px;
+  padding: 10px 10px 10px 14px;
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.investigate-tile:last-child { border-bottom: none; }
+.investigate-tile:hover { background: var(--hover-bg); }
+
+/* Status indicator strip on the left edge */
+.investigate-tile-status {
+  width: 3px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  align-self: stretch;
+  margin-top: 2px;
+}
+.investigate-tile-status.ok      { background: var(--success); }
+.investigate-tile-status.error   { background: var(--error-text); }
+.investigate-tile-status.incomplete { background: #f59e0b; }
+.investigate-tile-status.skipped  { background: var(--text-muted); opacity: 0.4; }
+
+/* Tile content */
+.investigate-tile-body {
+  flex: 1;
+  min-width: 0;
+}
+.investigate-tile-title {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.investigate-tile-url {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+}
+.investigate-tile-url a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.investigate-tile-url a:hover { text-decoration: underline; }
+
+.investigate-tile-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 99px;
+  margin-top: 4px;
+}
+.investigate-tile-badge.ok      { background: #dcfce7; color: #166534; }
+.investigate-tile-badge.error   { background: #fee2e2; color: #991b1b; }
+.investigate-tile-badge.incomplete { background: #fef3c7; color: #92400e; }
+.investigate-tile-badge.skipped  { background: #f3f4f6; color: #6b7280; }
+
+.investigate-tile-findings {
+  font-size: 11.5px;
+  line-height: 1.5;
+  margin-top: 5px;
+  color: var(--text);
+  /* Clamp to ~3 lines */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.investigate-tile-findings p { margin: 0 0 3px; }
+.investigate-tile-findings ul { margin: 2px 0; padding-left: 16px; }
+.investigate-tile-findings li { margin-bottom: 1px; }
+
+.investigate-tile-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 5px;
+  flex-wrap: wrap;
+}
+.investigate-tile-actions button {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--card);
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s, border-color 0.1s;
+}
+.investigate-tile-actions button:hover {
+  background: var(--accent-light);
+  border-color: var(--accent);
+}
+.investigate-tile-actions button:active { opacity: 0.7; }
+
+/* Dark mode overrides for badges */
+@media (prefers-color-scheme: dark) {
+  .investigate-tile-badge.ok      { background: #064e3b; color: #a7f3d0; }
+  .investigate-tile-badge.error   { background: #7f1d1d; color: #fecaca; }
+  .investigate-tile-badge.incomplete { background: #78350f; color: #fde68a; }
+  .investigate-tile-badge.skipped  { background: #374151; color: #d1d5db; }
+}
+
 /* Each tree row: a node in the hierarchy */
 .branch-tree-row {
   display: flex;

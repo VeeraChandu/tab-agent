@@ -44,6 +44,13 @@
           <line x1="6" y1="15" x2="15" y2="16.5"/>
         </svg>
       </button>
+      <button id="investigatePanelBtn" class="icon-btn" title="Investigation results" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path d="M9 3v18"/>
+          <path d="M3 9h18"/>
+        </svg>
+      </button>
       <button id="settingsBtn" class="icon-btn" title="Settings">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8">
           <circle cx="12" cy="12" r="3"/>
@@ -76,6 +83,19 @@
       </button>
     </div>
     <div id="branchTreeContainer" class="branch-tree-container"></div>
+  </div>
+
+  <div id="investigatePanel" class="investigate-panel hidden">
+    <div class="investigate-panel-header">
+      <span>Investigation results</span>
+      <span id="investigatePanelCount" class="investigate-panel-count"></span>
+      <button id="closeInvestigatePanelBtn" class="icon-btn" title="Close">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div id="investigatePanelBody" class="investigate-panel-body">
+      <div class="investigate-panel-empty">No investigations yet. Ask the agent to compare sources or check across multiple pages.</div>
+    </div>
   </div>
 
   <div id="agentPopover" class="agent-popover hidden"></div>
