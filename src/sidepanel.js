@@ -54,7 +54,6 @@ const { renderMarkdown, escapeHtml } = window.TabAgentMarkdown;
 
 // --- MCP UI elements ---------------------------------------------------
 const mcpBanner = document.getElementById("mcpBanner");
-const mcpBannerLabel = document.getElementById("mcpBannerLabel");
 const mcpStopBtn = document.getElementById("mcpStopBtn");
 const mcpLogToggleBtn = document.getElementById("mcpLogToggleBtn");
 const mcpActivityLog = document.getElementById("mcpActivityLog");

@@ -18,7 +18,7 @@ module.exports = [
 
   // ES module source files (service worker + lib modules that use import/export).
   {
-    files: ["src/background.js", "src/options.js", "src/lib/agentLoop.js", "src/lib/providers.js", "src/lib/tools.js", "src/lib/vision.js", "src/lib/siteCategories.js", "src/lib/mediaSniffer.js", "src/lib/navErrors.js", "src/lib/trustedInput.js", "src/lib/pageCache.js", "src/lib/attachmentCache.js", "src/lib/statusBadge.js", "src/lib/sessionRecorder.js", "src/lib/statePersist.js", "src/lib/customTools.js", "src/lib/macroRecorder.js", "src/lib/downloadCapture.js"],
+    files: ["src/background.js", "src/options.js", "src/lib/agentLoop.js", "src/lib/providers.js", "src/lib/tools.js", "src/lib/vision.js", "src/lib/siteCategories.js", "src/lib/mediaSniffer.js", "src/lib/navErrors.js", "src/lib/trustedInput.js", "src/lib/pageCache.js", "src/lib/attachmentCache.js", "src/lib/statusBadge.js", "src/lib/sessionRecorder.js", "src/lib/statePersist.js", "src/lib/customTools.js", "src/lib/macroRecorder.js", "src/lib/downloadCapture.js", "src/lib/mcp-client.js"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",
@@ -43,14 +43,17 @@ module.exports = [
   },
 
   // Node-side tooling: build script, config/ (this file, jest config,
-  // semantic-release), and babel.config.js (the one config file that stays
-  // at the repo root - see CLAUDE.md "Repo layout").
+  // semantic-release), babel.config.js (the one config file that stays
+  // at the repo root - see CLAUDE.md "Repo layout"), and the MCP bridge.
   {
-    files: ["scripts/**/*.js", "config/**/*.js", "babel.config.js"],
+    files: ["scripts/**/*.js", "config/**/*.js", "babel.config.js", "src/mcp/**/*.mjs"],
     languageOptions: {
       ecmaVersion: 2023,
-      sourceType: "commonjs",
+      sourceType: "module",
       globals: { ...globals.node },
+    },
+    rules: {
+      "no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     },
   },
 
