@@ -21,6 +21,11 @@ const branchTreeBtn = document.getElementById("branchTreeBtn");
 const closeBranchTreeBtn = document.getElementById("closeBranchTreeBtn");
 const branchTreePanel = document.getElementById("branchTreePanel");
 const branchTreeContainer = document.getElementById("branchTreeContainer");
+const investigatePanelBtn = document.getElementById("investigatePanelBtn");
+const closeInvestigatePanelBtn = document.getElementById("closeInvestigatePanelBtn");
+const investigatePanel = document.getElementById("investigatePanel");
+const investigatePanelBody = document.getElementById("investigatePanelBody");
+const investigatePanelCount = document.getElementById("investigatePanelCount");
 const warningBanner = document.getElementById("warningBanner");
 const topProgress = document.getElementById("topProgress");
 const modelSelect = document.getElementById("modelSelect");
@@ -660,6 +665,121 @@ function closeBranchTree() {
   branchTreePanel.classList.add("hidden");
 }
 
+// --- investigation results panel (tile view) ---------------------------
+
+// In-memory store of investigation results, keyed by callId. Populated
+// from investigate_start + branch_done events that flow through applyAgentEvent.
+// Persisted across re-renders via the session's uiEvents.
+const investigateResults = new Map(); // callId -> { branches, groupHeader, tiles: Map<label, {status, findings, url, tabId, objective, steps}> }
+
+investigatePanelBtn.addEventListener("click", () => {
+  const isOpen = !investigatePanel.classList.contains("hidden");
+  if (isOpen) {
+    closeInvestigatePanel();
+  } else {
+    renderInvestigatePanel();
+    investigatePanel.classList.remove("hidden");
+  }
+});
+closeInvestigatePanelBtn.addEventListener("click", closeInvestigatePanel);
+
+function closeInvestigatePanel() {
+  investigatePanel.classList.add("hidden");
+}
+
+function renderInvestigatePanel() {
+  const body = investigatePanelBody;
+  if (!investigateResults.size) {
+    body.innerHTML = '<div class="investigate-panel-empty">No investigations yet. Ask the agent to compare sources or check across multiple pages.</div>';
+    investigatePanelCount.textContent = "";
+    return;
+  }
+
+  let totalTiles = 0;
+  let html = "";
+  for (const group of investigateResults.values()) {
+    const groupLabel = group.groupHeader || `Investigation`;
+    const tiles = Array.from(group.tiles.values());
+    totalTiles += tiles.length;
+    const okCount = tiles.filter((t) => t.status === "ok").length;
+    const incompleteCount = tiles.filter((t) => t.status === "incomplete").length;
+
+    html += `<div class="investigate-tile-group">`;
+    html += `<div class="investigate-tile-header" onclick="this.classList.toggle('collapsed');this.nextElementSibling.classList.toggle('hidden')">
+      <span class="collapse-icon">▼</span>
+      ${escapeHtml(groupLabel)}
+      <span class="header-count">${tiles.length} source${tiles.length === 1 ? "" : "s"}${okCount ? ` · ${okCount} done` : ""}${incompleteCount ? ` · ${incompleteCount} incomplete` : ""}</span>
+    </div>`;
+    html += `<div class="investigate-tile-list">`;
+    for (const tile of tiles) {
+      html += renderInvestigateTile(tile);
+    }
+    html += `</div></div>`;
+  }
+
+  body.innerHTML = html;
+  investigatePanelCount.textContent = `${totalTiles} result${totalTiles === 1 ? "" : "s"}`;
+}
+
+function renderInvestigateTile(tile) {
+  const statusClass = tile.status === "ok" ? "ok" : tile.status === "error" ? "error" : tile.status === "incomplete" ? "incomplete" : "skipped";
+  const badgeLabel = tile.status === "ok" ? "Done" : tile.status === "error" ? "Error" : tile.status === "incomplete" ? "Incomplete" : "Skipped";
+  const hostname = tile.url ? hostnameLabel(tile.url) : "";
+  // Strip the " · site" suffix from label if it matches the hostname
+  const title = tile.label.endsWith(` - ${hostname}`) ? tile.label.slice(0, -(hostname.length + 3)) : tile.label;
+  const shortFindings = tile.findings ? tile.findings.slice(0, 300) : "";
+
+  let actionsHtml = "";
+  if (tile.url) {
+    actionsHtml += `<button onclick="reopenTab('${escapeHtml(tile.url)}', this)" title="${escapeHtml(tile.url)}">↗ Open page</button>`;
+  }
+
+  return `<div class="investigate-tile">
+    <div class="investigate-tile-status ${statusClass}"></div>
+    <div class="investigate-tile-body">
+      <div class="investigate-tile-title">${escapeHtml(title)}</div>
+      ${tile.url ? `<div class="investigate-tile-url"><a href="${escapeHtml(tile.url)}" target="_blank">${escapeHtml(hostname)}</a></div>` : ""}
+      <div class="investigate-tile-badge ${statusClass}">● ${badgeLabel}</div>
+      ${shortFindings ? `<div class="investigate-tile-findings">${renderMarkdown(shortFindings)}</div>` : ""}
+      ${actionsHtml ? `<div class="investigate-tile-actions">${actionsHtml}</div>` : ""}
+    </div>
+  </div>`;
+}
+
+// Collects branch results from uiEvents into investigateResults map.
+// Called on session load and when new events arrive.
+function rebuildInvestigateResults(session) {
+  investigateResults.clear();
+  if (!session) return;
+  const path = computeActivePath(session);
+  for (const node of path) {
+    for (const evt of node.uiEvents || []) {
+      if (evt.type === "investigate_start") {
+        if (!investigateResults.has(evt.callId)) {
+          investigateResults.set(evt.callId, {
+            groupHeader: `🔀 ${evt.branches.length} source${evt.branches.length === 1 ? "" : "s"}${evt.remainingCount ? ` (${evt.remainingCount} more queued)` : ""}`,
+            tiles: new Map(),
+          });
+        }
+      } else if (evt.type === "branch_done" && investigateResults.has(evt.callId)) {
+        const group = investigateResults.get(evt.callId);
+        const existing = group.tiles.get(evt.label) || {};
+        group.tiles.set(evt.label, {
+          ...existing,
+          callId: evt.callId,
+          label: evt.label,
+          url: evt.url || existing.url,
+          tabId: typeof evt.tabId === "number" ? evt.tabId : existing.tabId,
+          objective: evt.objective || existing.objective,
+          findings: evt.findings || existing.findings,
+          steps: evt.steps || existing.steps || [],
+          status: evt.skipped ? "skipped" : evt.incomplete ? "incomplete" : evt.ok !== false ? "ok" : "error",
+        });
+      }
+    }
+  }
+}
+
 function renderBranchTree() {
   if (!currentSessionId) {
     branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No active chat. Start a new chat first.</div>';
@@ -773,9 +893,11 @@ async function switchToNodeBranch(targetNodeId) {
 document.addEventListener("mousedown", (e) => {
   const bp = branchTreePanel.classList.contains("hidden");
   const hp = historyPanel.classList.contains("hidden");
-  if (hp && bp) return;
+  const ip = investigatePanel.classList.contains("hidden");
+  if (hp && bp && ip) return;
   if (!hp && !historyPanel.contains(e.target) && !historyBtn.contains(e.target)) closeHistory();
   if (!bp && !branchTreePanel.contains(e.target) && !branchTreeBtn.contains(e.target)) closeBranchTree();
+  if (!ip && !investigatePanel.contains(e.target) && !investigatePanelBtn.contains(e.target)) closeInvestigatePanel();
 });
 
 // Global Escape: stop a running task if one is in progress, otherwise close
@@ -795,6 +917,10 @@ document.addEventListener("keydown", (e) => {
   }
   if (!branchTreePanel.classList.contains("hidden")) {
     closeBranchTree();
+    return;
+  }
+  if (!investigatePanel.classList.contains("hidden")) {
+    closeInvestigatePanel();
     return;
   }
 });
@@ -1361,6 +1487,7 @@ async function refreshCurrentSessionView() {
   if (!raw) return;
   const session = migrateSessionIfNeeded(raw);
   currentSession = session;
+  rebuildInvestigateResults(session);
   renderSessionPath(session);
 }
 
@@ -1372,6 +1499,7 @@ function loadSessionIntoView(rawSession) {
   editingNodeId = null;
   editBanner.classList.add("hidden");
   setActiveAgent(session.agentId ? agents.find((a) => a.id === session.agentId) || null : null);
+  rebuildInvestigateResults(session);
   renderSessionPath(session);
   closeHistory();
 }
@@ -3786,6 +3914,12 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "investigate_start":
       addInvestigateCard(event.callId, event.branches, event.remainingCount || 0, nodeId);
+      if (!investigateResults.has(event.callId)) {
+        investigateResults.set(event.callId, {
+          groupHeader: `🔀 ${event.branches.length} source${event.branches.length === 1 ? "" : "s"}${event.remainingCount ? ` (${event.remainingCount} more queued)` : ""}`,
+          tiles: new Map(),
+        });
+      }
       break;
 
     case "branch_active":
@@ -3798,6 +3932,22 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "branch_done":
       handleBranchDone(event, isReplay);
+      // Update investigate panel data store with this result
+      if (investigateResults.has(event.callId)) {
+        const group = investigateResults.get(event.callId);
+        const existing = group.tiles.get(event.label) || {};
+        group.tiles.set(event.label, {
+          ...existing,
+          callId: event.callId,
+          label: event.label,
+          url: event.url || existing.url,
+          tabId: typeof event.tabId === "number" ? event.tabId : existing.tabId,
+          objective: event.objective || existing.objective,
+          findings: event.findings || existing.findings,
+          steps: event.steps || existing.steps || [],
+          status: event.skipped ? "skipped" : event.incomplete ? "incomplete" : event.ok !== false ? "ok" : "error",
+        });
+      }
       break;
 
     case "branch_closed":
