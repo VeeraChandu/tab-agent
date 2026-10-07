@@ -4260,6 +4260,11 @@ async function mcpAutoConnect() {
 // Attempt auto-connect after a short delay to let the service worker settle.
 setTimeout(mcpAutoConnect, 500);
 
+// Force-hide MCP overlay on startup — in case the DOM somehow persisted
+// the overlay from a prior session or a stale service worker pushed a
+// MCP_SHOW_CONFIRM during panel load before the handler was registered.
+mcpConfirmOverlay.classList.add("hidden");
+
 // Reconnect if MCP config changes in storage while side panel is open.
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== "local") return;
