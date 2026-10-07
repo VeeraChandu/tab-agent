@@ -2166,6 +2166,8 @@ button.step-through-toggle.active {
   animation: tabagent-fade-in 0.2s ease;
 }
 
+.mcp-banner.hidden { display: none; }
+
 .mcp-banner-left {
   display: flex;
   align-items: center;
@@ -2234,6 +2236,8 @@ button.step-through-toggle.active {
   font-size: 11px;
 }
 
+.mcp-activity-log.hidden { display: none; }
+
 .mcp-activity-list {
   display: flex;
   flex-direction: column;
@@ -2290,6 +2294,8 @@ button.step-through-toggle.active {
   z-index: 1000;
   animation: tabagent-fade-in 0.15s ease;
 }
+
+.mcp-confirm-overlay.hidden { display: none; }
 
 .mcp-confirm-dialog {
   background: #fff;
