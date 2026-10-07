@@ -91,7 +91,6 @@ let authToken = "";
 let currentPort = 0;
 let isConnected = false;
 let reconnectTimer = null;
-const MAX_RECONNECT_DELAY = 30_000;
 
 // Callbacks set by background.js to wire into the UI
 let onStatusChange = null;   // (connected: boolean) => void
@@ -109,16 +108,20 @@ function connect(port, token) {
   eventSource = es;
 
   es.onopen = () => {
-    isConnected = true;
-    if (onStatusChange) onStatusChange(true);
-    clearTimeout(reconnectTimer);
+    // Connection opened, but don't claim connected until we receive the
+    // "connected" event from the actual MCP bridge (see onmessage below).
+    // This prevents showing "MCP connected" if something else is listening
+    // on this port.
   };
 
   es.onmessage = async (event) => {
     try {
       const data = JSON.parse(event.data);
       if (data.type === "connected") {
+        isConnected = true;
         setAllowedDomains(data.allowedDomains || []);
+        clearTimeout(reconnectTimer);
+        if (onStatusChange) onStatusChange(true);
         return;
       }
       if (data.type === "tool_call") {
@@ -143,14 +146,26 @@ function disconnect() {
     eventSource = null;
   }
   isConnected = false;
-  sseUrl = null;
   clearTimeout(reconnectTimer);
+  reconnectAttempts = 0;
+  currentPort = 0;
+  authToken = "";
   if (onStatusChange) onStatusChange(false);
 }
 
+let reconnectAttempts = 0;
+const MAX_RECONNECT_ATTEMPTS = 3;
+
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
-  const delay = Math.min(1000 + Math.random() * 2000, MAX_RECONNECT_DELAY);
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    reconnectAttempts = 0;
+    currentPort = 0;
+    authToken = "";
+    return;
+  }
+  reconnectAttempts++;
+  const delay = 1000 + reconnectAttempts * 2000;
   reconnectTimer = setTimeout(() => {
     if (currentPort && authToken) {
       connect(currentPort, authToken);

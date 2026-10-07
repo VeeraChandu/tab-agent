@@ -4221,13 +4221,15 @@ mcpLogToggleBtn.addEventListener("click", () => {
   mcpActivityLog.classList.toggle("hidden");
 });
 
-// Auto-connect to MCP bridge if configured.
-// Reads the stored port and token from chrome.storage.local and connects.
+// Auto-connect to MCP bridge if the user has explicitly enabled it.
 async function mcpAutoConnect() {
   try {
-    const { mcpPort, mcpToken } = await chrome.storage.local.get(["mcpPort", "mcpToken"]);
-    if (mcpPort && mcpToken) {
+    const { mcpEnabled, mcpPort, mcpToken } = await chrome.storage.local.get(["mcpEnabled", "mcpPort", "mcpToken"]);
+    if (mcpEnabled && mcpPort && mcpToken) {
       chrome.runtime.sendMessage({ type: "MCP_CONNECT", port: mcpPort, token: mcpToken });
+    } else {
+      // If MCP is not enabled, disconnect any lingering connection
+      chrome.runtime.sendMessage({ type: "MCP_DISCONNECT" }).catch(() => {});
     }
   } catch {
     // storage access may fail — ignore
@@ -4236,3 +4238,11 @@ async function mcpAutoConnect() {
 
 // Attempt auto-connect after a short delay to let the service worker settle.
 setTimeout(mcpAutoConnect, 500);
+
+// Reconnect if MCP config changes in storage while side panel is open.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes.mcpEnabled || changes.mcpPort || changes.mcpToken) {
+    mcpAutoConnect();
+  }
+});

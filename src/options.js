@@ -2435,6 +2435,7 @@ renderUsageDashboard();
 const mcpPortInput = document.getElementById("mcpPort");
 const mcpTokenInput = document.getElementById("mcpToken");
 const mcpBridgePathInput = document.getElementById("mcpBridgePath");
+const mcpEnabledToggle = document.getElementById("mcpEnabled");
 const mcpRegenTokenBtn = document.getElementById("mcpRegenTokenBtn");
 const mcpCopyTokenBtn = document.getElementById("mcpCopyTokenBtn");
 const mcpConfigBlock = document.getElementById("mcpConfigBlock");
@@ -2480,16 +2481,28 @@ function updateMCPConfig() {
   };
 
   mcpConfigBlock.textContent = JSON.stringify(config, null, 2);
+}
 
-  // Store in chrome.storage.local so the side panel can auto-connect
-  chrome.storage.local.set({ mcpPort: parseInt(port, 10), mcpToken: token });
+async function saveMCPConfig() {
+  const port = parseInt(mcpPortInput.value, 10);
+  const token = mcpTokenInput.value;
+  const domains = mcpAllowedDomainsInput.value;
+  const enabled = mcpEnabledToggle.checked;
+
+  await chrome.storage.local.set({
+    mcpPort: port,
+    mcpToken: token,
+    mcpAllowedDomains: domains,
+    mcpEnabled: enabled,
+  });
 }
 
 async function loadMCPConfig() {
-  const { mcpPort, mcpToken, mcpAllowedDomains } = await chrome.storage.local.get([
-    "mcpPort", "mcpToken", "mcpAllowedDomains",
+  const { mcpPort, mcpToken, mcpAllowedDomains, mcpEnabled } = await chrome.storage.local.get([
+    "mcpPort", "mcpToken", "mcpAllowedDomains", "mcpEnabled",
   ]);
 
+  mcpEnabledToggle.checked = mcpEnabled === true;
   if (mcpPort) mcpPortInput.value = mcpPort;
   if (!mcpToken) {
     mcpTokenInput.value = generateToken();
@@ -2498,22 +2511,25 @@ async function loadMCPConfig() {
   }
   if (mcpAllowedDomains) mcpAllowedDomainsInput.value = mcpAllowedDomains;
 
-  // Bridge path is computed
   mcpBridgePathInput.value = getBridgePath();
 
   updateMCPConfig();
 }
 
-// Event listeners
+// Event listeners — save on every change so config stays in sync.
+mcpEnabledToggle.addEventListener("change", saveMCPConfig);
+
 mcpPortInput.addEventListener("change", () => {
-  chrome.storage.local.set({ mcpPort: parseInt(mcpPortInput.value, 10) });
+  saveMCPConfig();
   updateMCPConfig();
 });
 
 mcpRegenTokenBtn.addEventListener("click", () => {
   mcpTokenInput.value = generateToken();
-  chrome.storage.local.set({ mcpToken: mcpTokenInput.value });
+  saveMCPConfig();
   updateMCPConfig();
+  // Disconnect current MCP client so it picks up the new token next connect
+  chrome.runtime.sendMessage({ type: "MCP_DISCONNECT" }).catch(() => {});
 });
 
 mcpCopyTokenBtn.addEventListener("click", () => {
@@ -2529,7 +2545,7 @@ mcpCopyBridgePathBtn.addEventListener("click", () => {
 });
 
 mcpAllowedDomainsInput.addEventListener("change", () => {
-  chrome.storage.local.set({ mcpAllowedDomains: mcpAllowedDomainsInput.value });
+  saveMCPConfig();
   updateMCPConfig();
   const hint = document.getElementById("mcpDomainsSavedHint");
   hint.textContent = "Saved";
