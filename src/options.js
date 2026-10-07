@@ -2452,12 +2452,12 @@ function generateToken() {
 }
 
 function getBridgePath() {
-  // Best-effort guess: the bridge lives in src/mcp/mcp-bridge.mjs
-  // relative to the extension root. In a "Load unpacked" install,
-  // this is the extension source directory.
-  // We can't know the absolute path at build time, so we show a
-  // placeholder the user can adjust.
-  return "node <EXTENSION_DIR>/src/mcp/mcp-bridge.mjs";
+  // The bridge script (src/mcp/mcp-bridge.mjs) ships with the extension.
+  // For "Load unpacked" installs the user can reference the path directly.
+  // For Chrome Web Store installs the files are inside a protected Chrome
+  // directory; the user must either download the script separately or use
+  // an absolute path to the installed extension version.
+  return "<path-to-mcp-bridge.mjs>";
 }
 
 function updateMCPConfig() {
