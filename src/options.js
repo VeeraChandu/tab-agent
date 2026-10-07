@@ -2457,7 +2457,7 @@ function getBridgePath() {
   // this is the extension source directory.
   // We can't know the absolute path at build time, so we show a
   // placeholder the user can adjust.
-  return "node ${EXTENSION_PATH}/src/mcp/mcp-bridge.mjs";
+  return "node <EXTENSION_DIR>/src/mcp/mcp-bridge.mjs";
 }
 
 function updateMCPConfig() {
