@@ -4133,19 +4133,40 @@ chrome.runtime.onMessage.addListener((msg) => {
   // --- MCP message handlers -------------------------------------------
 
   if (msg.type === "MCP_STATUS_CHANGE") {
-    mcpSetConnected(msg.connected);
+    // Only respond to status changes when MCP is explicitly enabled.
+    // Prevents showing a stale "MCP connected" banner from a prior SW.
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (mcpEnabled) {
+        mcpSetConnected(msg.connected);
+      } else {
+        mcpSetConnected(false);
+      }
+    }).catch(() => {
+      mcpSetConnected(false);
+    });
   }
 
   if (msg.type === "MCP_TOOL_START") {
-    mcpAddActivity(msg.callId, msg.tool, msg.args, "running");
+    // Ignore tool events if MCP isn't enabled — handles stale messages from
+    // a prior service worker that may have been connected to a bridge.
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (!mcpEnabled) return;
+      mcpAddActivity(msg.callId, msg.tool, msg.args, "running");
+    }).catch(() => {});
   }
 
   if (msg.type === "MCP_TOOL_END") {
-    mcpUpdateActivity(msg.callId, msg.result?.error ? "error" : "done");
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (!mcpEnabled) return;
+      mcpUpdateActivity(msg.callId, msg.result?.error ? "error" : "done");
+    }).catch(() => {});
   }
 
   if (msg.type === "MCP_SHOW_CONFIRM") {
-    mcpShowConfirm(msg.tool, msg.args);
+    // Only show the confirmation overlay when MCP is explicitly enabled.
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (mcpEnabled) mcpShowConfirm(msg.tool, msg.args);
+    }).catch(() => {});
   }
 });
 
