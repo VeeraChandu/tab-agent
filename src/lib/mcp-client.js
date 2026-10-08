@@ -154,7 +154,7 @@ function disconnect() {
 }
 
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 3;
+const MAX_RECONNECT_ATTEMPTS = Infinity; // retry indefinitely — bridge may start later
 
 function scheduleReconnect() {
   clearTimeout(reconnectTimer);
@@ -165,7 +165,7 @@ function scheduleReconnect() {
     return;
   }
   reconnectAttempts++;
-  const delay = 1000 + reconnectAttempts * 2000;
+  const delay = Math.min(1000 + reconnectAttempts * 2000, 30_000); // cap at 30s
   reconnectTimer = setTimeout(() => {
     if (currentPort && authToken) {
       connect(currentPort, authToken);
