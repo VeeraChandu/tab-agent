@@ -130,7 +130,7 @@ const server = http.createServer((req, res) => {
           res.writeHead(404);
           res.end("unknown callId");
         }
-      } catch (err) {
+      } catch {
         res.writeHead(400);
         res.end("invalid JSON");
       }
@@ -336,7 +336,7 @@ function toolDefs(domains) {
     },
     {
       name: "scroll",
-      description: "Scroll the page in a direction.",
+      description: "Scroll the page in a direction by approximately one viewport height/width.",
       inputSchema: {
         type: "object",
         properties: {
@@ -352,11 +352,11 @@ function toolDefs(domains) {
     {
       name: "click",
       description:
-        "Click an interactive element identified by its numeric id from read_page's scan (shown in brackets). SENSITIVE — can submit forms and trigger mutations.",
+        "Click an interactive element identified by its element id from read_page's scan (shown in brackets). SENSITIVE — can submit forms and trigger mutations.",
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "number", description: "Numeric element id from scan" },
+          id: { type: "string", description: "Element id from scan (e.g. 'e1', 'e2')" },
           targetText: { type: "string", description: "Optional text content for disambiguation" },
           targetTag: { type: "string", description: "Optional tag name" },
         },
@@ -370,7 +370,7 @@ function toolDefs(domains) {
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "number", description: "Numeric element id from scan" },
+          id: { type: "string", description: "Element id from scan (e.g. 'e1', 'e2')" },
           text: { type: "string", description: "Text to type" },
           submit: { type: "boolean", description: "Submit the form after typing" },
         },
@@ -410,7 +410,7 @@ function toolDefs(domains) {
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "number", description: "Numeric element id" },
+          id: { type: "string", description: "Element id from scan (e.g. 'e1', 'e2')" },
           targetText: { type: "string" },
           targetTag: { type: "string" },
         },
@@ -423,11 +423,24 @@ function toolDefs(domains) {
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "number", description: "Numeric element id" },
+          id: { type: "string", description: "Element id from scan (e.g. 'e1', 'e2')" },
           targetText: { type: "string" },
           targetTag: { type: "string" },
         },
         required: ["id"],
+      },
+    },
+    {
+      name: "find_element",
+      description:
+        "Search the page for interactive elements by visible text or CSS selector. Tags matching elements so they can be used immediately with click/type_text/etc. Returns an array of matches with id, tag, text, box, href, and role. Avoids the token cost of a full read_page when you already know what you're looking for.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          text: { type: "string", description: "Text to search for in element content (case-insensitive, partial match)" },
+          selector: { type: "string", description: "CSS selector (e.g. 'button[aria-label=\"Search\"]')" },
+          tag: { type: "string", description: "Limit to a specific tag (e.g. 'a', 'button', 'input')" },
+        },
       },
     },
   ];

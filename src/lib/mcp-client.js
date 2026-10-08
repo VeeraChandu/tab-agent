@@ -463,6 +463,26 @@ async function executeMcpTool(tool, args) {
       }
     }
 
+    case "find_element": {
+      const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      if (!tab) return { ok: false, error: "No active tab found" };
+
+      const domainCheck = await checkTabAllowed(tab.id);
+      if (!domainCheck.allowed) return { ok: false, error: domainCheck.reason };
+
+      try {
+        const res = await chrome.tabs.sendMessage(tab.id, {
+          type: "FIND_ELEMENT",
+          text: args.text,
+          selector: args.selector,
+          tag: args.tag,
+        });
+        return res || { ok: false, error: "Content script not available" };
+      } catch {
+        return { ok: false, error: "Content script not available" };
+      }
+    }
+
     default:
       return { ok: false, error: `Unknown MCP tool: ${tool}` };
   }

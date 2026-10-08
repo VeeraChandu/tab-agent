@@ -117,10 +117,10 @@
   // pathological page (e.g. a broken infinite-scroll dumping thousands of
   // nodes) from making one scan unworkably large.
   const MAX_IMAGES = 300;
-  // The prompt allows navigating only via hrefs from read_page, so a cut href
-  // corrupts the one mechanism it has. Real URLs routinely pass 300 chars
-  // (signed/tokenized links); this is a pathological ceiling, not a budget.
-  const MAX_HREF_CHARS = 4096;
+  // Truncate tracking/redirect URLs to reduce token bloat. 200 chars is
+  // enough to identify the destination domain + path; the model doesn't
+  // need the full googleadservices.com ad click chain.
+  const MAX_HREF_CHARS = 200;
 
   // querySelectorAll never descends into shadow roots - a site built on web
   // components (Salesforce Lightning, many design systems, parts of YouTube/
@@ -1476,6 +1476,44 @@
           } else {
             sendResponse({ ok: true, data: { text: shortText(el) } });
           }
+          break;
+        }
+        case "FIND_ELEMENT": {
+          // Search for interactive elements by text or CSS selector.
+          // Tags matching elements on the fly so they can be used with
+          // click/type_text/etc. without a prior full-page read_page.
+          const nodes = allDescendants(document.body);
+          const results = [];
+          for (const el of nodes) {
+            if (!isInteractive(el)) continue;
+            if (!isVisible(el)) continue;
+
+            const matches =
+              (msg.text && el.textContent && el.textContent.toLowerCase().includes(msg.text.toLowerCase())) ||
+              (msg.selector && el.matches && el.matches(msg.selector));
+
+            if (!matches) continue;
+            if (msg.tag && el.tagName.toLowerCase() !== msg.tag.toLowerCase()) continue;
+
+            // Tag the element for later use in click/type/etc.
+            counter += 1;
+            const id = `e${counter}`;
+            el.setAttribute(AGENT_ATTR, id);
+
+            const tag = el.tagName.toLowerCase();
+            const rect = el.getBoundingClientRect();
+            const entry = {
+              id,
+              tag,
+              text: shortText(el),
+              box: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
+            };
+            const role = el.getAttribute("role");
+            if (role) entry.role = role;
+            if (tag === "a" && el.href) entry.href = el.href.slice(0, MAX_HREF_CHARS);
+            results.push(entry);
+          }
+          sendResponse({ ok: true, data: results });
           break;
         }
         case "GET_SUBMIT_CONTEXT": {
