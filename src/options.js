@@ -2434,7 +2434,6 @@ renderUsageDashboard();
 
 const mcpPortInput = document.getElementById("mcpPort");
 const mcpTokenInput = document.getElementById("mcpToken");
-const mcpBridgePathInput = document.getElementById("mcpBridgePath");
 const mcpEnabledToggle = document.getElementById("mcpEnabled");
 const mcpRegenTokenBtn = document.getElementById("mcpRegenTokenBtn");
 const mcpCopyTokenBtn = document.getElementById("mcpCopyTokenBtn");
@@ -2443,7 +2442,6 @@ const mcpCopyConfigBtn = document.getElementById("mcpCopyConfigBtn");
 const mcpAllowedDomainsInput = document.getElementById("mcpAllowedDomains");
 const mcpCheckBtn = document.getElementById("mcpCheckBtn");
 const mcpCheckResult = document.getElementById("mcpCheckResult");
-const mcpCopyBridgePathBtn = document.getElementById("mcpCopyBridgePathBtn");
 
 function generateToken() {
   const bytes = new Uint8Array(24);
@@ -2451,26 +2449,16 @@ function generateToken() {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function getBridgePath() {
-  // The bridge script (src/mcp/mcp-bridge.mjs) ships with the extension.
-  // For "Load unpacked" installs the user can reference the path directly.
-  // For Chrome Web Store installs the files are inside a protected Chrome
-  // directory; the user must either download the script separately or use
-  // an absolute path to the installed extension version.
-  return "<path-to-mcp-bridge.mjs>";
-}
-
 function updateMCPConfig() {
   const port = mcpPortInput.value || "58732";
   const token = mcpTokenInput.value || "";
   const domains = mcpAllowedDomainsInput.value || "";
-  const bridgePath = mcpBridgePathInput.value || getBridgePath();
 
   const config = {
     mcpServers: {
       "tab-agent": {
-        command: "node",
-        args: [bridgePath],
+        command: "npx",
+        args: ["@tab-agent/mcp-bridge"],
         env: {
           MCP_AUTH_TOKEN: token,
           MCP_PORT: port,
@@ -2511,8 +2499,6 @@ async function loadMCPConfig() {
   }
   if (mcpAllowedDomains) mcpAllowedDomainsInput.value = mcpAllowedDomains;
 
-  mcpBridgePathInput.value = getBridgePath();
-
   updateMCPConfig();
 }
 
@@ -2538,10 +2524,6 @@ mcpCopyTokenBtn.addEventListener("click", () => {
 
 mcpCopyConfigBtn.addEventListener("click", () => {
   navigator.clipboard.writeText(mcpConfigBlock.textContent).catch(() => {});
-});
-
-mcpCopyBridgePathBtn.addEventListener("click", () => {
-  navigator.clipboard.writeText(mcpBridgePathInput.value).catch(() => {});
 });
 
 mcpAllowedDomainsInput.addEventListener("change", () => {

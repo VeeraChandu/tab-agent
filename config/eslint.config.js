@@ -46,7 +46,7 @@ module.exports = [
   // semantic-release), babel.config.js (the one config file that stays
   // at the repo root - see CLAUDE.md "Repo layout"), and the MCP bridge.
   {
-    files: ["scripts/**/*.js", "config/**/*.js", "babel.config.js", "src/mcp/**/*.mjs"],
+    files: ["scripts/**/*.js", "config/**/*.js", "babel.config.js", "src/mcp/**/*.mjs", "packages/**/*.mjs"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",
