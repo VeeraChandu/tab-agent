@@ -1,10 +1,10 @@
 {
-  "name": "@tab-agent/mcp-bridge",
+  "name": "@veerachandu/tab-agent-mcp",
   "version": "1.0.0",
   "description": "MCP bridge for Tab Agent – connects MCP hosts (Cursor, Claude Desktop, Cline) to the Tab Agent Chrome extension",
   "type": "module",
   "bin": {
-    "tab-agent-mcp-bridge": "./mcp-bridge.mjs"
+    "tab-agent-mcp-bridge": "./bin.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -16,5 +16,5 @@
     "directory": "packages/mcp-bridge"
   },
   "keywords": ["mcp", "tab-agent", "chrome-extension", "browser-control", "ai-agent"],
-  "files": ["mcp-bridge.mjs"]
+  "files": ["bin.mjs", "mcp-bridge.mjs"]
 }

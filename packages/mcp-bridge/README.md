@@ -1,4 +1,4 @@
-# @tab-agent/mcp-bridge
+# @veerachandu/tab-agent-mcp
 
 [MCP](https://modelcontextprotocol.io) bridge for [Tab Agent](https://github.com/VeeraChandu/tab-agent) — connects MCP hosts (Cursor, Claude Desktop, Cline) to the Tab Agent Chrome extension.
 
@@ -7,7 +7,7 @@
 ### 1. Install
 
 ```bash
-npm install -g @tab-agent/mcp-bridge
+npm install -g @veerachandu/tab-agent-mcp
 ```
 
 Or use directly with `npx` (no install needed).

@@ -2458,7 +2458,7 @@ function updateMCPConfig() {
     mcpServers: {
       "tab-agent": {
         command: "npx",
-        args: ["@tab-agent/mcp-bridge"],
+        args: ["@veerachandu/tab-agent-mcp"],
         env: {
           MCP_AUTH_TOKEN: token,
           MCP_PORT: port,
