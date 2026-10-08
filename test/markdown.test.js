@@ -54,6 +54,16 @@ describe("renderMarkdown", () => {
     expect(out).toContain('<pre><code><a href="https://cdn.example.com/vod/abc/segment1.ts?token=xyz" target="_blank" rel="noopener noreferrer">https://cdn.example.com/vod/abc/segment1.ts?token=xyz</a></code></pre>');
   });
 
+  test("renders a '>' quote line as a blockquote instead of a literal '>'", () => {
+    const out = renderMarkdown('> "quoted text"');
+    expect(out).toBe('<blockquote><p>&quot;quoted text&quot;</p></blockquote>');
+  });
+
+  test("groups consecutive '>' lines into one blockquote and closes it on the next line type", () => {
+    const out = renderMarkdown("> line one\n> line two\n\nafter");
+    expect(out).toBe("<blockquote><p>line one</p><p>line two</p></blockquote><p>after</p>");
+  });
+
   test("autolinks a bare URL in an unclosed trailing code block", () => {
     const out = renderMarkdown("```\nhttps://example.com/a");
     expect(out).toContain('<a href="https://example.com/a"');

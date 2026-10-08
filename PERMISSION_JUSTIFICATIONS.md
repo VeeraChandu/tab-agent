@@ -63,6 +63,15 @@ checks (Settings → Scheduled tasks) at their configured time. `alarms` is
 the only API that survives a service worker being unloaded, which
 `setTimeout` does not.
 
+## `power`
+
+Used to keep the system awake (`chrome.power.requestKeepAwake("system")`) for the duration of an
+active agent run - a locked/sleeping screen throttles timers and network sockets in ways that can
+silently stall a long-running task partway through. Only held while at least one run (interactive,
+resumed branch, or scheduled) is actually in progress, released the moment the last one finishes; it
+only prevents automatic, idle-driven sleep and cannot override the user deliberately locking their
+screen.
+
 ## `notifications`
 
 Used to show a system notification when a user-configured scheduled task
@@ -87,6 +96,30 @@ Used to detect when a tab navigates to a genuinely different site (by
 hostname), so the media-request buffer above can be cleared for that tab -
 without this, a stale stream URL from a previous page could be reported as
 if it belonged to the current one.
+
+## `clipboardRead` / `clipboardWrite`
+
+Used so the agent's `copy_to_clipboard`/`read_clipboard` tools can write to
+and read from the OS clipboard on the user's behalf - e.g. moving a value
+found on one page into a field on another tab, or picking up something the
+user copied from outside the browser. Only triggered by an explicit tool
+call during a user-directed task, never automatically.
+
+## `debugger`
+
+Used for a narrow, off-by-default fallback (Settings → Limits → "Trusted
+input fallback") for the rare click a page's own script silently ignores
+because it checks `event.isTrusted` (payment widgets, anti-bot form guards)
+- normal synthetic DOM events fail that check, and Chrome DevTools Protocol's
+`Input.dispatchMouseEvent` is the only extension-accessible way to dispatch
+a click a page can't tell apart from a real one. Requested at install
+because Chrome does not allow `debugger` to be requested/revoked at runtime
+via the optional-permissions flow; the Settings toggle (off by default)
+independently controls whether the extension ever actually attaches with
+it, and it only ever attaches for the single click being retried, detaching
+immediately after. Chrome's own "being debugged" banner appears on a tab for
+as long as it's attached, so use is visible to the user in the moment it
+happens.
 
 ## Host permissions (`<all_urls>`)
 

@@ -35,3 +35,6 @@ Thumbs.db
 # Local working notes - not part of the shipped extension or its docs
 improvements/
 .playwright-mcp/
+
+# Local working notes - not part of the shipped extension or its docs
+notes/

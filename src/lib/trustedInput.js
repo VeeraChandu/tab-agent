@@ -4,11 +4,12 @@
 // codebase, click dispatches synthetic DOM events (isTrusted: false) - which
 // some sites' own listeners check for and silently ignore (payment widgets,
 // anti-bot form guards), reported back as an inert page_changed: false with
-// no diagnosis of why. This is a narrow, opt-in fallback for exactly that
-// case, not the default path: it costs a real "debugger" permission and
-// shows Chrome's own "being debugged" infobar on the tab while attached, so
-// it's gated behind a Settings toggle (see options.html/js, which requests/
-// removes the optional permission when the toggle is flipped) and only ever
+// no diagnosis of why. This is a narrow fallback for exactly that case, not
+// the default path: it shows Chrome's own "being debugged" infobar on the
+// tab while attached, so even though "debugger" is a required permission
+// (granted at install - Chrome doesn't allow it to be requested/revoked at
+// runtime via chrome.permissions), actually USING it is still gated behind
+// a Settings toggle (see options.html/js), off by default. Only ever
 // attaches for the single click it's dispatching, detaching immediately
 // after regardless of success or failure. Click only for now (see the one
 // call site in agentLoop.js's "click" case) - type_text's own untrusted-

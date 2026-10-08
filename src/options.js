@@ -34,6 +34,9 @@ const enableMicBtn = document.getElementById("enableMicBtn");
 const openMicSettingsBtn = document.getElementById("openMicSettingsBtn");
 const micStatus = document.getElementById("micStatus");
 
+const detectLocalBtn = document.getElementById("detectLocalBtn");
+const detectLocalStatus = document.getElementById("detectLocalStatus");
+
 const scheduledListEl = document.getElementById("scheduledList");
 const addScheduledBtn = document.getElementById("addScheduledBtn");
 const scheduledTemplate = document.getElementById("scheduledCardTemplate");
@@ -67,6 +70,11 @@ const importSettingsBtn = document.getElementById("importSettingsBtn");
 const importFileInput = document.getElementById("importFileInput");
 const backupStatus = document.getElementById("backupStatus");
 
+// --- custom instructions (Settings → Instructions tab) --------------------
+const customInstructionsInput = document.getElementById("customInstructionsInput");
+const saveInstructionsBtn = document.getElementById("saveInstructionsBtn");
+const instructionsSavedHint = document.getElementById("instructionsSaved");
+
 const backupSectionsOverlay = document.getElementById("backupSectionsOverlay");
 const backupSectionsTitle = document.getElementById("backupSectionsTitle");
 const backupSectionsList = document.getElementById("backupSectionsList");
@@ -84,6 +92,7 @@ const BACKUP_SECTION_LABELS = {
   siteAccessGrants: "site access grants",
   scheduledTasks: "scheduled checks",
   themePreference: "theme",
+  customInstructions: "custom instructions",
 };
 const BACKUP_SECTION_NOTES = { providers: "includes API keys" };
 
@@ -468,6 +477,7 @@ async function load() {
     "visionFallback",
     "scheduledTasks",
     "limits",
+    "customInstructions",
   ]);
 
   if (stored.providers !== undefined) {
@@ -510,18 +520,9 @@ async function load() {
   pageCacheEnabledInput.checked = pageCache.enabled;
   pageCacheMaxEntriesInput.value = pageCache.maxEntries;
 
-  // Reflects the ACTUAL granted permission, not just the stored preference —
-  // the user can revoke an optional permission from chrome://extensions at
-  // any time without going through this toggle, and that should win.
-  const wantsTrustedInput = !!stored.trustedInputFallback?.enabled;
-  const hasDebuggerPermission = await chrome.permissions.contains({ permissions: ["debugger"] });
-  trustedInputEnabledInput.checked = wantsTrustedInput && hasDebuggerPermission;
-  if (wantsTrustedInput && !hasDebuggerPermission) {
-    // The permission was revoked out from under a saved "on" preference —
-    // correct the stored state to match reality instead of silently lying
-    // about it on the next drive() call.
-    await chrome.storage.local.set({ trustedInputFallback: { enabled: false } });
-  }
+  trustedInputEnabledInput.checked = !!stored.trustedInputFallback?.enabled;
+
+  customInstructionsInput.value = stored.customInstructions || "";
 
   renderProviders();
   renderAgents();
@@ -579,27 +580,29 @@ pageCacheMaxEntriesInput.addEventListener("change", () => {
   savePageCacheField("maxEntries", value);
 });
 
-// chrome.permissions.request/remove must be called from a foreground
-// extension page in direct response to a user gesture - this handler IS
-// that gesture, which is why the permission dance lives here rather than in
-// background.js (a service worker can't call chrome.permissions.request).
+// "debugger" is a required permission (granted at install - see
+// manifest.json), so unlike the optional-permission toggles this used to be
+// modeled after, there's nothing to request/remove here: this just persists
+// whether the code path should be used at all.
 trustedInputEnabledInput.addEventListener("change", async () => {
   const wantsEnabled = trustedInputEnabledInput.checked;
-  if (wantsEnabled) {
-    const granted = await chrome.permissions.request({ permissions: ["debugger"] });
-    if (!granted) {
-      trustedInputEnabledInput.checked = false; // user declined the permission prompt
-      return;
-    }
-  } else {
-    await chrome.permissions.remove({ permissions: ["debugger"] }).catch(() => {});
-  }
   await chrome.storage.local.set({ trustedInputFallback: { enabled: wantsEnabled } });
   trustedInputSavedHint.textContent = "Saved.";
   setTimeout(() => {
     if (trustedInputSavedHint.textContent === "Saved.") trustedInputSavedHint.textContent = "";
   }, 1500);
 });
+
+// --- custom instructions -------------------------------------------------
+
+async function saveCustomInstructions() {
+  const instructions = customInstructionsInput.value.trim();
+  await chrome.storage.local.set({ customInstructions: instructions });
+  instructionsSavedHint.classList.remove("hidden");
+  setTimeout(() => instructionsSavedHint.classList.add("hidden"), 2000);
+}
+
+saveInstructionsBtn.addEventListener("click", saveCustomInstructions);
 
 // --- providers ------------------------------------------------------
 
@@ -2125,4 +2128,432 @@ importFileInput?.addEventListener("change", async () => {
   }
 });
 
-load();
+// --- local model detection (Item 6) ----------------------------------------
+
+const LOCAL_ENDPOINTS = [
+  { label: "Ollama", baseUrl: "http://localhost:11434", type: "openai" },
+  { label: "LM Studio", baseUrl: "http://localhost:1234", type: "openai" },
+  { label: "LocalAI", baseUrl: "http://localhost:8080", type: "openai" },
+  { label: "Ollama (Docker)", baseUrl: "http://host.docker.internal:11434", type: "openai" },
+];
+
+/** Probe each well-known local endpoint for a valid /v1/models response.
+ *  Returns the first that responds, or null. */
+async function detectLocalModels() {
+  detectLocalStatus.textContent = "Scanning…";
+  detectLocalBtn.disabled = true;
+
+  for (const ep of LOCAL_ENDPOINTS) {
+    detectLocalStatus.textContent = `Checking ${ep.label} (${ep.baseUrl})…`;
+    try {
+      const res = await fetch(`${ep.baseUrl}/v1/models`, {
+        method: "GET",
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!res.ok) continue;
+      const data = await res.json();
+      const models = (data.data || []).map((m) => ({ id: m.id, label: m.id }));
+      if (models.length === 0) continue;
+
+      // Found a working local provider — create or reuse provider entry
+      let existing = providers.find((p) => p.baseUrl === ep.baseUrl);
+      if (existing) {
+        existing.models = models;
+        existing.enabledModelIds = models.map((m) => m.id);
+      } else {
+        existing = {
+          id: uid("p"),
+          label: ep.label,
+          type: ep.type,
+          apiKey: "no-key-needed",
+          baseUrl: ep.baseUrl,
+          models,
+          enabledModelIds: models.map((m) => m.id),
+          enabled: true,
+        };
+        providers.push(existing);
+      }
+      await persistProviders();
+      renderProviders();
+      detectLocalStatus.textContent = `✓ Found ${ep.label} (${models.length} models).`;
+      detectLocalBtn.disabled = false;
+      return;
+    } catch {
+      // timeout or connection refused — skip
+    }
+  }
+
+  detectLocalStatus.textContent = "No local model endpoint found.";
+  detectLocalBtn.disabled = false;
+}
+
+detectLocalBtn?.addEventListener("click", detectLocalModels);
+
+function escapeHtml(str) {
+  const div = document.createElement("div");
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// --- Usage dashboard (Item 9) -----------------------------------------------
+
+const refreshUsageBtn = document.getElementById("refreshUsageBtn");
+const clearUsageDataBtn = document.getElementById("clearUsageDataBtn");
+const usageStatus = document.getElementById("usageStatus");
+
+function setUsageStatus(msg) {
+  if (usageStatus) usageStatus.textContent = msg;
+}
+
+function formatSessionDate(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const opts = { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" };
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString([], opts);
+}
+
+function getPrimaryModel(session) {
+  const nodes = Object.values(session.nodes || {});
+  // Find the most used model by token count
+  const modelTokens = {};
+  for (const n of nodes) {
+    if (n.usage) {
+      const m = n.usage.model || "unknown";
+      modelTokens[m] = (modelTokens[m] || 0) + (n.usage.inputTokens || 0) + (n.usage.outputTokens || 0);
+    }
+  }
+  const entries = Object.entries(modelTokens);
+  if (entries.length === 0) return "";
+  entries.sort((a, b) => b[1] - a[1]);
+  // Try to get a friendly label
+  const best = entries[0][0];
+  return best;
+}
+
+function computeSessionStats(session) {
+  const nodes = Object.values(session.nodes || {});
+  let totalInputTokens = 0, totalOutputTokens = 0, totalSteps = 0, totalCost = 0;
+  let hasCost = false;
+  for (const n of nodes) {
+    if (n.uiEvents) totalSteps += n.uiEvents.filter((e) => e.type === "tool_call").length;
+    if (n.usage) {
+      const inp = n.usage.inputTokens || 0;
+      const out = n.usage.outputTokens || 0;
+      totalInputTokens += inp;
+      totalOutputTokens += out;
+      const priced = window.TabAgentPricing?.estimateCost(n.usage.model, inp, out);
+      if (priced) { totalCost += priced.cost; hasCost = true; }
+    }
+  }
+  const lastOk = [...nodes].reverse().find((n) => n.uiEvents?.some((e) => e.type === "done"));
+  const doneEvent = lastOk?.uiEvents?.find((e) => e.type === "done");
+  const success = doneEvent?.success;
+  return { totalInputTokens, totalOutputTokens, totalSteps, totalCost, hasCost, success, totalTokens: totalInputTokens + totalOutputTokens };
+}
+
+async function computeUsageStats() {
+  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+  const totalSessions = sessions.length;
+  let successCount = 0, totalInputTokens = 0, totalOutputTokens = 0, totalSteps = 0, totalCost = 0;
+  let hasKnownCost = false;
+  const modelMap = {};
+
+  for (const session of sessions) {
+    const stats = computeSessionStats(session);
+    if (stats.success === true) successCount++;
+    totalInputTokens += stats.totalInputTokens;
+    totalOutputTokens += stats.totalOutputTokens;
+    totalSteps += stats.totalSteps;
+    if (stats.hasCost) { totalCost += stats.totalCost; hasKnownCost = true; }
+
+    // Per-model aggregation
+    const nodes = Object.values(session.nodes || {});
+
+    for (const n of nodes) {
+      if (n.usage) {
+        const model = n.usage.model || "unknown";
+        // Track unique sessions per model, not nodes
+        if (!modelMap[model]) modelMap[model] = { sessions: new Set(), steps: 0, inputTokens: 0, outputTokens: 0, cost: 0, label: null };
+        modelMap[model].sessions.add(session.id);
+        const inp = n.usage.inputTokens || 0;
+        const out = n.usage.outputTokens || 0;
+        modelMap[model].inputTokens += inp;
+        modelMap[model].outputTokens += out;
+        // count steps per node for this model
+        const stepCount = n.uiEvents?.filter((e) => e.type === "tool_call").length || 0;
+        modelMap[model].steps += stepCount;
+        const priced = window.TabAgentPricing?.estimateCost(model, inp, out);
+        if (priced) { modelMap[model].cost += priced.cost; modelMap[model].label = priced.label; }
+      }
+    }
+  }
+
+  // Convert modelMap Sets to counts
+  const modelData = {};
+  for (const [model, m] of Object.entries(modelMap)) {
+    modelData[model] = {
+      sessions: m.sessions.size,
+      steps: m.steps,
+      inputTokens: m.inputTokens,
+      outputTokens: m.outputTokens,
+      cost: m.cost,
+      label: m.label,
+    };
+  }
+
+  return {
+    totalSessions, successCount, totalInputTokens, totalOutputTokens,
+    totalSteps, totalCost, hasKnownCost, modelMap: modelData, sessions,
+  };
+}
+
+function renderUsageDashboard() {
+  computeUsageStats().then((stats) => {
+    const el = (id) => document.getElementById(id);
+
+    // Summary cards
+    el("statRunCount").textContent = stats.totalSessions;
+    const rate = stats.totalSessions > 0
+      ? Math.round((stats.successCount / stats.totalSessions) * 100) + "%"
+      : "—";
+    el("statSuccessRate").textContent = rate;
+    el("statTotalTokens").textContent = (stats.totalInputTokens + stats.totalOutputTokens).toLocaleString();
+    el("statAvgSteps").textContent = stats.totalSessions > 0
+      ? (stats.totalSteps / stats.totalSessions).toFixed(1)
+      : "—";
+    el("statEstCost").textContent = stats.hasKnownCost
+      ? window.TabAgentPricing?.formatCost(stats.totalCost) || "—"
+      : "—";
+    el("statEstCost").title = stats.hasKnownCost ? "" : "Only available for models with known pricing rates.";
+
+    // By-model table
+    const modelWrap = el("usageByModel");
+    const models = Object.entries(stats.modelMap).sort((a, b) => b[1].cost - a[1].cost);
+    if (models.length === 0) {
+      modelWrap.innerHTML = '<p class="hint">No usage data yet.</p>';
+    } else {
+      let html = `<table><thead><tr>
+        <th>Model</th><th>Sessions</th><th>Steps</th><th>Input</th><th>Output</th><th>Cost</th>
+      </tr></thead><tbody>`;
+      for (const [model, m] of models) {
+        const label = m.label || model;
+        const cost = m.cost > 0 ? window.TabAgentPricing?.formatCost(m.cost) : "—";
+        html += `<tr>
+          <td>${label}</td>
+          <td>${m.sessions}</td>
+          <td>${m.steps}</td>
+          <td>${m.inputTokens.toLocaleString()}</td>
+          <td>${m.outputTokens.toLocaleString()}</td>
+          <td>${cost}</td>
+        </tr>`;
+      }
+      html += "</tbody></table>";
+      modelWrap.innerHTML = html;
+    }
+
+    // Recent sessions
+    const sessList = el("usageSessionList");
+    const searchEl = el("usageSearchInput");
+    const allSessions = stats.sessions.slice().sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
+
+    function renderSessions(filter) {
+      const q = (filter || "").toLowerCase();
+      const matches = q
+        ? allSessions.filter((s) => (s.title || "").toLowerCase().includes(q))
+        : allSessions;
+      const recent = matches.slice(0, 100);
+
+      if (recent.length === 0) {
+        sessList.innerHTML = q
+          ? `<div class="usage-empty">No sessions matching "${q}"</div>`
+          : '<div class="usage-empty">No sessions yet.</div>';
+        return;
+      }
+
+      let html = "";
+      for (const s of recent) {
+        const title = s.title || "New chat";
+        const stats_ = computeSessionStats(s);
+        const model = getPrimaryModel(s);
+        const date = formatSessionDate(s.updatedAt || s.createdAt);
+        const cost = stats_.hasCost ? window.TabAgentPricing?.formatCost(stats_.totalCost) || "—" : "—";
+
+        const badgeClass = stats_.success === true ? "ok" : stats_.success === false ? "fail" : "neutral";
+        const badgeIcon = stats_.success === true ? "✓" : stats_.success === false ? "✗" : "·";
+        const badgeTitle = stats_.success === true ? "Completed successfully" : stats_.success === false ? "Failed or error" : "Incomplete";
+
+        html += `<div class="usage-session-row">
+          <span class="usage-session-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+          <span class="usage-session-model" title="${escapeHtml(model)}">${escapeHtml(model.split("/").pop() || model)}</span>
+          <span class="usage-session-tokens">${stats_.totalTokens.toLocaleString()} tok</span>
+          <span class="usage-session-cost">${cost}</span>
+          <span class="usage-session-date">${date}</span>
+          <span class="usage-session-badge ${badgeClass}" title="${badgeTitle}">${badgeIcon}</span>
+        </div>`;
+      }
+      sessList.innerHTML = html;
+    }
+
+    renderSessions(searchEl?.value || "");
+
+    // Wire up search
+    if (searchEl) {
+      // Remove old listener
+      const newSearch = searchEl.cloneNode(true);
+      searchEl.parentNode.replaceChild(newSearch, searchEl);
+      const freshSearch = el("usageSearchInput");
+      if (freshSearch) {
+        freshSearch.addEventListener("input", () => renderSessions(freshSearch.value));
+      }
+    }
+
+    el("usageStatus").textContent = stats.totalSessions > 0
+      ? `Showing ${Math.min(allSessions.length, 100)} of ${allSessions.length} sessions.`
+      : "";
+  }).catch((err) => {
+    setUsageStatus(`Error: ${err.message}`);
+  });
+}
+
+refreshUsageBtn?.addEventListener("click", renderUsageDashboard);
+clearUsageDataBtn?.addEventListener("click", async () => {
+  if (!confirm("Delete ALL session history? This cannot be undone.")) return;
+  await chrome.storage.local.set({ sessions: [] });
+  setUsageStatus("Session history cleared.");
+  renderUsageDashboard();
+});
+
+// Render usage data on page load.
+// (The usage tab's content-generating functions are idempotent, so it's
+// fine to render even when the tab isn't visible.)
+renderUsageDashboard();
+
+// === MCP Tab ===========================================================
+
+const mcpPortInput = document.getElementById("mcpPort");
+const mcpTokenInput = document.getElementById("mcpToken");
+const mcpEnabledToggle = document.getElementById("mcpEnabled");
+const mcpRegenTokenBtn = document.getElementById("mcpRegenTokenBtn");
+const mcpCopyTokenBtn = document.getElementById("mcpCopyTokenBtn");
+const mcpConfigBlock = document.getElementById("mcpConfigBlock");
+const mcpCopyConfigBtn = document.getElementById("mcpCopyConfigBtn");
+const mcpAllowedDomainsInput = document.getElementById("mcpAllowedDomains");
+const mcpCheckBtn = document.getElementById("mcpCheckBtn");
+const mcpCheckResult = document.getElementById("mcpCheckResult");
+
+function generateToken() {
+  const bytes = new Uint8Array(24);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function updateMCPConfig() {
+  const port = mcpPortInput.value || "58732";
+  const token = mcpTokenInput.value || "";
+  const domains = mcpAllowedDomainsInput.value || "";
+
+  const config = {
+    mcpServers: {
+      "tab-agent": {
+        command: "npx",
+        args: ["@veerachandu/tab-agent-mcp"],
+        env: {
+          MCP_AUTH_TOKEN: token,
+          MCP_PORT: port,
+          MCP_ALLOWED_DOMAINS: domains,
+        },
+      },
+    },
+  };
+
+  mcpConfigBlock.textContent = JSON.stringify(config, null, 2);
+}
+
+async function saveMCPConfig() {
+  const port = parseInt(mcpPortInput.value, 10);
+  const token = mcpTokenInput.value;
+  const domains = mcpAllowedDomainsInput.value;
+  const enabled = mcpEnabledToggle.checked;
+
+  await chrome.storage.local.set({
+    mcpPort: port,
+    mcpToken: token,
+    mcpAllowedDomains: domains,
+    mcpEnabled: enabled,
+  });
+}
+
+async function loadMCPConfig() {
+  const { mcpPort, mcpToken, mcpAllowedDomains, mcpEnabled } = await chrome.storage.local.get([
+    "mcpPort", "mcpToken", "mcpAllowedDomains", "mcpEnabled",
+  ]);
+
+  mcpEnabledToggle.checked = mcpEnabled === true;
+  if (mcpPort) mcpPortInput.value = mcpPort;
+  if (!mcpToken) {
+    mcpTokenInput.value = generateToken();
+  } else {
+    mcpTokenInput.value = mcpToken;
+  }
+  if (mcpAllowedDomains) mcpAllowedDomainsInput.value = mcpAllowedDomains;
+
+  updateMCPConfig();
+}
+
+// Event listeners — save on every change so config stays in sync.
+mcpEnabledToggle.addEventListener("change", saveMCPConfig);
+
+mcpPortInput.addEventListener("change", () => {
+  saveMCPConfig();
+  updateMCPConfig();
+});
+
+mcpRegenTokenBtn.addEventListener("click", () => {
+  mcpTokenInput.value = generateToken();
+  saveMCPConfig();
+  updateMCPConfig();
+  // Disconnect current MCP client so it picks up the new token next connect
+  chrome.runtime.sendMessage({ type: "MCP_DISCONNECT" }).catch(() => {});
+});
+
+mcpCopyTokenBtn.addEventListener("click", () => {
+  navigator.clipboard.writeText(mcpTokenInput.value).catch(() => {});
+});
+
+mcpCopyConfigBtn.addEventListener("click", () => {
+  navigator.clipboard.writeText(mcpConfigBlock.textContent).catch(() => {});
+});
+
+mcpAllowedDomainsInput.addEventListener("change", () => {
+  saveMCPConfig();
+  updateMCPConfig();
+  const hint = document.getElementById("mcpDomainsSavedHint");
+  hint.textContent = "Saved";
+  setTimeout(() => { hint.textContent = ""; }, 2000);
+});
+
+mcpCheckBtn.addEventListener("click", async () => {
+  const port = mcpPortInput.value || "58732";
+  const token = mcpTokenInput.value || "";
+  mcpCheckResult.textContent = "Checking…";
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/status?token=${encodeURIComponent(token)}`);
+    if (res.ok) {
+      const data = await res.json();
+      mcpCheckResult.textContent = data.connected
+        ? `✅ Bridge running, extension connected (${data.pendingCalls} pending calls)`
+        : `✅ Bridge running, waiting for extension to connect`;
+    } else if (res.status === 401) {
+      mcpCheckResult.textContent = "❌ Bridge reached but token rejected — check MCP_AUTH_TOKEN";
+    } else {
+      mcpCheckResult.textContent = `❌ Bridge returned ${res.status}`;
+    }
+  } catch {
+    mcpCheckResult.textContent = "❌ No bridge on that port — is the MCP host running?";
+  }
+});
+
+// Kick off full settings page load.
+load().then(() => loadMCPConfig());

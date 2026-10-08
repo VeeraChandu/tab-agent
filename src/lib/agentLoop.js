@@ -4,7 +4,8 @@
 // which is executed directly on the tab via content.js / chrome.tabs.
 
 import { callProvider, describeImage, classifyImages } from "./providers.js";
-import { buildSystemPrompt } from "./tools.js";
+import { buildSystemPrompt, initCustomTools } from "./tools.js";
+import { executeCustomTool } from "./customTools.js";
 import { detectSiteCategory, hostnameOf } from "./siteCategories.js";
 import { getMediaRequests, drainFailedRequests } from "./mediaSniffer.js";
 import { getLastNavError } from "./navErrors.js";
@@ -12,6 +13,9 @@ import { looksVisionCapable } from "./vision.js";
 import { dispatchTrustedClick } from "./trustedInput.js";
 import { recordPageRead, recallPage, isUrlCached } from "./pageCache.js";
 import { getChunk, getFullAttachment, recordAttachment, chunkText } from "./attachmentCache.js";
+import { captureStep, startRecording } from "./sessionRecorder.js";
+import { saveTabState, restoreTabState, hasSavedState } from "./statePersist.js";
+import { getCapturedDownloads } from "./downloadCapture.js";
 
 const MAX_STEPS = 20;
 const TAB_LOAD_TIMEOUT_MS = 15000;
@@ -45,6 +49,30 @@ const DEFAULT_LIMITS = {
 // background tab is auto-closed — long enough for the "closed" UI state to
 // feel like a natural consequence of finishing, not an abrupt yank.
 const BRANCH_AUTO_CLOSE_DELAY_MS = 900;
+
+// Rough token estimate by character count: dividing by 3.5 approximates the
+// average English text token density; image blocks get a fixed 500-token
+// estimate; per-turn overhead adds 10 tokens per turn.
+export function estimateContextTokens(history, system) {
+  let total = Math.ceil((system || "").length / 3.5);
+  for (const turn of history) {
+    const blocks = turn.content || [];
+    for (const block of blocks) {
+      if (block.type === "text") {
+        total += Math.ceil((block.text || "").length / 3.5);
+      } else if (block.type === "tool_result") {
+        total += Math.ceil(typeof block.content === "string" ? block.content.length / 3.5 : 100);
+      } else if (block.type === "tool_use") {
+        total += Math.ceil(JSON.stringify(block.input || {}).length / 3.5);
+        total += (block.name || "").length;
+      } else if (block.type === "image") {
+        total += 500;
+      }
+    }
+    total += 10;
+  }
+  return total;
+}
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -237,6 +265,64 @@ export function compactHistory(history, cacheEnabled) {
   });
 }
 
+// --- Page-content-only compaction ------------------------------------------
+// Unlike the full-history LLM summarization this replaced, compactPageContent
+// strips only the heavy page-scan data from tool results — visible_text,
+// inline page.content, chunk text — while keeping user messages, assistant
+// reasoning, tool-call decisions, and non-page results intact. The agent can
+// re-read any page via recall_page (cached) or read_page (live), so losing
+// the text is reversible. Losing the conversation is not.
+//
+// Called from the /compact command path (background.js). Returns the number
+// of bytes collapsed (0 if nothing was done).
+
+export function compactPageContent(history) {
+  // Build tool_use_id → name map so we know what each tool_result belongs to
+  const idToName = new Map();
+  for (const turn of history) {
+    if (turn.role !== "assistant") continue;
+    for (const block of turn.content || []) {
+      if (block.type === "tool_use") idToName.set(block.id, block.name);
+    }
+  }
+
+  let collapsed = 0;
+
+  for (const turn of history) {
+    if (turn.role !== "user") continue;
+    for (const block of turn.content || []) {
+      if (block.type !== "tool_result") continue;
+      const name = idToName.get(block.tool_use_id);
+      if (!name || typeof block.content !== "string") continue;
+
+      const parsed = parseResultBlock(block);
+      if (!parsed) continue;
+
+      if (name === "read_page" || name === "recall_page") {
+        if (parsed.visible_text && typeof parsed.visible_text === "string") {
+          collapsed += parsed.visible_text.length;
+          parsed.visible_text = "[Page content removed to save context — call recall_page or read_page to re-read this page.]";
+          block.content = JSON.stringify(parsed);
+        }
+      } else if (name === "read_page_chunk" || name === "read_attachment_chunk") {
+        if (parsed.text && typeof parsed.text === "string") {
+          collapsed += parsed.text.length;
+          parsed.text = "[Chunk content removed to save context — call this same tool again if needed; it's static cached content.]";
+          block.content = JSON.stringify(parsed);
+        }
+      } else if (PAGE_EMBEDDING_TOOLS.has(name) && parsed.page) {
+        if (parsed.page.visible_text && typeof parsed.page.visible_text === "string") {
+          collapsed += parsed.page.visible_text.length;
+          parsed.page.visible_text = "[Page content removed to save context — call recall_page or read_page to re-read this page.]";
+          block.content = JSON.stringify(parsed);
+        }
+      }
+    }
+  }
+
+  return collapsed;
+}
+
 // frameId defaults to 0 (the top/main frame) everywhere — that's the exact
 // behavior this had before content_scripts gained all_frames: true (back
 // when there was only ever one content.js instance per tab to talk to).
@@ -257,6 +343,37 @@ export function compactHistory(history, cacheEnabled) {
 // providers.js's readSSE/fetchWithRetry poll for the LLM call side) lets a
 // deliberate Stop click resolve this immediately instead of waiting it out.
 const SEND_TO_TAB_TIMEOUT_MS = 12000;
+
+// create_file: a pathological-safety ceiling, not a real budget — a model's
+// own max-output-tokens per turn already keeps any single generated file far
+// below this in practice (same reasoning as content.js's MAX_BODY_TEXT_CHARS).
+const MAX_CREATED_FILE_BYTES = 2 * 1024 * 1024;
+// Overlaps but isn't a strict mirror of the composer's own attachment-upload
+// accept list (see sidepanel.js) — this is for the model GENERATING a file,
+// so it also covers types with no reason to ever be uploaded, like .tex.
+// Falls back to plain text for anything unrecognized.
+const CREATED_FILE_MIME_TYPES = {
+  txt: "text/plain",
+  md: "text/markdown",
+  markdown: "text/markdown",
+  csv: "text/csv",
+  tsv: "text/tab-separated-values",
+  json: "application/json",
+  html: "text/html",
+  htm: "text/html",
+  xml: "application/xml",
+  yaml: "application/yaml",
+  yml: "application/yaml",
+  log: "text/plain",
+  css: "text/css",
+  js: "text/javascript",
+  ts: "text/typescript",
+  tex: "text/x-tex",
+};
+function guessCreatedFileMimeType(filename) {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  return CREATED_FILE_MIME_TYPES[ext] || "text/plain";
+}
 
 // Fired when the target frame is torn down mid-flight by a real navigation
 // before content.js calls sendResponse (most often the tab entering the
@@ -285,7 +402,7 @@ async function waitForTabComplete(tabId, ceilingMs, intervalMs) {
   }
 }
 
-function sendToTab(tabId, message, frameId = 0, shouldStop) {
+export function sendToTab(tabId, message, frameId = 0, shouldStop) {
   return new Promise((resolve) => {
     let settled = false;
     const finish = (result) => {
@@ -1588,6 +1705,8 @@ const SUB_AGENT_ALLOWED_TOOLS = new Set([
   "recall_page",
   "read_attachment_chunk",
   "read_page_chunk",
+  "save_session_state",
+  "restore_session_state",
 ]);
 // open_tab/switch_tab are gated separately (via ctx.allowTabTools below,
 // checked alongside SUB_AGENT_ALLOWED_TOOLS in runSubLoop's dispatch loop)
@@ -1610,7 +1729,7 @@ function subAgentToolNames(allowTabTools) {
   return [...SUB_AGENT_ALLOWED_TOOLS, ...(allowTabTools ? TAB_TOOLS : [])];
 }
 
-function subAgentSystemPrompt(objective, roleDescription, allowTabTools = false) {
+function subAgentSystemPrompt(objective, roleDescription, allowTabTools = false, customInstructions = "") {
   const toolsList = `${subAgentToolNames(allowTabTools).join(", ")}, and finish`;
   const tabToolsGuidance = allowTabTools
     ? `If you've applied filters/search on a listing page and now need to check several individual results one at a ` +
@@ -1622,7 +1741,7 @@ function subAgentSystemPrompt(objective, roleDescription, allowTabTools = false)
       `tab's own listing page away from its filtered state just to peek at one result. `
     : `Stay on this one tab for the whole task — navigate within it as needed rather than opening new tabs. `;
   return (
-    `${buildSystemPrompt(null)}\n\n---\n${roleDescription} Your objective for this specific tab is:\n\n"${objective}"\n\n` +
+    `${buildSystemPrompt(null, customInstructions)}\n\n---\n${roleDescription} Your objective for this specific tab is:\n\n"${objective}"\n\n` +
     `Tools available to you here: ${toolsList}. ask_user and screenshot are NOT available in this context — there is ` +
     `nobody to answer a question and this tab may not be visible. If you need information only a person could give ` +
     `you, or hit something that looks risky/hard-to-undo (the click tool will refuse those automatically), stop and ` +
@@ -1694,8 +1813,8 @@ function summarizeSubStep(name, input, result) {
 // is what manually sending "continue" was papering over), so retry a bounded
 // number of times here instead of ending the run on nothing.
 const MAX_EMPTY_RESPONSE_RETRIES = 2;
-async function callProviderRetryingEmpty(config, history, system, onDelta, shouldStop) {
-  let result = await callProvider(config, history, system, onDelta, shouldStop);
+async function callProviderRetryingEmpty(config, history, system, onDelta, shouldStop, toolFilterCtx) {
+  let result = await callProvider(config, history, system, onDelta, shouldStop, toolFilterCtx);
   let retries = 0;
   while (
     !result.toolCalls.length &&
@@ -1706,7 +1825,7 @@ async function callProviderRetryingEmpty(config, history, system, onDelta, shoul
     !(shouldStop && shouldStop())
   ) {
     retries += 1;
-    result = await callProvider(config, history, system, onDelta, shouldStop);
+    result = await callProvider(config, history, system, onDelta, shouldStop, toolFilterCtx);
   }
   return result;
 }
@@ -1741,7 +1860,12 @@ async function runSubLoop({ ctx, objective, maxSteps, config, system, onStep, ga
 
     let result;
     try {
-      result = await callProviderRetryingEmpty(config, history, system, () => {}, ctx.shouldStop);
+      const toolFilterCtx = {
+        visionConfig: ctx.visionConfig,
+        isSubAgent: true,
+        isBatch: !ctx.allowTabTools,
+      };
+      result = await callProviderRetryingEmpty(config, history, system, () => {}, ctx.shouldStop, toolFilterCtx);
     } catch (err) {
       // A deliberate Stop surfaces as this exact error (see fetchWithRetry/
       // readSSE in providers.js) — report it as a plain stop, not a
@@ -1959,7 +2083,8 @@ async function runOneBranch(ctx, task, label, config, callId) {
   const system = subAgentSystemPrompt(
     task.objective,
     "You are one of several independent, parallel investigations running as part of a larger task — you only see this one tab.",
-    true
+    true,
+    ctx.customInstructions
   );
 
   const branchMaxSteps = Math.max(1, ctx.limits?.branchMaxSteps || DEFAULT_LIMITS.branchMaxSteps);
@@ -2118,6 +2243,7 @@ export async function resumeBranch({
   sessionId,
   pageCacheConfig,
   turnIndex,
+  customInstructions,
 }) {
   if (onEvent) onEvent({ type: "branch_active", callId, label, tabId, url });
 
@@ -2148,7 +2274,8 @@ export async function resumeBranch({
   const system = subAgentSystemPrompt(
     `Continue this investigation — an earlier attempt ran out of steps before finishing: ${objective}\n\nStart by reading the current page to see what's already been found or done, then keep going. Don't redo work that's already visible on the page.`,
     "You are resuming one branch of a larger multi-source investigation — you only see this one tab.",
-    true
+    true,
+    customInstructions
   );
 
   const branchMaxSteps = Math.max(1, limits?.branchMaxSteps || DEFAULT_LIMITS.branchMaxSteps);
@@ -2231,15 +2358,22 @@ async function runParallelInvestigate(ctx, input, callId) {
   // task is dropped instead of re-run — re-checking the same site burns
   // budget and just repeats findings the model already has (this is exactly
   // what happened before this cap existed: the same retailer got checked in
-  // two separate rounds). tab_id-based tasks skip this check since there's
-  // no url to compare without opening the tab.
+  // two separate rounds). Also catches duplicates within a single call
+  // (same hostname appearing multiple tasks in one request).
+  // tab_id-based tasks skip this check since there's no url to compare
+  // without opening the tab.
   const seenHostnames = ctx.investigatedHostnames || new Set();
   const duplicates = [];
   const fresh = [];
   for (const t of tasks) {
     const hostname = t.url ? hostnameOf(t.url) : null;
-    if (hostname && seenHostnames.has(hostname)) duplicates.push({ ...t, hostname });
-    else fresh.push(t);
+    // Check both cross-call (already investigated) and within-call (already
+    // seen in this very array, before the batch runs) duplicates.
+    if (hostname && (seenHostnames.has(hostname) || fresh.some((f) => f.url && hostnameOf(f.url) === hostname))) {
+      duplicates.push({ ...t, hostname });
+    } else {
+      fresh.push(t);
+    }
   }
 
   // Run-wide cap: a single parallel_investigate call only costs ONE step
@@ -2377,7 +2511,9 @@ async function runBatch(ctx, input, callId) {
 
   const system = subAgentSystemPrompt(
     objective,
-    "You are running a focused, repetitive batch task on the tab the user is already looking at — stay on this tab (navigate within it as needed) rather than opening new ones."
+    "You are running a focused, repetitive batch task on the tab the user is already looking at — stay on this tab (navigate within it as needed) rather than opening new ones.",
+    false,
+    ctx.customInstructions
   );
 
   const stepCaptions = [];
@@ -2422,7 +2558,7 @@ async function runBatch(ctx, input, callId) {
  * later tool call in the run (and the caller, once the run ends) automatically
  * targets whatever tab the agent last moved to.
  */
-async function executeTool(ctx, name, input, callId) {
+export async function executeTool(ctx, name, input, callId) {
   switch (name) {
     case "read_page": {
       const streakBlock = checkExplorationStreak(ctx, "read_page");
@@ -2594,6 +2730,108 @@ async function executeTool(ctx, name, input, callId) {
       const res = await sendToTab(ctx.tabId, { type: "FIND_IN_PAGE", text: input.text, regex: input.regex }, 0, ctx.shouldStop);
       if (!res.ok) return { ok: false, error: res.error };
       return { ok: true, tab_id: ctx.tabId, matches: res.matches, truncated: res.truncated };
+    }
+
+    // Never changes the page, so no attachPageState — same shape as find_in_page above.
+    case "copy_to_clipboard": {
+      const res = await sendToTab(ctx.tabId, { type: "CLIPBOARD_WRITE", text: input.text }, 0, ctx.shouldStop);
+      if (!res.ok) return { ok: false, error: res.error };
+      return { ok: true, tab_id: ctx.tabId };
+    }
+
+    case "read_clipboard": {
+      const res = await sendToTab(ctx.tabId, { type: "CLIPBOARD_READ" }, 0, ctx.shouldStop);
+      if (!res.ok) return { ok: false, error: res.error };
+      return { ok: true, tab_id: ctx.tabId, text: res.text };
+    }
+
+    // Doesn't touch the tab at all — sidepanel.js renders the actual
+    // download card straight from this call's own persisted input (the
+    // content), so the result just confirms success rather than echoing
+    // potentially-large content back into the model's own context a second
+    // time (the input already carries it once, same as any other tool call).
+    case "clear_queue":
+      return { ok: true, cleared: true };
+
+    case "get_queue_status":
+      // Queue status is read from the service worker (background.js), not
+      // from agent loop state. Returns a placeholder — actual depth is
+      // resolved in background.js before forwarding.
+      return { ok: true, note: "Queue managed by the service worker. Use the side panel to view pending tasks." };
+
+    case "set_viewport": {
+      const width = input.width;
+      const height = input.height;
+      const tabId = ctx.tabId;
+      if (!tabId) return { ok: false, error: "No active tab." };
+
+      // Resetting to native viewport
+      if (width === undefined && height === undefined) {
+        try {
+          await chrome.debugger.detach({ tabId }).catch(() => {});
+          // A detach + re-attach is the only reliable way to clear emulation
+          return { ok: true, note: "Viewport reset to native. Use set_viewport again with width/height when ready." };
+        } catch {
+          return { ok: true, note: "No active debugger session to reset." };
+        }
+      }
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 320 || height < 240) {
+        return { ok: false, error: "Width and height must be integers >= 320 x 240." };
+      }
+
+      let attached = false;
+      try {
+        // Attach debugger to the tab (no-op if already attached)
+        const targets = await chrome.debugger.getTargets();
+        const already = targets.some((t) => t.tabId === tabId && t.attached);
+        if (!already) {
+          await new Promise((resolve, reject) => {
+            chrome.debugger.attach({ tabId }, "1.3", () => {
+              if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+              else resolve();
+            });
+          });
+          attached = true;
+        }
+
+        // Override viewport metrics
+        const params = {
+          width,
+          height,
+          deviceScaleFactor: input.deviceScaleFactor ?? 1,
+          mobile: input.isMobile !== false,
+        };
+        await new Promise((resolve, reject) => {
+          chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", params, (result) => {
+            if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+            else resolve(result);
+          });
+        });
+
+        return {
+          ok: true,
+          viewport: { width, height, deviceScaleFactor: params.deviceScaleFactor, isMobile: params.mobile },
+          note: `Viewport set to ${width}x${height}${params.mobile ? " (mobile)" : ""}. Use set_viewport({}) to reset.`,
+        };
+      } catch (err) {
+        // Clean up on failure
+        if (attached) chrome.debugger.detach({ tabId }).catch(() => {});
+        return { ok: false, error: `set_viewport failed: ${err.message || err}` };
+      }
+    }
+
+    case "create_file": {
+      const filename = (input.filename || "").trim();
+      if (!filename) return { ok: false, error: "filename is required." };
+      const content = input.content ?? "";
+      const size = new TextEncoder().encode(content).length;
+      if (size > MAX_CREATED_FILE_BYTES) {
+        return {
+          ok: false,
+          error: `That file is too large (${(size / (1024 * 1024)).toFixed(1)}MB, max ${MAX_CREATED_FILE_BYTES / (1024 * 1024)}MB) - split it into smaller files.`,
+        };
+      }
+      return { ok: true, filename, mime_type: guessCreatedFileMimeType(filename), size };
     }
 
     case "upload_file": {
@@ -2910,11 +3148,96 @@ async function executeTool(ctx, name, input, callId) {
     case "run_batch":
       return runBatch(ctx, input, callId);
 
+    case "save_session_state": {
+      const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
+      if (!tab?.url) return { ok: false, error: "Cannot access current tab" };
+      const saved = await saveTabState(ctx.tabId, ctx.sessionId);
+      if (saved.ok) {
+        await ctx.onEvent({ type: "info", message: `💾 Session state saved for ${saved.origins.join(", ")} (${saved.cookies_saved} cookies, ${saved.localStorage_keys} localStorage keys). Will restore automatically on resume.` });
+      }
+      return saved;
+    }
+
+    case "restore_session_state": {
+      const exists = await hasSavedState(ctx.sessionId);
+      if (!exists) return { ok: false, error: "No saved session state found for this conversation. Use save_session_state after logging into a site or configuring it." };
+      const restored = await restoreTabState(ctx.tabId, ctx.sessionId);
+      if (restored.ok) {
+        await ctx.onEvent({ type: "info", message: `↩️ Session state restored (${restored.origins_restored} origin(s)).` });
+      }
+      return restored;
+    }
+
     case "finish":
       return { ok: true };
 
-    default:
+    case "get_downloads": {
+      const downloads = getCapturedDownloads();
+      return { ok: true, downloads };
+    }
+
+    case "capture_download": {
+      const downloadId = input.downloadId;
+      if (typeof downloadId !== "number" && typeof downloadId !== "string") {
+        return { ok: false, error: "capture_download requires a downloadId (number)." };
+      }
+      // Ask the content script to fetch the download blob from the page
+      // Since we captured the download metadata already, we can re-read the file
+      // via chrome.downloads API. Downloads from the same browser session are
+      // accessible by id through chrome.downloads.search.
+      const items = await new Promise((resolve) => {
+        chrome.downloads.search({ id: Number(downloadId) }, resolve);
+      });
+      if (!items || items.length === 0) {
+        return { ok: false, error: `Download ${downloadId} not found.` };
+      }
+      const item = items[0];
+
+      // Get the file metadata via downloads API
+      try {
+        await new Promise((resolve) => {
+          chrome.downloads.getFileIcon(item.id, { size: 32 }, () => {
+            resolve(null);
+          });
+        });
+      } catch {
+        // best-effort
+      }
+
+      // For now, return the download metadata and content via fetch if same-origin
+      let content = null;
+      try {
+        const resp = await fetch(item.url, { signal: AbortSignal.timeout(5000) });
+        if (resp.ok) {
+          const blob = await resp.blob();
+          const text = await blob.text();
+          content = btoa(text);
+        }
+      } catch {
+        // URL may not be refetchable — just return metadata
+      }
+
+      return {
+        ok: true,
+        download: {
+          id: item.id,
+          filename: item.filename,
+          mimeType: item.mime,
+          url: item.url,
+          fileSize: item.fileSize,
+          ...(content ? { content, contentLength: atob(content).length } : { note: "Content not re-readable from URL." }),
+        },
+      };
+    }
+
+    default: {
+      // Check if this is a registered custom tool — if so, dispatch it.
+      const customResult = await executeCustomTool(ctx, name, input);
+      if (customResult !== null && customResult !== undefined && !customResult._notFound) {
+        return customResult;
+      }
       return { ok: false, error: `Unknown tool: ${name}` };
+    }
   }
 }
 
@@ -2948,6 +3271,8 @@ async function executeTool(ctx, name, input, callId) {
  * @param {{ mainMaxSteps?: number, batchStepLimit?: number, maxParallelTabs?: number }} [opts.limits]
  *   Settings → Limits values (background.js reads these from chrome.storage.local). Falls back to
  *   DEFAULT_LIMITS for any field not provided, so old callers that don't pass this at all still work.
+ * @param {boolean} [opts.stepThrough]  when true, pauses before each tool call and waits for user
+ *   confirmation, showing the model's reasoning + the intended tool + input
  */
 export async function runAgentTask({
   tabId,
@@ -2970,16 +3295,27 @@ export async function runAgentTask({
   sessionId,
   pageCacheConfig,
   trustedInputEnabled,
+  stepThrough,
+  customInstructions,
 }) {
-  const system = buildSystemPrompt(agentContext);
+  // Ensure custom tools are loaded (MV3 may wake without onInstalled firing)
+  await initCustomTools();
+
+  // Load persistent custom instructions from storage, then prefer a per-chat
+  // override if provided (side panel's instructions popover takes precedence).
+  const { customInstructions: storedInstructions = "" } = await chrome.storage.local.get(["customInstructions"]);
+  const effectiveInstructions = customInstructions || storedInstructions;
+
+  const system = buildSystemPrompt(agentContext, effectiveInstructions);
   const granted = grantedDomains || new Set();
   const effectiveLimits = { ...DEFAULT_LIMITS, ...(limits || {}) };
   const maxSteps = Math.max(1, effectiveLimits.mainMaxSteps || MAX_STEPS);
   // mutable — switch_tab/open_tab update ctx.tabId in place. config/onEvent/
-  // shouldStop/limits ride along here too so parallel_investigate/run_batch
-  // (which only receive ctx, not the full runAgentTask arg list) can reach
-  // the model config, report live progress, honor Stop, and read the
-  // configured caps without needing their own separate plumbing.
+  // shouldStop/limits/customInstructions ride along here too so
+  // parallel_investigate/run_batch (which only receive ctx, not the full
+  // runAgentTask arg list) can reach the model config, report live progress,
+  // honor Stop, read the configured caps, and use the user's persistent
+  // instructions without needing their own separate plumbing.
   // shouldSkipSubtasks/resetSkipSubtasks are ONLY ever read by branchCtx/
   // batchCtx (via runOneBranch/resumeBranch/runBatch) — the main loop below
   // never calls them, which is exactly what keeps "skip subtasks" scoped to
@@ -3018,6 +3354,8 @@ export async function runAgentTask({
   const ctx = {
     tabId,
     visionConfig: visionConfig || null,
+    visionCapable: looksVisionCapable(config?.model),
+    hasAttachments: attachments && attachments.length > 0,
     grantedDomains: granted,
     config,
     onEvent,
@@ -3044,15 +3382,56 @@ export async function runAgentTask({
     // footprint (and the visible "being debugged" infobar risk) as narrow
     // as possible.
     trustedInputEnabled: !!trustedInputEnabled,
+    // Recording — set to true once startRecording succeeds so captureStep
+    // calls in the tool-result loop don't try to record before the index
+    // is initialized.
+    _recordingStarted: false,
+    // Persistent custom instructions from Settings → Instructions, passed to
+    // sub-agent system prompts (the main loop's system prompt is built above
+    // directly with effectiveInstructions).
+    customInstructions: effectiveInstructions,
   };
   let history;
 
   if (resume) {
-    const blocks = [
-      ...(resume.pendingToolResultBlocks || []),
-      { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify({ ok: true, answer: resume.answer }) },
-    ];
-    history = [...(initialHistory || []), { role: "user", content: blocks }];
+    if (resume._stepThroughAction) {
+      // Step-through resume: resume.pendingToolResultBlocks contains the tool
+      // result blocks from preceding calls in the same turn that already ran
+      // (e.g. the model bundled multiple calls and we confirmed the first one
+      // earlier). The remaining logic is distributed across _stepThroughState:
+      const st = resume._stepThroughState || {};
+      if (resume._stepThroughAction === "stop") {
+        history = initialHistory || [];
+        history.push({ role: "user", content: [
+          ...(resume.pendingToolResultBlocks || []),
+          { type: "tool_result", tool_use_id: resume.toolUseId, content: "Stopped by user." },
+        ]});
+        return { finalAnswer: "Stopped by user.", success: false, stepsUsed: 0, history, alreadyShown: true, usage: { inputTokens: 0, outputTokens: 0 }, tabId: ctx.tabId, openedTabIds: Array.from(openedTabIds), incompleteBranchTabIds: Array.from(incompleteBranchTabIds.values()) };
+      }
+      if (resume._stepThroughAction === "execute" && st.toolName) {
+        // Execute the paused tool call inline, then feed its result into
+        // history and continue the loop normally.
+        const toolResult = await executeTool(ctx, st.toolName, st.toolInput || {}, resume.toolUseId);
+        await onEvent({ type: "tool_result", step: st.step || 1, id: resume.toolUseId, name: st.toolName, input: st.toolInput, result: toolResult });
+        const blocks = [
+          ...(resume.pendingToolResultBlocks || []),
+          { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify(toolResult) },
+        ];
+        history = [...(initialHistory || []), { role: "user", content: blocks }];
+      }
+      if (resume._stepThroughAction === "skip") {
+        history = [...(initialHistory || []), { role: "user", content: [
+          ...(resume.pendingToolResultBlocks || []),
+          { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify({ ok: true, note: "Skipped by user (step-through mode)." }) },
+        ]}];
+      }
+    } else {
+      const blocks = [
+        ...(resume.pendingToolResultBlocks || []),
+        { type: "tool_result", tool_use_id: resume.toolUseId, content: JSON.stringify({ ok: true, answer: resume.answer }) },
+      ];
+      history = [...(initialHistory || []), { role: "user", content: blocks }];
+    }
   } else if (continueRun) {
     // Nothing is pending resolution — the last turn in initialHistory is
     // already a complete "user" tool-results turn from the run that hit the
@@ -3106,6 +3485,27 @@ export async function runAgentTask({
   // same text. Only the step-limit-exhausted fallback below leaves this
   // false, since nothing else will have shown the user that message.
   let alreadyShown = false;
+  // Initialize session recording (best-effort) so every tool result gets
+  // a thumbnail + metadata frame for visual replay.
+  if (ctx.sessionId) {
+    startRecording(ctx.sessionId).then(() => { ctx._recordingStarted = true; }).catch(() => {});
+  }
+
+  // Auto-restore saved session state on resume/continue so the model picks
+  // up where it left off without re-authenticating. Only fires when there's
+  // actually saved state.
+  if (ctx.sessionId && (resume || continueRun)) {
+    hasSavedState(ctx.sessionId).then((exists) => {
+      if (exists) {
+        restoreTabState(ctx.tabId, ctx.sessionId).then((res) => {
+          if (res.ok) {
+            onEvent({ type: "info", message: `↩️ Session state restored (${res.origins_restored} origin(s)).` });
+          }
+        }).catch(() => {});
+      }
+    }).catch(() => {});
+  }
+
   // model/providerId ride along on the usage object itself — the pricing
   // dashboard (lib/pricing.js, read in sidepanel.js) needs to know which
   // model actually generated these tokens to look up a $/token rate. config
@@ -3135,9 +3535,18 @@ export async function runAgentTask({
       // preview for the UI, broadcast-only with no storage write on the
       // receiving end, so there's no reason to serialize the network read
       // loop behind it.
+      const toolFilterCtx = {
+        visionConfig: ctx.visionConfig,
+        hasAttachments: !!(ctx.hasAttachments),
+        visionCapable: ctx.visionCapable,
+      };
       result = await callProviderRetryingEmpty(config, history, system, (partialText) => {
-        onEvent({ type: "assistant_delta", step, text: partialText });
-      }, shouldStop);
+        // null is the streaming-tool-starting signal from providers.js (see
+        // callAnthropicStream/callOpenAIStream) - forwarded as reset:true so
+        // the UI can clear its live preview instead of showing text jump
+        // straight from unrelated prose to one character of the new content.
+        onEvent({ type: "assistant_delta", step, text: partialText, reset: partialText === null });
+      }, shouldStop, toolFilterCtx);
     } catch (err) {
       // A deliberate Stop click aborts the in-flight request/stream and
       // surfaces here as this exact error (see fetchWithRetry/readSSE in
@@ -3253,6 +3662,38 @@ export async function runAgentTask({
         continue;
       }
 
+      // Step-through mode: pause before executing the tool and wait for user
+      // confirmation. Reuses the pause/resume infrastructure — the UI shows a
+      // confirmation card with Execute / Skip / Edit / Stop, and resume passes
+      // the user's choice back via the same answer-and-continue flow.
+      if (stepThrough && !ctx.isSubAgent) {
+        // finish and ask_user are already handled above — we only reach this
+        // point for side-effecting tools that actually need user confirmation.
+        const remaining = result.toolCalls.slice(result.toolCalls.indexOf(call) + 1);
+        for (const skipped of remaining) {
+          toolResultBlocks.push({ type: "tool_result", tool_use_id: skipped.id, content: "Not run — a step-through confirmation was shown earlier in this turn." });
+        }
+        // Emit a step_confirm event for the UI to render as a confirmation card
+        await onEvent({ type: "step_confirm", id: call.id, name: call.name, input: call.input, step });
+        pendingQuestion = {
+          kind: "step_through",
+          toolUseId: call.id,
+          question: `Execute \`${call.name}\`?`,
+          inputType: "select",
+          options: [
+            { label: "Execute", value: "execute" },
+            { label: "Skip", value: "skip" },
+            { label: "Stop", value: "stop" },
+          ],
+          // Carry the call details so background.js can execute or skip it
+          // on resume. Stored on pendingQuestion → saved to node → picked
+          // up by drive().
+          _stepThroughState: { toolName: call.name, toolInput: call.input, step },
+          pendingToolResultBlocks: toolResultBlocks,
+        };
+        break;
+      }
+
       await onEvent({ type: "tool_start", step, id: call.id, name: call.name, input: call.input });
 
       let toolResult;
@@ -3272,6 +3713,22 @@ export async function runAgentTask({
       const screenshotImage = toolResult._screenshotImage;
       if (screenshotImage) delete toolResult._screenshotImage;
       await onEvent({ type: "tool_result", step, id: call.id, name: call.name, input: call.input, result: toolResult });
+
+      // Record every step for visual replay (best-effort — skips quietly
+      // when the tab isn't active/visible or recording isn't initialized).
+      if (ctx.sessionId && ctx._recordingStarted) {
+        const tab = await chrome.tabs.get(ctx.tabId).catch(() => null);
+        captureStep({
+          sessionId: ctx.sessionId,
+          step: step * 1000 + result.toolCalls.indexOf(call), // sub-step within a turn
+          callId: call.id,
+          toolName: call.name,
+          toolInput: call.input,
+          toolResult,
+          url: tab?.url || null,
+        }).catch(() => {});
+      }
+
       toolResultBlocks.push({
         type: "tool_result",
         tool_use_id: call.id,
@@ -3319,7 +3776,13 @@ export async function runAgentTask({
     }
 
     if (pendingQuestion) {
-      await onEvent({ type: "ask_user", id: pendingQuestion.toolUseId, question: pendingQuestion.question, inputType: pendingQuestion.inputType, options: pendingQuestion.options });
+      if (pendingQuestion.kind === "step_through") {
+        // Step-through pauses already emitted step_confirm in the tool loop
+        // above; don't double-emit with the generic ask_user event below.
+        await onEvent({ type: "step_confirm", id: pendingQuestion.toolUseId, name: pendingQuestion._stepThroughState?.toolName, input: pendingQuestion._stepThroughState?.toolInput, step: pendingQuestion._stepThroughState?.step });
+      } else {
+        await onEvent({ type: "ask_user", id: pendingQuestion.toolUseId, question: pendingQuestion.question, inputType: pendingQuestion.inputType, options: pendingQuestion.options });
+      }
       return {
         finalAnswer: null,
         success: null,

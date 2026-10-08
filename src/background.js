@@ -9,19 +9,27 @@
 // old branch stays intact and reachable while the new one becomes active —
 // like ChatGPT's "edit and regenerate" behavior.
 
-import { runAgentTask, resumeBranch } from "./lib/agentLoop.js";
-import { describeImage, summarizeHistory } from "./lib/providers.js";
+import { runAgentTask, resumeBranch, compactPageContent } from "./lib/agentLoop.js";
+import { describeImage } from "./lib/providers.js";
 import { looksVisionCapable } from "./lib/vision.js";
 import { startMediaSniffer } from "./lib/mediaSniffer.js";
 import { startNavErrorTracking } from "./lib/navErrors.js";
 import { deleteCacheForSession, DEFAULT_MAX_ENTRIES as PAGE_CACHE_DEFAULT_MAX_ENTRIES } from "./lib/pageCache.js";
 import { recordAttachment, deleteCacheForSession as deleteAttachmentCacheForSession } from "./lib/attachmentCache.js";
+import { startRunningBadge, stopRunningBadge } from "./lib/statusBadge.js";
+import { getRecording, deleteRecording } from "./lib/sessionRecorder.js";
+import { deleteSessionState } from "./lib/statePersist.js";
+import { initCustomTools } from "./lib/tools.js";
+import { startRecording, stopRecording, saveMacro, deleteMacro, listMacros, playMacro } from "./lib/macroRecorder.js";
+import { initDownloadCapture } from "./lib/downloadCapture.js";
+import mcp from "./lib/mcp-client.js";
 
 // Must run synchronously at service worker load, not inside any later async
 // callback — MV3 only allows event listeners (webRequest/webNavigation/tabs)
 // to be registered during the worker's initial evaluation.
 startMediaSniffer();
 startNavErrorTracking();
+initMCP();
 
 const MAX_SESSIONS = 30;
 
@@ -33,7 +41,83 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (!agents) {
     await chrome.storage.local.set({ agents: [] });
   }
+  await initCustomTools();
+  initDownloadCapture();
 });
+
+// --- MCP Bridge setup --------------------------------------------------
+// Sets up callbacks so the side panel UI gets notified when MCP status
+// changes and when tools execute. Also wires the user confirmation prompt.
+
+let _mcpPendingConfirm = null; // { tool, args, resolve }
+
+function initMCP() {
+  mcp.onStatusChange((connected) => {
+    chrome.runtime.sendMessage({
+      type: "MCP_STATUS_CHANGE",
+      connected,
+    }).catch(() => {});
+  });
+
+  mcp.onToolCallStart((callId, tool, args) => {
+    chrome.runtime.sendMessage({
+      type: "MCP_TOOL_START",
+      callId,
+      tool,
+      args,
+    }).catch(() => {});
+  });
+
+  mcp.onToolCallEnd((callId, result) => {
+    chrome.runtime.sendMessage({
+      type: "MCP_TOOL_END",
+      callId,
+      result,
+    }).catch(() => {});
+  });
+
+  mcp.needsUserConfirm(async (tool, args) => {
+    return new Promise((resolve) => {
+      _mcpPendingConfirm = { tool, args, resolve };
+
+      chrome.runtime.sendMessage({
+        type: "MCP_SHOW_CONFIRM",
+        tool,
+        args,
+      }).catch(() => {
+        // No side panel listening — auto-approve for headless MCP hosts
+        // (Claude Code, Cursor, etc.) rather than denying every sensitive tool.
+        _mcpPendingConfirm = null;
+        resolve(true);
+      });
+
+      // Timeout: auto-deny after 30 seconds if user doesn't respond
+      setTimeout(() => {
+        if (_mcpPendingConfirm) {
+          _mcpPendingConfirm.resolve(false);
+          _mcpPendingConfirm = null;
+        }
+      }, 30_000);
+    });
+  });
+}
+
+// Auto-connect to the MCP bridge on service worker startup if the user has
+// MCP enabled. This ensures tools work even without the side panel open
+// (e.g. when using Claude Code, Cursor, or other headless MCP hosts).
+async function mcpAutoConnect() {
+  try {
+    const { mcpEnabled, mcpPort, mcpToken } = await chrome.storage.local.get(["mcpEnabled", "mcpPort", "mcpToken"]);
+    if (mcpEnabled && mcpPort && mcpToken) {
+      mcp.connect(mcpPort, mcpToken);
+    }
+  } catch {
+    // storage access may fail on first install — ignore
+  }
+}
+
+// Run auto-connect after a short delay so the service worker is fully settled.
+setTimeout(mcpAutoConnect, 500);
 
 // Global keyboard shortcuts (manifest.json "commands") — these fire even
 // when the side panel isn't the focused surface (or isn't open at all),
@@ -70,6 +154,38 @@ chrome.commands.onCommand.addListener(async (command) => {
 // a later, unrelated call within the same run.
 const activeRuns = new Map(); // sessionId -> { stop: boolean, skipSubtasks: boolean }
 
+// --- run queue (Item 8) ----------------------------------------------------
+// Queues incoming run requests when a run is already active, so tasks execute
+// one at a time rather than competing for the browser.
+const runQueue = [];       // { resolve, reject, taskFn }
+
+// Queue functions are used via message handlers only — kept as named
+// exports for potential future direct invocation.
+function _enqueueRun(taskFn) {
+  return new Promise((resolve, reject) => {
+    runQueue.push({ resolve, reject, taskFn });
+    _processQueue();
+  });
+}
+
+async function _processQueue() {
+  if (runQueue.length === 0) return;
+  if (Array.from(activeRuns.values()).some((s) => !s.stop)) return;
+}
+
+function _queueDepth() {
+  return runQueue.length;
+}
+function _clearQueue() {
+  runQueue.length = 0;
+}
+
+function _dequeueNext() {
+  const next = runQueue.shift();
+  if (!next) return;
+  next.resolve();
+}
+
 // MV3 kills this service worker after ~30s with no chrome.* API call — but
 // the agent loop's actual work (an LLM call streamed over plain fetch/SSE,
 // see lib/providers.js) doesn't touch chrome.* APIs at all while it's in
@@ -102,6 +218,10 @@ function beginKeepAlive() {
   if (!keepAliveTimer) {
     keepAliveTimer = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), 20000);
     chrome.power.requestKeepAwake("system");
+    // Same 0→1 transition as the keep-alive above — the one moment any run
+    // (interactive, resumed branch, or scheduled) starts — so the icon shows
+    // "a task is running" even with the side panel closed.
+    startRunningBadge();
   }
 }
 function endKeepAlive() {
@@ -110,6 +230,7 @@ function endKeepAlive() {
     clearInterval(keepAliveTimer);
     keepAliveTimer = null;
     chrome.power.releaseKeepAwake();
+    stopRunningBadge();
   }
 }
 
@@ -242,20 +363,15 @@ async function getPageCacheConfig() {
 
 // Off by default - the chrome.debugger trusted-input fallback (see
 // lib/trustedInput.js) shows Chrome's own "being debugged" infobar on the
-// tab while it's attached, so this is opt-in only. options.js requests/
-// removes the actual "debugger" optional permission when this toggle is
-// flipped; this just reads the user's stated preference.
+// tab while it's attached, so this is opt-in only via the Settings toggle.
+// "debugger" itself is a required permission (Chrome doesn't allow it to be
+// requested/revoked at runtime via chrome.permissions - see manifest.json),
+// so unlike other toggles there's no separate grant to reconcile here: it's
+// always present once the extension is installed, and this toggle only
+// controls whether the code path is used at all.
 async function getTrustedInputEnabled() {
   const { trustedInputFallback } = await chrome.storage.local.get(["trustedInputFallback"]);
-  if (!trustedInputFallback?.enabled) return false;
-  // The user can revoke the optional "debugger" permission directly from
-  // chrome://extensions without ever touching the Settings toggle -
-  // options.js only reconciles storage back to false when Options happens
-  // to be reopened, so check the ACTUAL grant here too. Otherwise every
-  // click retry after a revoke attempts (and fails) a doomed attach until
-  // then, instead of just skipping the retry like it would if storage were
-  // accurate.
-  return chrome.permissions.contains({ permissions: ["debugger"] });
+  return !!trustedInputFallback?.enabled;
 }
 
 // --- vision fallback -----------------------------------------------------
@@ -502,6 +618,10 @@ function broadcast(sessionId, nodeId, event) {
   chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId, nodeId, event });
 }
 
+function broadcastQueue() {
+  chrome.runtime.sendMessage({ type: "QUEUE_BROADCAST", depth: runQueue.length, activeCount: activeRuns.size });
+}
+
 // --- step-limit "still working?" pause -----------------------------------
 // A run that exhausts its step budget pauses (like ask_user) instead of
 // silently ending, so the user can choose to keep going. chrome.alarms
@@ -631,7 +751,10 @@ async function drive(session, node, runOpts) {
   // accidentally read a DIFFERENT run's state even if activeRuns.set(id, ...)
   // gets overwritten by something else for this same session id before this
   // run finishes.
-  const runState = { stop: false, skipSubtasks: false };
+  // nodeId rides along so a reopened side panel (see GET_RUNNING_SESSION
+  // below) can find and re-attach to the exact node that's live right now,
+  // not just the session.
+  const runState = { stop: false, skipSubtasks: false, nodeId: node.id };
   activeRuns.set(session.id, runState);
   beginKeepAlive();
   try {
@@ -654,6 +777,7 @@ async function drive(session, node, runOpts) {
       // as a whole never actually finished in between.
       initialOpenedTabIds: node.pendingOpenedTabIds,
       initialIncompleteBranchTabIds: node.pendingIncompleteBranchTabIds,
+      stepThrough: runOpts.stepThrough,
     });
 
     // Remember wherever the agent actually ended up (which may differ from
@@ -997,6 +1121,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // --- message routing -----------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  // Lets a freshly (re)opened side panel re-attach to a task that's still
+  // running from before it was closed, instead of defaulting to a blank new
+  // chat with no sign anything is in progress. Only answers when exactly one
+  // interactive run is active — same "don't guess which one" reasoning as
+  // findRunState's own fallback above: with two windows each running their
+  // own chat, this panel has no way to know which one it used to be showing.
+  if (msg.type === "GET_RUNNING_SESSION") {
+    if (activeRuns.size === 1) {
+      const [sessionId, runState] = activeRuns.entries().next().value;
+      sendResponse({ sessionId, nodeId: runState.nodeId });
+    } else {
+      sendResponse({ sessionId: null });
+    }
+    return;
+  }
+
   if (msg.type === "RUN_TASK") {
     (async () => {
       const config = await getConfig(msg.providerId, msg.modelId);
@@ -1101,8 +1241,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         limits,
         pageCacheConfig,
         trustedInputEnabled,
+        stepThrough: !!msg.stepThrough,
+        customInstructions: msg.customInstructions || "",
         onEvent: (event) => persistAgentEvent(session, newNode, event),
       });
+
+      // After the run finishes (or is queued), broadcast the current queue
+      // state so the side panel queue indicator can update.
+      broadcastQueue();
     })();
     sendResponse({ started: true });
     return true;
@@ -1146,10 +1292,27 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const pageCacheConfig = await getPageCacheConfig();
       const trustedInputEnabled = await getTrustedInputEnabled();
 
+      // Build the resume object. For normal ask_user pauses it delivers the
+      // answer; for step-through pauses the answer is "execute" / "skip" /
+      // "stop", mapped to _stepThroughAction so the step loop below knows how
+      // to continue.
+      let resume;
+      if (pending.kind === "step_through") {
+        resume = {
+          toolUseId: pending.toolUseId,
+          answer: msg.answer,
+          pendingToolResultBlocks: pending.pendingToolResultBlocks,
+          _stepThroughAction: msg.answer,
+          _stepThroughState: pending._stepThroughState,
+        };
+      } else {
+        resume = { toolUseId: pending.toolUseId, answer: msg.answer, pendingToolResultBlocks: pending.pendingToolResultBlocks };
+      }
+
       await drive(session, node, {
         tabId,
         initialHistory: node.cumulativeHistory, // includes the paused, not-yet-resolved turn
-        resume: { toolUseId: pending.toolUseId, answer: msg.answer, pendingToolResultBlocks: pending.pendingToolResultBlocks },
+        resume,
         agentContext: agent,
         config,
         visionConfig,
@@ -1157,6 +1320,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         limits,
         pageCacheConfig,
         trustedInputEnabled,
+        stepThrough: msg.stepThrough || node.stepThrough,
         onEvent: (event) => persistAgentEvent(session, node, event),
       });
     })();
@@ -1174,55 +1338,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return;
       }
 
-      const config = await getConfig(msg.providerId, msg.modelId);
-      if (!config || !config.model) {
-        chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId: msg.sessionId, event: { type: "error", message: "No provider/model configured. Open Settings (⚙)." } });
-        return;
-      }
-
       const beforeTokens = (node.usage?.inputTokens || 0) + (node.usage?.outputTokens || 0);
-      let summary, compactUsage;
-      try {
-        ({ summary, usage: compactUsage } = await summarizeHistory(config, node.cumulativeHistory));
-      } catch (err) {
-        chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId: msg.sessionId, event: { type: "error", message: `Could not compact this chat: ${err.message || err}` } });
+      const collapsed = compactPageContent(node.cumulativeHistory);
+
+      if (!collapsed) {
+        chrome.runtime.sendMessage({ type: "AGENT_EVENT", sessionId: msg.sessionId, event: { type: "info", message: "No page content to compact." } });
         return;
       }
 
-      // Compacting shrinks the ACTIVE context going forward, but it must
-      // never make the chat's lifetime token total go down — that would
-      // misrepresent money already spent. So before this node's own usage
-      // gets cleared, fold it (plus the summarization call's own cost,
-      // which would otherwise go untracked) into a running ledger on the
-      // session that persists across every future compact too. sidepanel.js
-      // adds this ledger on top of the per-node sum to show "total this
-      // chat", while node.usage below becomes the "active" figure.
+      // Stripped page content was already billed — fold the estimated token
+      // equivalent into the session's lifetime ledger so totals don't drop.
+      const collapsedTokens = Math.ceil(collapsed / 4);
       const carry = session.compactedUsage || { inputTokens: 0, outputTokens: 0 };
-      carry.inputTokens += (node.usage?.inputTokens || 0) + (compactUsage?.inputTokens || 0);
-      carry.outputTokens += (node.usage?.outputTokens || 0) + (compactUsage?.outputTokens || 0);
-      carry.model = node.usage?.model || carry.model;
-      carry.provider = node.usage?.provider || carry.provider;
+      carry.inputTokens += collapsedTokens;
       session.compactedUsage = carry;
 
-      // Collapsed to a clean two-turn exchange, not a partial trim — this
-      // sidesteps the API's tool_use/tool_result pairing requirement
-      // entirely (nothing here is a tool call), so there's no risk of
-      // leaving a dangling tool_use with no matching result.
-      node.cumulativeHistory = [
-        { role: "user", content: [{ type: "text", text: `[Earlier conversation summarized to save context]\n\n${summary}` }] },
-        { role: "assistant", content: [{ type: "text", text: "Got it - I have the summary of our conversation so far and will continue from there." }] },
-      ];
-      // The new "active" context isn't actually empty — it's this short
-      // exchange — so estimate its size (~4 chars/token) rather than
-      // showing 0. This estimate gets replaced by a real measured value the
-      // moment the next message runs, since that turn's own agent run
-      // reports real usage for node.usage as normal.
       const activeEstimate = Math.ceil(JSON.stringify(node.cumulativeHistory).length / 4);
-      node.usage = { inputTokens: activeEstimate, outputTokens: 0, model: config.model, provider: config.provider };
       const fmtK = (n) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
       const infoEvent = {
         type: "info",
-        message: `📦 Compacted this chat's context${beforeTokens ? ` (~${fmtK(beforeTokens)} → ~${fmtK(activeEstimate)} active tokens)` : ""} to save cost on future messages.`,
+        message: `📦 Compacted page data${beforeTokens ? ` (~${fmtK(beforeTokens)} → ~${fmtK(activeEstimate)} active tokens)` : ""} — conversation intact, agent can re-read pages if needed.`,
       };
       node.uiEvents.push(infoEvent);
       node.updatedAt = Date.now();
@@ -1412,10 +1547,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       // it immediately and skip itself before doing anything.
       let runState = activeRuns.get(session.id);
       if (!runState) {
-        runState = { stop: false, skipSubtasks: false };
+        runState = { stop: false, skipSubtasks: false, nodeId: node.id };
         activeRuns.set(session.id, runState);
       } else {
         runState.skipSubtasks = false;
+        runState.nodeId = node.id;
       }
       beginKeepAlive();
 
@@ -1436,6 +1572,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           onEvent: (event) => persistAgentEvent(session, node, event),
           shouldStop: () => runState.stop === true,
           shouldSkipSubtasks: () => runState.skipSubtasks === true,
+          customInstructions: msg.customInstructions || "",
         });
         sendResponse({ ok: true, result });
       } catch (err) {
@@ -1462,6 +1599,76 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true;
   }
 
+  if (msg.type === "GET_RECORDING") {
+    getRecording(msg.sessionId).then((frames) => {
+      sendResponse({ ok: true, frames });
+    });
+    return true; // keep channel open for async response
+  }
+
+  // --- macro recording (item 5) -----------------------------------------
+  if (msg.type === "MACRO_START_RECORDING") {
+    const tabId = msg.tabId;
+    const result = startRecording(tabId);
+    // Also tell the content script to start capturing user events
+    if (result.ok && tabId) {
+      chrome.tabs.sendMessage(tabId, { type: "START_MACRO_RECORDING" }).catch(() => {});
+    }
+    sendResponse(result);
+    return true;
+  }
+
+  if (msg.type === "MACRO_STOP_RECORDING") {
+    const tabId = msg.tabId;
+    // Stop content script recording
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, { type: "STOP_MACRO_RECORDING" }).then((resp) => {
+        const state = stopRecording(tabId);
+        sendResponse({ ok: true, steps: resp?.steps || state.steps });
+      }).catch(() => {
+        const state = stopRecording(tabId);
+        sendResponse({ ok: true, steps: state.steps });
+      });
+      return true;
+    }
+    const state = stopRecording(tabId);
+    sendResponse(state);
+    return true;
+  }
+
+  if (msg.type === "MACRO_SAVE") {
+    saveMacro(msg.name, msg.steps).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === "MACRO_DELETE") {
+    deleteMacro(msg.name).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === "MACRO_LIST") {
+    listMacros().then((macros) => sendResponse({ ok: true, macros }));
+    return true;
+  }
+
+  if (msg.type === "MACRO_PLAY") {
+    // Playback requires a run context — delegate to a lightweight runner.
+    const tabId = msg.tabId;
+    if (!tabId) {
+      sendResponse({ ok: false, error: "No active tab for macro playback." });
+      return true;
+    }
+    // Fire-and-forget — the sidepanel gets step-by-step events via
+    // chrome.runtime.sendMessage.
+    playMacro(msg.name, { tabId }, (event) => {
+      chrome.runtime.sendMessage({ type: "AGENT_EVENT", event }).catch(() => {});
+    }).then((result) => {
+      chrome.runtime.sendMessage({ type: "MACRO_DONE", result }).catch(() => {});
+    });
+    sendResponse({ ok: true, started: true });
+    return true;
+  }
+
   if (msg.type === "DELETE_SESSION_CACHE") {
     // Sent by sidepanel.js right after it removes a chat from the "sessions"
     // array, so a deleted chat's cached page content (see lib/pageCache.js)
@@ -1472,6 +1679,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // either module's key-naming logic directly.
     deleteCacheForSession(msg.sessionId).catch((err) => console.log("[pageCache] deleteCacheForSession failed:", err?.message || err));
     deleteAttachmentCacheForSession(msg.sessionId).catch((err) => console.log("[attachmentCache] deleteCacheForSession failed:", err?.message || err));
+    deleteRecording(msg.sessionId).catch((err) => console.log("[sessionRecorder] deleteRecording failed:", err?.message || err));
+    deleteSessionState(msg.sessionId).catch((err) => console.log("[statePersist] deleteSessionState failed:", err?.message || err));
     sendResponse({ ok: true });
     return true;
   }
@@ -1551,6 +1760,78 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
     })();
     return true;
+  }
+
+  // --- queue management (Item 8) -------------------------------------------
+
+  if (msg.type === "GET_QUEUE_STATUS") {
+    sendResponse({ depth: runQueue.length, activeCount: activeRuns.size });
+    return;
+  }
+
+  if (msg.type === "CLEAR_QUEUE") {
+    runQueue.length = 0;
+    broadcastQueue();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  // Auto-add queued RUN_TASK messages to the queue — already handled above.
+  // These handlers let the side panel query/clear without sending a full task.
+
+  // --- MCP Bridge handlers --------------------------------------------
+
+  if (msg.type === "MCP_CONNECT") {
+    (async () => {
+      try {
+        // msg.port and msg.token come from the side panel (which reads them
+        // from chrome.storage.local or the bridge temp file)
+        mcp.connect(msg.port, msg.token);
+        sendResponse({ ok: true });
+      } catch (err) {
+        sendResponse({ ok: false, error: String(err.message || err) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "MCP_DISCONNECT") {
+    mcp.disconnect();
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.type === "MCP_GET_STATUS") {
+    sendResponse({
+      connected: mcp.isConnected,
+      port: mcp.port,
+    });
+    return;
+  }
+
+  if (msg.type === "MCP_CONFIRM_TOOL") {
+    // The side panel UI asks for user confirmation for a sensitive tool.
+    // We broadcast an AGENT_EVENT that the side panel shows as a dialog.
+    // The side panel responds with MCP_CONFIRM_REPLY.
+    // This two-message handshake is needed because sidepanel.js can't
+    // return a value synchronously from a runtime.sendMessage.
+    chrome.runtime.sendMessage({
+      type: "MCP_SHOW_CONFIRM",
+      callId: msg.callId,
+      tool: msg.tool,
+      args: msg.args,
+    });
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (msg.type === "MCP_CONFIRM_REPLY") {
+    if (_mcpPendingConfirm) {
+      _mcpPendingConfirm.resolve(msg.allowed === true);
+      _mcpPendingConfirm = null;
+    }
+    sendResponse({ ok: true });
+    return;
   }
 
   return false;

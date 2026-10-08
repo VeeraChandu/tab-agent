@@ -14,7 +14,10 @@
       <button id="tabbtn-agents" class="tab-btn" type="button" data-tab="agents" role="tab" aria-selected="false" aria-controls="tab-agents" tabindex="-1">Agents</button>
       <button id="tabbtn-automation" class="tab-btn" type="button" data-tab="automation" role="tab" aria-selected="false" aria-controls="tab-automation" tabindex="-1">Automation</button>
       <button id="tabbtn-limits" class="tab-btn" type="button" data-tab="limits" role="tab" aria-selected="false" aria-controls="tab-limits" tabindex="-1">Limits</button>
+      <button id="tabbtn-mcp" class="tab-btn" type="button" data-tab="mcp" role="tab" aria-selected="false" aria-controls="tab-mcp" tabindex="-1">MCP</button>
       <button id="tabbtn-privacy" class="tab-btn" type="button" data-tab="privacy" role="tab" aria-selected="false" aria-controls="tab-privacy" tabindex="-1">Privacy</button>
+      <button id="tabbtn-instructions" class="tab-btn" type="button" data-tab="instructions" role="tab" aria-selected="false" aria-controls="tab-instructions" tabindex="-1">Instructions</button>
+      <button id="tabbtn-usage" class="tab-btn" type="button" data-tab="usage" role="tab" aria-selected="false" aria-controls="tab-usage" tabindex="-1">Usage</button>
       <button id="tabbtn-about" class="tab-btn" type="button" data-tab="about" role="tab" aria-selected="false" aria-controls="tab-about" tabindex="-1">Backup &amp; About</button>
     </div>
 
@@ -25,7 +28,9 @@
       </h2>
 
       <div id="providerList" class="provider-list"></div>
-      <button id="addProviderBtn" type="button" class="add-btn">+ Add provider</button>
+      <button id="addProviderBtn" type="button" class="btn btn-primary btn-dashed btn-full">+ Add provider</button>
+      <button id="detectLocalBtn" type="button" class="btn btn-secondary" style="margin-top:8px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg> Detect local models…</button>
+      <span id="detectLocalStatus" class="hint" style="margin-left:8px"></span>
 
       <hr />
       <h2>
@@ -51,7 +56,7 @@
       </h2>
 
       <div id="agentList" class="agent-list"></div>
-      <button id="addAgentBtn" type="button" class="add-btn">+ Add agent</button>
+      <button id="addAgentBtn" type="button" class="btn btn-primary btn-dashed btn-full">+ Add agent</button>
     </section>
 
     <section id="tab-automation" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-automation" tabindex="0">
@@ -60,7 +65,7 @@
         <button type="button" class="info-icon" data-tooltip="Runs a task automatically on a timer, with no side panel open - Tab Agent opens the target page in a background tab, runs the task, and closes it again. There's no one to answer a question mid-run, so anything needing ask_user (or a one-time adult/financial site confirmation) pauses, reports back as &quot;Needs input&quot;, and disables itself until you review it and run it manually. Prerequisite: Chrome itself must be running for these to fire - if Chrome is fully quit (not just all windows closed), checks won't run until you reopen it, and system sleep pauses timers too.">ⓘ</button>
       </h2>
       <div id="scheduledList" class="scheduled-list"></div>
-      <button id="addScheduledBtn" type="button" class="add-btn">+ Add scheduled check</button>
+      <button id="addScheduledBtn" type="button" class="btn btn-primary btn-dashed btn-full">+ Add scheduled check</button>
     </section>
 
     <section id="tab-limits" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-limits" tabindex="0">
@@ -136,7 +141,7 @@
       <hr />
       <h2>
         Trusted input fallback
-        <button type="button" class="info-icon" data-tooltip="When a click's synthetic event gets silently ignored by a site (payment widgets and anti-bot form guards sometimes check event.isTrusted and drop anything else), the agent normally has no way around that. Turning this on lets it retry ONCE through chrome.debugger's real input pipeline, which the page can't tell apart from an actual click - but Chrome shows its own 'being debugged' banner on the tab while that's happening, and this requires granting the debugger permission. Off by default; only turn it on if you're hitting sites where clicks seem to do nothing.">ⓘ</button>
+        <button type="button" class="info-icon" data-tooltip="When a click's synthetic event gets silently ignored by a site (payment widgets and anti-bot form guards sometimes check event.isTrusted and drop anything else), the agent normally has no way around that. Turning this on lets it retry ONCE through chrome.debugger's real input pipeline, which the page can't tell apart from an actual click - but Chrome shows its own 'being debugged' banner on the tab while that's happening. The debugger permission itself is granted at install; this toggle only controls whether it's ever used. Off by default; only turn it on if you're hitting sites where clicks seem to do nothing.">ⓘ</button>
       </h2>
       <div class="field-row toggle-row">
         <span>Enable trusted-input retry (chrome.debugger)</span>
@@ -146,6 +151,59 @@
         </label>
       </div>
       <p class="hint" id="trustedInputSavedHint"></p>
+    </section>
+
+    <section id="tab-mcp" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-mcp" tabindex="0">
+      <h2>
+        MCP (Model Context Protocol)
+        <button type="button" class="info-icon" data-tooltip="Expose Tab Agent's browser control as MCP tools. An MCP host (Cursor, Claude Desktop, Cline) spawns the bridge process and calls tools like navigate, read_page, and click. The auth token and domain allowlist keep it secure.">ⓘ</button>
+      </h2>
+      <p class="hint">Enable AI coding assistants to control your browser through the MCP protocol. The bridge runs locally and only accepts connections with your auth token.</p>
+
+      <h3>Configuration</h3>
+
+      <div class="field-row toggle-row">
+        <span>Enable MCP bridge</span>
+        <label class="switch">
+          <input id="mcpEnabled" type="checkbox" />
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+
+      <label class="field-row">
+        <span>Bridge port</span>
+        <input id="mcpPort" type="number" value="58732" min="1024" max="65535" style="width:100px" />
+      </label>
+
+      <label class="field-row">
+        <span>Auth token</span>
+        <input id="mcpToken" type="text" readonly style="flex:1;font-family:monospace;font-size:12px" />
+        <button id="mcpRegenTokenBtn" type="button" class="btn btn-secondary btn-sm">Regenerate</button>
+        <button id="mcpCopyTokenBtn" type="button" class="btn btn-secondary btn-sm">Copy</button>
+      </label>
+
+
+      <hr />
+      <h3>MCP host config</h3>
+      <p class="hint">Add this to your MCP host config (e.g., <code>claude_desktop_config.json</code>):</p>
+      <pre id="mcpConfigBlock" class="config-block" style="background:#f5f5f5;padding:12px;border-radius:6px;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-all"></pre>
+      <button id="mcpCopyConfigBtn" type="button" class="btn btn-secondary btn-sm">Copy config</button>
+
+      <hr />
+      <h3>Allowed domains</h3>
+      <p class="hint">Comma-separated list of domains the MCP client is allowed to navigate to and interact with. Leave empty to block all navigation. Supports <code>*.example.com</code> wildcards.</p>
+      <input id="mcpAllowedDomains" type="text" placeholder="github.com,gitlab.com,*.docs.example.com" style="width:100%" />
+      <p class="hint" id="mcpDomainsSavedHint"></p>
+
+      <hr />
+      <h3>Tools</h3>
+      <p class="hint">The following tools are exposed via MCP. Tools marked <strong>Sensitive</strong> require your confirmation in the side panel before executing.</p>
+      <div class="mcp-tools-list">
+        <div><strong>Default (no prompt):</strong> <code>read_page</code>, <code>navigate</code>, <code>list_tabs</code>, <code>get_tab_info</code>, <code>scroll</code>, <code>hover</code>, <code>get_element_text</code></div>
+        <div style="margin-top:4px"><strong>Sensitive (prompts you):</strong> <code>click</code>, <code>type_text</code>, <code>execute_script</code>, <code>capture_screenshot</code></div>
+      </div>
+      <button id="mcpCheckBtn" type="button" class="btn btn-secondary" style="margin-top:8px">Check bridge status…</button>
+      <span id="mcpCheckResult" class="hint" style="margin-left:8px"></span>
     </section>
 
     <section id="tab-privacy" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-privacy" tabindex="0">
@@ -169,8 +227,8 @@
         <button type="button" class="info-icon" data-tooltip="The side panel's microphone button uses Chrome's built-in speech recognition, which needs one-time microphone permission for this extension. Chrome doesn't reliably show that permission prompt inside the side panel itself - grant it here instead (a regular tab, where the prompt always works). It carries over to the side panel automatically, since both share the same extension origin.">ⓘ</button>
       </h2>
       <div class="mic-actions">
-        <button id="enableMicBtn" type="button" class="add-btn">🎤 Enable microphone access</button>
-        <button id="openMicSettingsBtn" type="button" class="add-btn">Open Chrome mic settings</button>
+        <button id="enableMicBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><line x1="12" y1="19" x2="12" y2="22"/></svg> Enable microphone access</button>
+        <button id="openMicSettingsBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg> Open Chrome mic settings</button>
       </div>
       <p id="micStatus" class="hint"></p>
 
@@ -182,14 +240,62 @@
       <div id="siteAccessList" class="site-access-list"></div>
     </section>
 
+    <section id="tab-instructions" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-instructions" tabindex="0">
+      <h2>
+        Custom instructions
+        <button type="button" class="info-icon" data-tooltip="These instructions are injected into every new session's system prompt — like setting preferences that should always apply. You can also set or override instructions per-chat from the side panel's &bull;&bull;&bull; menu. Changing these doesn't affect a running session; it takes effect on the next new chat.">ⓘ</button>
+      </h2>
+      <p class="hint">Tell Tab Agent how you'd like it to behave by default. For example:</p>
+      <ul class="hint" style="margin: 4px 0 12px 20px;">
+        <li>Tasks to check &quot;what did my code change&quot; — only show changed lines, not the whole file</li>
+        <li>Comparison shopping — include the price, shipping, and a direct link for each item</li>
+        <li>Summarizing articles — respond in bullet points, max 5 lines each</li>
+        <li>Code questions — prefer TypeScript, use functional style, assume React 19</li>
+      </ul>
+
+      <label for="customInstructionsInput" class="field-label">Persistent instructions</label>
+      <textarea id="customInstructionsInput" class="instructions-textarea" placeholder="e.g. Always include source links. Use British English. Ask before navigating away from a form with unsaved input." spellcheck="true"></textarea>
+
+      <div class="field-row" style="justify-content:flex-end;margin-top:12px">
+        <span id="instructionsSaved" class="hint hidden" style="margin-right:12px">✓ Saved</span>
+        <button id="saveInstructionsBtn" type="button" class="btn btn-primary">Save instructions</button>
+      </div>
+    </section>
+
+    <section id="tab-usage" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-usage" tabindex="0">
+      <h2>Usage Dashboard</h2>
+      <p class="hint">Aggregate across all sessions. Costs are estimates based on published model pricing.</p>
+
+      <div id="usageSummary" class="usage-summary">
+        <div class="usage-stat"><span class="usage-stat-value" id="statRunCount">—</span><span class="usage-stat-label">Sessions</span></div>
+        <div class="usage-stat"><span class="usage-stat-value" id="statSuccessRate">—</span><span class="usage-stat-label">Success rate</span></div>
+        <div class="usage-stat"><span class="usage-stat-value" id="statTotalTokens">—</span><span class="usage-stat-label">Total tokens</span></div>
+        <div class="usage-stat"><span class="usage-stat-value" id="statAvgSteps">—</span><span class="usage-stat-label">Avg steps</span></div>
+        <div class="usage-stat"><span class="usage-stat-value" id="statEstCost">—</span><span class="usage-stat-label">Est. cost</span></div>
+      </div>
+
+      <div id="usageByModel" class="usage-model-table-wrap"></div>
+
+      <div class="usage-sessions-header">
+        <h3>Sessions</h3>
+        <div class="usage-sessions-actions">
+          <input id="usageSearchInput" type="text" placeholder="Filter sessions…" class="usage-search-input" />
+          <button id="refreshUsageBtn" type="button" class="btn btn-secondary">Refresh</button>
+          <button id="clearUsageDataBtn" type="button" class="btn btn-danger">Clear all</button>
+        </div>
+      </div>
+      <div id="usageSessionList" class="usage-session-list"></div>
+      <p id="usageStatus" class="hint"></p>
+    </section>
+
     <section id="tab-about" class="tab-panel" role="tabpanel" aria-labelledby="tabbtn-about" tabindex="0">
       <h2>
         Backup
         <button type="button" class="info-icon" data-tooltip="Export/Import let you pick which sections to include before proceeding. Providers includes your API keys in plain text - store an export with that included somewhere private.">ⓘ</button>
       </h2>
       <div class="backup-actions">
-        <button id="exportSettingsBtn" type="button" class="add-btn">▲ Export settings</button>
-        <button id="importSettingsBtn" type="button" class="add-btn">▼ Import settings</button>
+        <button id="exportSettingsBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> Export settings</button>
+        <button id="importSettingsBtn" type="button" class="btn btn-secondary"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Import settings</button>
         <input type="file" id="importFileInput" accept="application/json" hidden />
       </div>
       <p id="backupStatus" class="hint"></p>
@@ -208,8 +314,8 @@
     <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmMessage">
       <p id="confirmMessage"></p>
       <div class="confirm-actions">
-        <button id="confirmCancelBtn" type="button" class="confirm-cancel-btn">Cancel</button>
-        <button id="confirmOkBtn" type="button" class="confirm-ok-btn">Remove</button>
+        <button id="confirmCancelBtn" type="button" class="confirm-cancel-btn btn btn-secondary">Cancel</button>
+        <button id="confirmOkBtn" type="button" class="confirm-ok-btn btn btn-danger">Remove</button>
       </div>
     </div>
   </div>
@@ -227,7 +333,7 @@
       <p class="model-diff-heading model-diff-removed-heading hidden">Removed</p>
       <ul class="model-diff-list model-diff-removed-list"></ul>
       <div class="confirm-actions">
-        <button id="modelDiffOkBtn" type="button" class="confirm-ok-btn">Got it</button>
+        <button id="modelDiffOkBtn" type="button" class="btn btn-primary">Got it</button>
       </div>
     </div>
   </div>
@@ -243,7 +349,7 @@
       </div>
       <div class="history-dialog-actions">
         <label class="history-select-all-label"><input id="historySelectAll" type="checkbox" /> Select all</label>
-        <button id="historyDeleteSelectedBtn" type="button" class="history-delete-selected-btn" disabled>Delete selected</button>
+        <button id="historyDeleteSelectedBtn" type="button" class="history-delete-selected-btn btn btn-danger" disabled>Delete selected</button>
       </div>
       <ul id="historyList" class="history-modal-list"></ul>
     </div>
@@ -277,7 +383,7 @@
       </div>
       <div id="runDetailMarkdown" class="history-row-markdown run-detail-markdown"></div>
       <div class="run-detail-actions">
-        <button id="runDetailDeleteBtn" type="button" class="history-delete-selected-btn">Delete this run</button>
+        <button id="runDetailDeleteBtn" type="button" class="history-delete-selected-btn btn btn-danger">Delete this run</button>
       </div>
     </div>
   </div>
@@ -287,8 +393,8 @@
       <p id="backupSectionsTitle" class="backup-sections-title"></p>
       <div id="backupSectionsList" class="backup-sections-list"></div>
       <div class="confirm-actions">
-        <button id="backupSectionsCancelBtn" type="button" class="confirm-cancel-btn">Cancel</button>
-        <button id="backupSectionsOkBtn" type="button" class="confirm-ok-btn backup-sections-ok-btn">Continue</button>
+        <button id="backupSectionsCancelBtn" type="button" class="confirm-cancel-btn btn btn-secondary">Cancel</button>
+        <button id="backupSectionsOkBtn" type="button" class="backup-sections-ok-btn btn btn-primary">Continue</button>
       </div>
     </div>
   </div>
@@ -331,7 +437,7 @@
         <input class="baseurl-input" type="text" placeholder="https://api.openai.com" />
         <p class="hint">Works with any OpenAI-compatible endpoint - for a local model, try <code>http://localhost:11434/v1</code> (Ollama) or <code>http://localhost:1234/v1</code> (LM Studio). Any text is accepted as the API key if your local server doesn't check one.</p>
 
-        <button class="fetch-models-btn" type="button">Fetch models</button>
+        <button class="fetch-models-btn btn btn-primary btn-full" type="button">Fetch models</button>
 
         <div class="fetch-spinner hidden"><span class="spinner"></span> Fetching available models…</div>
 
@@ -386,7 +492,7 @@
         <p class="agent-status"></p>
 
         <div class="agent-footer">
-          <button class="agent-save-btn" type="button">Save</button>
+          <button class="agent-save-btn btn btn-primary" type="button">Save</button>
         </div>
       </div>
     </div>
@@ -461,9 +567,9 @@
 
         <div class="sched-footer">
           <div class="sched-footer-actions">
-            <button class="sched-run-now-btn" type="button">Run now</button>
-            <button class="sched-run-manually-btn hidden" type="button">Run manually</button>
-            <button class="sched-save-btn" type="button">Save</button>
+            <button class="sched-run-now-btn btn btn-secondary" type="button">Run now</button>
+            <button class="sched-run-manually-btn btn btn-warn hidden" type="button">Run manually</button>
+            <button class="sched-save-btn btn btn-primary" type="button">Save</button>
           </div>
           <button class="sched-history-btn" type="button" title="View full run history">🕓 History</button>
         </div>
@@ -474,6 +580,7 @@
   </template>
 
   <script src="lib/markdown.js"></script>
+  <script src="lib/pricing.js"></script>
   <script type="module" src="options.js"></script>
 </body>
 </html>

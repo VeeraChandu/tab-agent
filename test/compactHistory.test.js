@@ -1,4 +1,4 @@
-import { compactHistory } from "../src/lib/agentLoop.js";
+import { compactHistory, compactPageContent } from "../src/lib/agentLoop.js";
 
 // click/type_text/navigate results carry a full page scan inline (see
 // attachPageState), so they now share the "freshest page scan" slot with
@@ -110,5 +110,228 @@ describe("compactHistory with screenshot's ephemeral image blocks", () => {
 
     expect(h[0].content.some((b) => b.type === "image")).toBe(true); // untouched
     expect(h[2].content.some((b) => b.type === "image")).toBe(true); // the only screenshot so far, kept
+  });
+});
+
+describe("compactHistory with attachment/page chunk tools", () => {
+  const chunkTool = (name, extra = {}) => JSON.stringify({
+    ok: true,
+    chunk_index: 2,
+    total_chunks: 5,
+    [name === "read_attachment_chunk" ? "attachment_id" : "chunk_id"]: "chk_abc123",
+    text: "x".repeat(300),
+    ...extra,
+  });
+
+  // After compaction, the content is still JSON: `{"ok":true,"note":"[...]"}`.
+  // Parse it and check the `note` field for the pointer text.
+  const noteAt = (h, i) => JSON.parse(h[i * 2 + 1].content[0].content).note;
+
+  test("older read_attachment_chunk results are compacted, most recent is kept", () => {
+    const h = history(
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk") },
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk", { chunk_index: 5 }) },
+    );
+    compactHistory(h, false);
+
+    // First result is compacted — note replaces the full text
+    const first = noteAt(h, 0);
+    expect(first).toContain("call read_attachment_chunk with attachment_id");
+    expect(first).toContain("chk_abc123");
+    expect(first).toContain("chunk_index 2");
+
+    // Second (newest) is still full JSON content
+    const second = resultAt(h, 1);
+    expect(second.text).toBe("x".repeat(300));
+    expect(second.chunk_index).toBe(5);
+  });
+
+  test("older read_page_chunk results are compacted, most recent is kept", () => {
+    const h = history(
+      { name: "read_page_chunk", result: chunkTool("read_page_chunk") },
+      { name: "read_page_chunk", result: chunkTool("read_page_chunk", { chunk_index: 3 }) },
+    );
+    compactHistory(h, false);
+
+    const first = noteAt(h, 0);
+    expect(first).toContain("call read_page_chunk with chunk_id");
+    expect(first).toContain("chk_abc123");
+    expect(first).toContain("chunk_index 2");
+
+    const second = resultAt(h, 1);
+    expect(second.text).toBe("x".repeat(300));
+    expect(second.chunk_index).toBe(3);
+  });
+
+  test("compacted chunk result points back at the correct tool by id and index", () => {
+    // Two of the same type so the first one gets compacted.
+    const h = history(
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk") },
+      { name: "read_attachment_chunk", result: chunkTool("read_attachment_chunk", { chunk_index: 4 }) },
+    );
+    compactHistory(h, false);
+
+    const compacted = noteAt(h, 0);
+    expect(compacted).toContain("read_attachment_chunk");
+    expect(compacted).toContain("attachment_id");
+    expect(compacted).toContain("chk_abc123");
+    expect(compacted).toContain("chunk_index 2");
+
+    const kept = resultAt(h, 1);
+    expect(kept.chunk_index).toBe(4);
+  });
+
+  test("short chunk results (under COMPACT_MIN_LENGTH) are never touched", () => {
+    const short = JSON.stringify({ ok: true, chunk_index: 1, attachment_id: "chk_short", text: "short" });
+    const h = history(
+      { name: "read_attachment_chunk", result: short },
+    );
+    compactHistory(h, false);
+
+    expect(resultAt(h, 0).text).toBe("short"); // untouched
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compactPageContent — strips only page-text fields from tool results, keeping
+// conversation content (user messages, assistant reasoning, non-page tool
+// results) completely intact.
+// ---------------------------------------------------------------------------
+
+function pageContentToolResult(name, extraContent = {}) {
+  return JSON.stringify({
+    ok: true,
+    url: "https://example.com",
+    title: "Example",
+    visible_text: "A B C D E F G H I J K L M N O P Q R S T U V W X Y Z ".repeat(200),
+    interactive_elements: [],
+    ...extraContent,
+  });
+}
+
+describe("compactPageContent", () => {
+  test("strips visible_text from read_page results", () => {
+    const h = history(
+      { name: "read_page", result: pageContentToolResult("read_page") },
+    );
+    const collapsed = compactPageContent(h);
+    const parsed = resultAt(h, 0);
+
+    expect(collapsed).toBeGreaterThan(0);
+    expect(parsed.visible_text).toMatch(/Page content removed/);
+    expect(parsed.url).toBe("https://example.com");
+    expect(parsed.title).toBe("Example");
+    // interactive elements, url, title all preserved
+    expect(parsed.interactive_elements).toEqual([]);
+  });
+
+  test("strips visible_text from recall_page results", () => {
+    const h = history(
+      { name: "recall_page", result: pageContentToolResult("recall_page") },
+    );
+    compactPageContent(h);
+    const parsed = resultAt(h, 0);
+    expect(parsed.visible_text).toMatch(/Page content removed/);
+    expect(parsed.url).toBe("https://example.com");
+  });
+
+  test("strips visible_text from inline page scans in click/navigate results", () => {
+    const pageData = { url: "https://example.com", title: "Page", visible_text: "x".repeat(500), interactive_elements: [] };
+    const h = history(
+      { name: "click", result: JSON.stringify({ ok: true, page_changed: true, page: pageData }) },
+    );
+    compactPageContent(h);
+    const parsed = resultAt(h, 0);
+    expect(parsed.page.visible_text).toMatch(/Page content removed/);
+    expect(parsed.page.url).toBe("https://example.com");
+    expect(parsed.ok).toBe(true);
+    expect(parsed.page_changed).toBe(true);
+  });
+
+  test("strips text from read_page_chunk results", () => {
+    const h = history(
+      { name: "read_page_chunk", result: JSON.stringify({ ok: true, chunk_id: "chk_1", chunk_index: 2, total_chunks: 5, text: "x".repeat(300) }) },
+    );
+    compactPageContent(h);
+    const parsed = resultAt(h, 0);
+    expect(parsed.text).toMatch(/Chunk content removed/);
+    expect(parsed.chunk_id).toBe("chk_1");
+    expect(parsed.chunk_index).toBe(2);
+  });
+
+  test("strips text from read_attachment_chunk results", () => {
+    const h = history(
+      { name: "read_attachment_chunk", result: JSON.stringify({ ok: true, attachment_id: "att_1", chunk_index: 1, total_chunks: 3, text: "x".repeat(300) }) },
+    );
+    compactPageContent(h);
+    const parsed = resultAt(h, 0);
+    expect(parsed.text).toMatch(/Chunk content removed/);
+    expect(parsed.attachment_id).toBe("att_1");
+  });
+
+  test("leaves user messages and assistant text intact", () => {
+    const h = [
+      { role: "user", content: [{ type: "text", text: "Find the price on this page" }] },
+      { role: "assistant", content: [{ type: "text", text: "I'll read the page to find the price." }, { type: "tool_use", id: "t0", name: "read_page", input: {} }] },
+    ];
+    // No tool_result yet — nothing to compact
+    const collapsed = compactPageContent(h);
+    expect(collapsed).toBe(0);
+    expect(h[0].content[0].text).toBe("Find the price on this page");
+    expect(h[1].content[0].text).toBe("I'll read the page to find the price.");
+  });
+
+  test("leaves non-page tool results (finish, click without page scan) untouched", () => {
+    const h = history(
+      { name: "finish", result: JSON.stringify({ ok: true, summary: "Done!" }) },
+      { name: "click", result: JSON.stringify({ ok: true, page_changed: false, note: "Nothing changed" }) },
+    );
+    const collapsed = compactPageContent(h);
+    expect(collapsed).toBe(0);
+    expect(resultAt(h, 0).summary).toBe("Done!");
+    expect(resultAt(h, 1).note).toBe("Nothing changed");
+  });
+
+  test("returns 0 when history is empty", () => {
+    expect(compactPageContent([])).toBe(0);
+  });
+
+  test("returns 0 when no page content exists", () => {
+    const h = history(
+      { name: "click", result: JSON.stringify({ ok: true, page_changed: false }) },
+    );
+    expect(compactPageContent(h)).toBe(0);
+  });
+
+  test("only strips visible_text, not url/title/interactive_elements from read_page", () => {
+    const full = {
+      ok: true,
+      url: "https://example.com/products",
+      title: "Products",
+      visible_text: "Product list: ".repeat(100),
+      interactive_elements: [{ id: 1, text: "Buy Now" }],
+      images: ["img1.png"],
+    };
+    const h = history({ name: "read_page", result: JSON.stringify(full) });
+    compactPageContent(h);
+    const parsed = resultAt(h, 0);
+    expect(parsed.visible_text).toMatch(/Page content removed/);
+    expect(parsed.url).toBe("https://example.com/products");
+    expect(parsed.title).toBe("Products");
+    expect(parsed.interactive_elements).toEqual([{ id: 1, text: "Buy Now" }]);
+    expect(parsed.images).toEqual(["img1.png"]);
+  });
+
+  test("handles multiple page results in the same history", () => {
+    const h = history(
+      { name: "read_page", result: pageContentToolResult("read_page") },
+      { name: "click", result: JSON.stringify({ ok: true, page_changed: true, page: { url: "https://example.com/2", visible_text: "x".repeat(400) } }) },
+      { name: "read_page_chunk", result: JSON.stringify({ ok: true, chunk_id: "c1", chunk_index: 2, total_chunks: 3, text: "y".repeat(300) }) },
+    );
+    const collapsed = compactPageContent(h);
+    expect(collapsed).toBeGreaterThan(0);
+    expect(resultAt(h, 0).visible_text).toMatch(/Page content removed/);
+    expect(resultAt(h, 1).page.visible_text).toMatch(/Page content removed/);
+    expect(resultAt(h, 2).text).toMatch(/Chunk content removed/);
   });
 });

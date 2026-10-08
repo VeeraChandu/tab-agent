@@ -9,6 +9,7 @@ const emptyState = document.getElementById("emptyState");
 const taskInput = document.getElementById("taskInput");
 const runBtn = document.getElementById("runBtn");
 const stopBtn = document.getElementById("stopBtn");
+const queueBadge = document.getElementById("queueBadge");
 const settingsBtn = document.getElementById("settingsBtn");
 const newChatBtn = document.getElementById("newChatBtn");
 const historyBtn = document.getElementById("historyBtn");
@@ -16,11 +17,16 @@ const closeHistoryBtn = document.getElementById("closeHistoryBtn");
 const historyPanel = document.getElementById("historyPanel");
 const historyList = document.getElementById("historyList");
 const historySearch = document.getElementById("historySearch");
+const branchTreeBtn = document.getElementById("branchTreeBtn");
+const closeBranchTreeBtn = document.getElementById("closeBranchTreeBtn");
+const branchTreePanel = document.getElementById("branchTreePanel");
+const branchTreeContainer = document.getElementById("branchTreeContainer");
+const investigatePanelBtn = document.getElementById("investigatePanelBtn");
+const closeInvestigatePanelBtn = document.getElementById("closeInvestigatePanelBtn");
+const investigatePanel = document.getElementById("investigatePanel");
+const investigatePanelBody = document.getElementById("investigatePanelBody");
+const investigatePanelCount = document.getElementById("investigatePanelCount");
 const warningBanner = document.getElementById("warningBanner");
-const privacyNotice = document.getElementById("privacyNotice");
-const privacyNoticeDismiss = document.getElementById("privacyNoticeDismiss");
-const statusBar = document.getElementById("statusBar");
-const statusText = document.getElementById("statusText");
 const topProgress = document.getElementById("topProgress");
 const modelSelect = document.getElementById("modelSelect");
 const attachBtn = document.getElementById("attachBtn");
@@ -31,6 +37,12 @@ const agentChip = document.getElementById("agentChip");
 const agentChipName = document.getElementById("agentChipName");
 const agentChipClear = document.getElementById("agentChipClear");
 const agentPopover = document.getElementById("agentPopover");
+const instructionsBtn = document.getElementById("instructionsBtn");
+const instructionsPopover = document.getElementById("instructionsPopover");
+const closeInstructionsPopover = document.getElementById("closeInstructionsPopover");
+const perChatInstructions = document.getElementById("perChatInstructions");
+const savePerChatInstructionsBtn = document.getElementById("savePerChatInstructionsBtn");
+const perChatInstructionsSaved = document.getElementById("perChatInstructionsSaved");
 const editBanner = document.getElementById("editBanner");
 const editBannerCancel = document.getElementById("editBannerCancel");
 const themeBtn = document.getElementById("themeBtn");
@@ -39,6 +51,18 @@ const themeIconLight = document.getElementById("themeIconLight");
 const themeIconAuto = document.getElementById("themeIconAuto");
 
 const { renderMarkdown, escapeHtml } = window.TabAgentMarkdown;
+
+// --- MCP UI elements ---------------------------------------------------
+const mcpBanner = document.getElementById("mcpBanner");
+const mcpStopBtn = document.getElementById("mcpStopBtn");
+const mcpLogToggleBtn = document.getElementById("mcpLogToggleBtn");
+const mcpActivityLog = document.getElementById("mcpActivityLog");
+const mcpActivityList = document.getElementById("mcpActivityList");
+const mcpConfirmOverlay = document.getElementById("mcpConfirmOverlay");
+const mcpConfirmToolName = document.getElementById("mcpConfirmToolName");
+const mcpConfirmArgs = document.getElementById("mcpConfirmArgs");
+const mcpConfirmAllowBtn = document.getElementById("mcpConfirmAllowBtn");
+const mcpConfirmDenyBtn = document.getElementById("mcpConfirmDenyBtn");
 
 // --- theme (light / dark / system) -----------------------------------
 // "System" (stored as null) tracks prefers-color-scheme via the plain
@@ -159,11 +183,16 @@ function docIcon(format) {
 }
 
 let running = false;
+let sending = false; // guards against re-entrance during async setup (e.g. maybeAutoCompact)
+let stepThroughEnabled = false;
 let autoScroll = true;
 let attachments = []; // images: { id, name, kind:"image", mediaType, data (base64, no prefix), previewUrl }
                        // pdfs:   { id, name, kind:"pdf", text, pageCount, truncated }
 let editingNodeId = null;
 let currentSessionId = null;
+// In-memory copy of the session tree, kept in sync with chrome.storage.local
+// to avoid async re-reads on every branch switch or tree re-render.
+let currentSession = null;
 // The node id of the run currently being displayed live. null means "not
 // locked onto a run yet — the next AGENT_EVENT/AGENT_PAUSED/AGENT_DONE we see
 // for the current session is it." Reset to null right before every message
@@ -218,7 +247,40 @@ function hidePopover() {
   agentPopover.classList.add("hidden");
   agentPopover.innerHTML = "";
   popoverMatches = [];
+  instructionsPopover.classList.add("hidden");
 }
+
+// --- per-chat instructions --------------------------------------------
+// These override the persistent instructions from Settings for just this one
+// chat session — stored in memory, not persisted to chrome.storage (they're
+// ephemeral by design). The value flows into system prompts via the RUN_TASK
+// message → background.js → drive() → runAgentTask.
+let perChatInstructionsValue = "";
+
+instructionsBtn.addEventListener("click", () => {
+  // Toggle the popover
+  const isOpen = !instructionsPopover.classList.contains("hidden");
+  if (isOpen) {
+    instructionsPopover.classList.add("hidden");
+  } else {
+    perChatInstructions.value = perChatInstructionsValue;
+    instructionsPopover.classList.remove("hidden");
+    perChatInstructionsSaved.classList.add("hidden");
+    perChatInstructions.focus();
+  }
+});
+
+closeInstructionsPopover.addEventListener("click", () => {
+  instructionsPopover.classList.add("hidden");
+});
+
+savePerChatInstructionsBtn.addEventListener("click", () => {
+  perChatInstructionsValue = perChatInstructions.value.trim();
+  perChatInstructionsSaved.classList.remove("hidden");
+  setTimeout(() => perChatInstructionsSaved.classList.add("hidden"), 2000);
+  // Keep the popover open so the user sees the confirmation, then close
+  instructionsPopover.classList.add("hidden");
+});
 
 // headerLabel + a fixed trigger char (not per-item) because / and @ now open
 // two entirely separate, single-purpose pickers — see checkForSlashCommand
@@ -399,33 +461,72 @@ function checkConfig(providers, options) {
   }
 }
 
-// --- data-use disclosure ------------------------------------------------
-// Bump this when what Tab Agent accesses or where it sends data actually
-// changes — a stored ack from an older version won't suppress the notice
-// for a newer one, so a material change gets surfaced again rather than
-// silently inheriting a prior "Got it" click. See PRIVACY_POLICY.md.
-const PRIVACY_NOTICE_VERSION = 1;
+loadProviders();
 
-async function checkPrivacyNotice() {
-  const { privacyNoticeAckVersion } = await chrome.storage.local.get(["privacyNoticeAckVersion"]);
-  if (privacyNoticeAckVersion === PRIVACY_NOTICE_VERSION) return;
-  privacyNotice.classList.remove("hidden");
+// A task started before this panel was closed (or before it was ever
+// opened, if the run was kicked off from a different window) keeps running
+// in the background regardless — background.js's activeRuns doesn't care
+// whether anyone's watching. Without this, reopening the panel always
+// defaults to a blank new chat with zero indication that anything is
+// happening, other than the toolbar's pulsing dot — the only signal
+// available is the tool-call log inside a chat this panel isn't showing.
+  // Re-attaching means loading that chat AND telling the UI it's running
+  // (setRunning/showTypingBubble), the same way clicking
+// "Continue" on a step-limit prompt already resumes a known node — a live
+// AGENT_EVENT broadcast could be seconds away, or over a minute (still
+// within the watchdog's grace period — see setRunning), so there's nothing
+// to visibly wait for in between.
+// A paused run (ask_user, a step-limit check-in, or a site-access gate) is
+// the other half of drive()'s two exit paths — unlike an active run, it's
+// not tracked in background.js's in-memory activeRuns at all (drive()'s
+// finally block clears that entry the instant it pauses, same moment
+// getRunningBadge's dot would turn off), so there's no live state to ask
+// background.js for. It's fully described by node.pendingQuestion, already
+// sitting in storage, so this reads sessions directly rather than adding a
+// second message round-trip. Ties go to whichever chat was paused most
+// recently — with several waiting at once, that's the one most likely to
+// still be relevant.
+function findMostRecentPausedSession(sessions) {
+  let best = null;
+  for (const raw of sessions) {
+    const session = migrateSessionIfNeeded(raw);
+    const path = computeActivePath(session);
+    const lastNode = path[path.length - 1];
+    if (!lastNode?.pendingQuestion) continue;
+    if (!best || (session.updatedAt || 0) > (best.updatedAt || 0)) best = session;
+  }
+  return best;
 }
 
-privacyNoticeDismiss.addEventListener("click", () => {
-  privacyNotice.classList.add("hidden");
-  chrome.storage.local.set({ privacyNoticeAckVersion: PRIVACY_NOTICE_VERSION });
-});
+(async () => {
+  const { sessionId, nodeId } = await chrome.runtime.sendMessage({ type: "GET_RUNNING_SESSION" }).catch(() => ({}));
+  if (sessionId) {
+    const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+    const raw = sessions.find((s) => s.id === sessionId);
+    if (!raw) return;
+    loadSessionIntoView(raw);
+    activeRunNodeId = nodeId || null;
+    setRunning(true);
+    showTypingBubble();
+    return;
+  }
 
-checkPrivacyNotice();
-
-loadProviders();
+  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+  const paused = findMostRecentPausedSession(sessions);
+  // loadSessionIntoView's own renderSessionPath replays the node's
+  // ask_user/confirm_continue/confirm_site_category uiEvent exactly as it
+  // would on a manual History visit, forms and all — no separate "paused"
+  // UI state to set here, since setRunning's default (false) is already
+  // the resting state a paused chat wants (composer usable, no progress bar).
+  if (paused) loadSessionIntoView(paused);
+})();
 settingsBtn.addEventListener("click", () => chrome.runtime.openOptionsPage());
 
 // --- new chat / history -------------------------------------------------
 
 function startNewChat() {
   currentSessionId = null;
+  currentSession = null;
   activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
@@ -492,6 +593,7 @@ async function clearCurrentSession() {
   fresh[freshIdx] = cleared;
   await chrome.storage.local.set({ sessions: fresh });
 
+  currentSession = null;
   activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
@@ -558,6 +660,239 @@ function closeHistory() {
   historyBtn.setAttribute("aria-expanded", "false");
 }
 
+// --- branch tree panel -------------------------------------------------
+
+branchTreeBtn.addEventListener("click", () => {
+  const isOpen = !branchTreePanel.classList.contains("hidden");
+  if (isOpen) {
+    closeBranchTree();
+  } else {
+    renderBranchTree();
+    branchTreePanel.classList.remove("hidden");
+  }
+});
+closeBranchTreeBtn.addEventListener("click", closeBranchTree);
+
+function closeBranchTree() {
+  branchTreePanel.classList.add("hidden");
+}
+
+// --- investigation results panel (tile view) ---------------------------
+
+// In-memory store of investigation results, keyed by callId. Populated
+// from investigate_start + branch_done events that flow through applyAgentEvent.
+// Persisted across re-renders via the session's uiEvents.
+const investigateResults = new Map(); // callId -> { branches, groupHeader, tiles: Map<label, {status, findings, url, tabId, objective, steps}> }
+
+investigatePanelBtn.addEventListener("click", () => {
+  const isOpen = !investigatePanel.classList.contains("hidden");
+  if (isOpen) {
+    closeInvestigatePanel();
+  } else {
+    renderInvestigatePanel();
+    investigatePanel.classList.remove("hidden");
+  }
+});
+closeInvestigatePanelBtn.addEventListener("click", closeInvestigatePanel);
+
+function closeInvestigatePanel() {
+  investigatePanel.classList.add("hidden");
+}
+
+function renderInvestigatePanel() {
+  const body = investigatePanelBody;
+  if (!investigateResults.size) {
+    body.innerHTML = '<div class="investigate-panel-empty">No investigations yet. Ask the agent to compare sources or check across multiple pages.</div>';
+    investigatePanelCount.textContent = "";
+    return;
+  }
+
+  let totalTiles = 0;
+  let html = "";
+  for (const group of investigateResults.values()) {
+    const groupLabel = group.groupHeader || `Investigation`;
+    const tiles = Array.from(group.tiles.values());
+    totalTiles += tiles.length;
+    const okCount = tiles.filter((t) => t.status === "ok").length;
+    const incompleteCount = tiles.filter((t) => t.status === "incomplete").length;
+
+    html += `<div class="investigate-tile-group">`;
+    html += `<div class="investigate-tile-header" onclick="this.classList.toggle('collapsed');this.nextElementSibling.classList.toggle('hidden')">
+      <span class="collapse-icon">▼</span>
+      ${escapeHtml(groupLabel)}
+      <span class="header-count">${tiles.length} source${tiles.length === 1 ? "" : "s"}${okCount ? ` · ${okCount} done` : ""}${incompleteCount ? ` · ${incompleteCount} incomplete` : ""}</span>
+    </div>`;
+    html += `<div class="investigate-tile-list">`;
+    for (const tile of tiles) {
+      html += renderInvestigateTile(tile);
+    }
+    html += `</div></div>`;
+  }
+
+  body.innerHTML = html;
+  investigatePanelCount.textContent = `${totalTiles} result${totalTiles === 1 ? "" : "s"}`;
+}
+
+function renderInvestigateTile(tile) {
+  const statusClass = tile.status === "ok" ? "ok" : tile.status === "error" ? "error" : tile.status === "incomplete" ? "incomplete" : "skipped";
+  const badgeLabel = tile.status === "ok" ? "Done" : tile.status === "error" ? "Error" : tile.status === "incomplete" ? "Incomplete" : "Skipped";
+  const hostname = tile.url ? hostnameLabel(tile.url) : "";
+  // Strip the " · site" suffix from label if it matches the hostname
+  const title = tile.label.endsWith(` - ${hostname}`) ? tile.label.slice(0, -(hostname.length + 3)) : tile.label;
+  const shortFindings = tile.findings ? tile.findings.slice(0, 300) : "";
+
+  let actionsHtml = "";
+  if (tile.url) {
+    actionsHtml += `<button onclick="reopenTab('${escapeHtml(tile.url)}', this)" title="${escapeHtml(tile.url)}">↗ Open page</button>`;
+  }
+
+  return `<div class="investigate-tile">
+    <div class="investigate-tile-status ${statusClass}"></div>
+    <div class="investigate-tile-body">
+      <div class="investigate-tile-title">${escapeHtml(title)}</div>
+      ${tile.url ? `<div class="investigate-tile-url"><a href="${escapeHtml(tile.url)}" target="_blank">${escapeHtml(hostname)}</a></div>` : ""}
+      <div class="investigate-tile-badge ${statusClass}">● ${badgeLabel}</div>
+      ${shortFindings ? `<div class="investigate-tile-findings">${renderMarkdown(shortFindings)}</div>` : ""}
+      ${actionsHtml ? `<div class="investigate-tile-actions">${actionsHtml}</div>` : ""}
+    </div>
+  </div>`;
+}
+
+// Collects branch results from uiEvents into investigateResults map.
+// Called on session load and when new events arrive.
+function rebuildInvestigateResults(session) {
+  investigateResults.clear();
+  if (!session) return;
+  const path = computeActivePath(session);
+  for (const node of path) {
+    for (const evt of node.uiEvents || []) {
+      if (evt.type === "investigate_start") {
+        if (!investigateResults.has(evt.callId)) {
+          investigateResults.set(evt.callId, {
+            groupHeader: `🔀 ${evt.branches.length} source${evt.branches.length === 1 ? "" : "s"}${evt.remainingCount ? ` (${evt.remainingCount} more queued)` : ""}`,
+            tiles: new Map(),
+          });
+        }
+      } else if (evt.type === "branch_done" && investigateResults.has(evt.callId)) {
+        const group = investigateResults.get(evt.callId);
+        const existing = group.tiles.get(evt.label) || {};
+        group.tiles.set(evt.label, {
+          ...existing,
+          callId: evt.callId,
+          label: evt.label,
+          url: evt.url || existing.url,
+          tabId: typeof evt.tabId === "number" ? evt.tabId : existing.tabId,
+          objective: evt.objective || existing.objective,
+          findings: evt.findings || existing.findings,
+          steps: evt.steps || existing.steps || [],
+          status: evt.skipped ? "skipped" : evt.incomplete ? "incomplete" : evt.ok !== false ? "ok" : "error",
+        });
+      }
+    }
+  }
+}
+
+function renderBranchTree() {
+  if (!currentSessionId) {
+    branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No active chat. Start a new chat first.</div>';
+    return;
+  }
+  if (!currentSession) {
+    branchTreeContainer.innerHTML = '<div class="branch-tree-empty">Session not loaded.</div>';
+    return;
+  }
+  const session = currentSession;
+  const activePath = computeActivePath(session);
+  const activeIdSet = new Set(activePath.map((n) => n.id));
+
+  // Walk the tree top-down, depth-first
+  const lines = [];
+  function walk(nodeIds, depth) {
+    for (const id of nodeIds) {
+      const node = session.nodes[id];
+      if (!node) continue;
+      const isActive = activeIdSet.has(id);
+      lines.push({ node, depth, isActive });
+      walk(node.childIds || [], depth + 1);
+    }
+  }
+  walk(session.rootChildIds || [], 0);
+
+  if (!lines.length) {
+    branchTreeContainer.innerHTML = '<div class="branch-tree-empty">No messages yet.</div>';
+    return;
+  }
+
+  // Render the tree into DOM
+  const items = lines.map(({ node, depth, isActive }) => {
+    const row = document.createElement("div");
+    row.className = "branch-tree-row";
+    row.setAttribute("data-node-id", node.id);
+
+    const indent = document.createElement("div");
+    indent.className = "branch-tree-indent";
+    indent.style.paddingLeft = `${depth * 18}px`;
+
+    const nodeEl = document.createElement("div");
+    nodeEl.className = `branch-tree-node${isActive ? " active" : ""}`;
+
+    const dot = document.createElement("span");
+    dot.className = `branch-tree-dot${isActive ? " active" : ""}`;
+    nodeEl.appendChild(dot);
+
+    const label = document.createElement("span");
+    label.className = `branch-tree-label${isActive ? "" : " muted"}`;
+    const text = node.userText || "(no text)";
+    label.textContent = text.length > 60 ? text.slice(0, 60) + "…" : text;
+    label.title = node.userText || "";
+    nodeEl.appendChild(label);
+
+    indent.appendChild(nodeEl);
+    row.appendChild(indent);
+
+    row.addEventListener("click", async () => {
+      if (isActive) return;
+      await switchToNodeBranch(node.id);
+      closeBranchTree();
+      renderBranchTree();
+    });
+
+    return row;
+  });
+
+  branchTreeContainer.innerHTML = "";
+  for (const row of items) branchTreeContainer.appendChild(row);
+}
+
+// Switch the session's active path so that `targetNodeId` becomes the current
+// tip of the active branch — works by navigating from the target node up to
+// the root and setting selectedChildId on each ancestor to pick the branch
+// that leads to the target.
+async function switchToNodeBranch(targetNodeId) {
+  if (!currentSession) return;
+  const session = currentSession;
+  const node = session.nodes[targetNodeId];
+  if (!node) return;
+
+  // Walk up from target to root, setting selectedChildId on each parent
+  // to point to the child on the path, so computeActivePath() reaches target.
+  let cur = node;
+  while (cur) {
+    if (cur.parentId) {
+      const parent = session.nodes[cur.parentId];
+      if (parent) parent.selectedChildId = cur.id;
+    } else {
+      // Root level
+      session.rootSelectedChildId = cur.id;
+    }
+    cur = cur.parentId ? session.nodes[cur.parentId] : null;
+  }
+
+  session.updatedAt = Date.now();
+  await persistCurrentSession();
+  renderSessionPath(session);
+}
+
 // Click-outside-to-close — historyPanel is a positioned popup (absolute,
 // no backdrop element covering the rest of the UI), so nothing was closing
 // it on an outside click before this; only Escape and the panel's own X
@@ -568,9 +903,13 @@ function closeHistory() {
 // while the panel is open would close it here and then immediately reopen
 // it via the click handler right after.
 document.addEventListener("mousedown", (e) => {
-  if (historyPanel.classList.contains("hidden")) return;
-  if (historyPanel.contains(e.target) || historyBtn.contains(e.target)) return;
-  closeHistory();
+  const bp = branchTreePanel.classList.contains("hidden");
+  const hp = historyPanel.classList.contains("hidden");
+  const ip = investigatePanel.classList.contains("hidden");
+  if (hp && bp && ip) return;
+  if (!hp && !historyPanel.contains(e.target) && !historyBtn.contains(e.target)) closeHistory();
+  if (!bp && !branchTreePanel.contains(e.target) && !branchTreeBtn.contains(e.target)) closeBranchTree();
+  if (!ip && !investigatePanel.contains(e.target) && !investigatePanelBtn.contains(e.target)) closeInvestigatePanel();
 });
 
 // Global Escape: stop a running task if one is in progress, otherwise close
@@ -581,12 +920,20 @@ document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if (document.activeElement === taskInput && !agentPopover.classList.contains("hidden")) return;
   if (running) {
-    showStatus("Stopping…");
     chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId });
     return;
   }
   if (!historyPanel.classList.contains("hidden")) {
     closeHistory();
+    return;
+  }
+  if (!branchTreePanel.classList.contains("hidden")) {
+    closeBranchTree();
+    return;
+  }
+  if (!investigatePanel.classList.contains("hidden")) {
+    closeInvestigatePanel();
+    return;
   }
 });
 
@@ -621,6 +968,35 @@ document.addEventListener("keydown", (e) => {
     }
   }
 });
+
+// --- Footer resize (drag handle) ----------------------------------------
+(function initFooterResize() {
+  const handle = document.getElementById("footerResizeHandle");
+  const footer = document.querySelector("footer");
+  if (!handle || !footer) return;
+  let startY = 0;
+  let startH = 0;
+  const onMove = (e) => {
+    const delta = startY - e.clientY;
+    const newH = Math.max(80, Math.min(window.innerHeight * 0.7, startH + delta));
+    footer.style.height = `${newH}px`;
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  };
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startY = e.clientY;
+    startH = footer.offsetHeight;
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+})();
 
 function relativeTime(ts) {
   const diff = Date.now() - ts;
@@ -686,7 +1062,12 @@ function sessionUsageLabel(session) {
   if (!session.compactedUsage) return ` · ~${fmt(total)} tokens${costPart}`;
 
   const activeNode = computeActivePath(session).at(-1);
-  const active = activeNode?.usage ? (activeNode.usage.inputTokens || 0) + (activeNode.usage.outputTokens || 0) : 0;
+  let active = activeNode?.usage ? (activeNode.usage.inputTokens || 0) + (activeNode.usage.outputTokens || 0) : 0;
+  // After compaction the billed token count doesn't shrink — estimate actual
+  // context size from cumulativeHistory instead.
+  if (session.compactedUsage && activeNode?.cumulativeHistory?.length) {
+    active = Math.ceil(JSON.stringify(activeNode.cumulativeHistory).length / 4);
+  }
   return ` · ~${fmt(total)} total${costPart} · ~${fmt(active)} active`;
 }
 
@@ -698,9 +1079,21 @@ function sessionToTranscript(session) {
     lines.push(`**You:** ${node.userText || "(attachment only)"}`, "");
     const docNames = (node.userAttachmentPreviews || []).filter((p) => p && typeof p === "object" && (p.kind === "pdf" || p.kind === "doc"));
     if (docNames.length) lines.push(`_Attached: ${docNames.map((d) => d.name).join(", ")}_`, "");
+    // Collect all assistant text from uiEvents — intermediate text
+    // (assistant_delta concatenated together), full assistant messages,
+    // and final finish/done answers.
+    let assistantText = "";
     for (const event of node.uiEvents || []) {
-      if (event.type === "finish") lines.push(event.answer || "", "");
-      else if (event.type === "done" && !event.alreadyShown) lines.push(event.finalAnswer || "", "");
+      if (event.type === "assistant" || event.type === "assistant_delta") {
+        assistantText += event.text || "";
+      } else if (event.type === "finish") {
+        lines.push(event.answer || "", "");
+      } else if (event.type === "done" && !event.alreadyShown) {
+        lines.push(event.finalAnswer || "", "");
+      }
+    }
+    if (assistantText.trim()) {
+      lines.push(`**Tab Agent:** ${assistantText.trim()}`, "");
     }
   }
   return lines.join("\n");
@@ -717,20 +1110,6 @@ function downloadText(filename, text, mime) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
-
-async function duplicateSession(session) {
-  const { sessions: current = [] } = await chrome.storage.local.get(["sessions"]);
-  const clone = JSON.parse(JSON.stringify(session));
-  clone.id = "s_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-  clone.title = `${session.title || "New chat"} (copy)`;
-  clone.createdAt = Date.now();
-  clone.updatedAt = Date.now();
-  current.unshift(clone);
-  current.sort((a, b) => b.updatedAt - a.updatedAt);
-  await chrome.storage.local.set({ sessions: current.slice(0, HISTORY_MAX_SESSIONS) });
-  renderHistoryList(historySearch.value);
-}
-
 async function renderHistoryList(filterText = "") {
   const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
   sessions.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -762,11 +1141,29 @@ async function renderHistoryList(filterText = "") {
     const dup = document.createElement("button");
     dup.type = "button";
     dup.className = "history-row-action";
-    dup.title = "Duplicate";
-    dup.textContent = "⧉";
-    dup.addEventListener("click", (e) => {
+    dup.title = "Copy transcript";
+    dup.textContent = "📋";
+    dup.addEventListener("click", async (e) => {
       e.stopPropagation();
-      duplicateSession(session);
+      try {
+        await navigator.clipboard.writeText(sessionToTranscript(session));
+        dup.textContent = "✓";
+        dup.title = "Copied!";
+        setTimeout(() => { dup.textContent = "📋"; dup.title = "Copy transcript"; }, 1500);
+      } catch {
+        dup.textContent = "✗";
+        setTimeout(() => { dup.textContent = "📋"; dup.title = "Copy transcript"; }, 1500);
+      }
+    });
+
+    const replay = document.createElement("button");
+    replay.type = "button";
+    replay.className = "history-row-action";
+    replay.title = "Visual replay";
+    replay.textContent = "📽";
+    replay.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openReplay(session.id);
     });
 
     const exp = document.createElement("button");
@@ -884,20 +1281,61 @@ function renderSessionPath(session) {
   scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 
-// Quiet, view-only usage readout pinned to the top of the composer card —
-// just for the user to glance at, not a quota/limit (the extension has no
-// concept of a spend cap since it's bring-your-own-key).
+// Context ring + click-to-compact — shows active context size as a filled
+// ring (clamped relative to AUTO_COMPACT_TOKEN_THRESHOLD). Clicking it
+// compacts the session. Only shown when there's measurable usage and only
+// active when the user is NOT mid-run.
 function updateComposerUsage(session) {
   const el = document.getElementById("composerUsage");
   if (!el) return;
-  const label = sessionUsageLabel(session).replace(/^ · /, "");
-  if (!label) {
+
+  if (!session) {
     el.classList.add("hidden");
-    el.textContent = "";
+    el.innerHTML = "";
     return;
   }
-  el.textContent = `Usage this chat: ${label}`;
+
+  const path = computeActivePath(session);
+  const lastNode = path[path.length - 1];
+
+  // When compaction has happened, "active" context is the actual
+  // cumulativeHistory size, not the billed token count (which never
+  // decreases).  Before compaction they are the same number.
+  let active;
+  if (session.compactedUsage && lastNode?.cumulativeHistory?.length) {
+    active = Math.ceil(JSON.stringify(lastNode.cumulativeHistory).length / 4);
+  } else {
+    active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
+  }
+  if (!active) {
+    el.classList.add("hidden");
+    el.innerHTML = "";
+    return;
+  }
+
+  const MAX = AUTO_COMPACT_TOKEN_THRESHOLD; // 250k
+  const pct = Math.min(active / MAX, 1);
+  const circumference = 2 * Math.PI * 8; // r=8
+  const dashOffset = circumference * (1 - pct);
+  const fmtNum = (n) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+
+  el.innerHTML = `
+    <button id="contextCompactBtn" class="context-ring-btn" title="Active context: ~${fmtNum(active)} / ${fmtNum(MAX)} tokens — click to compact">
+      <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+        <circle class="context-ring-bg" cx="12" cy="12" r="8"/>
+        <circle class="context-ring-fg" cx="12" cy="12" r="8" stroke-dasharray="${circumference}" stroke-dashoffset="${dashOffset}"/>
+      </svg>
+      <span class="context-ring-label"><strong>${fmtNum(active)}</strong> / ${fmtNum(MAX)} · compact</span>
+    </button>`;
   el.classList.remove("hidden");
+
+  const btn = document.getElementById("contextCompactBtn");
+  if (btn) {
+    btn.addEventListener("click", () => {
+      if (running) return;
+      compactCurrentSession();
+    });
+  }
 }
 
 function renderUserNode(session, node) {
@@ -905,31 +1343,26 @@ function renderUserNode(session, node) {
   div.className = "entry user";
   div.dataset.nodeId = node.id;
 
-  const toolbar = document.createElement("div");
-  toolbar.className = "user-entry-toolbar";
-  const label = document.createElement("span");
-  label.className = "label";
-  label.textContent = "You";
-  toolbar.appendChild(label);
-
-  const actions = document.createElement("span");
-  actions.className = "user-entry-actions";
-
-  actions.appendChild(createCopyButton(() => node.userText, "light"));
-
-  const editBtn = document.createElement("button");
-  editBtn.type = "button";
-  editBtn.className = "edit-msg-btn";
-  editBtn.title = "Edit this message";
-  editBtn.innerHTML = "✎";
-  editBtn.addEventListener("click", () => startEditingNode(node));
-  actions.appendChild(editBtn);
-
-  toolbar.appendChild(actions);
-  div.appendChild(toolbar);
+  // Avatar + header row
+  const headerRow = document.createElement("div");
+  headerRow.className = "msg-header";
+  const avatar = document.createElement("span");
+  avatar.className = "msg-avatar user-avatar";
+  avatar.title = "You";
+  avatar.innerHTML = `
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+      <circle cx="12" cy="7" r="4"/>
+    </svg>`;
+  headerRow.appendChild(avatar);
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(node.createdAt);
+  headerRow.appendChild(time);
+  div.appendChild(headerRow);
 
   const body = document.createElement("div");
-  body.className = "body";
+  body.className = "body user-body";
   body.textContent = node.userText;
   div.appendChild(body);
 
@@ -949,6 +1382,10 @@ function renderUserNode(session, node) {
   }
 
   const siblings = node.parentId ? session.nodes[node.parentId]?.childIds || [] : session.rootChildIds || [];
+  const footer = document.createElement("div");
+  footer.className = "msg-footer";
+
+  // Branch switcher (left side)
   if (siblings.length > 1) {
     const idx = siblings.indexOf(node.id);
     const switcher = document.createElement("div");
@@ -972,17 +1409,32 @@ function renderUserNode(session, node) {
     switcher.appendChild(prevBtn);
     switcher.appendChild(countLabel);
     switcher.appendChild(nextBtn);
-    div.appendChild(switcher);
+    footer.appendChild(switcher);
   }
+
+  // Actions toolbar (copy, edit) — right side
+  const actions = document.createElement("div");
+  actions.className = "msg-actions";
+
+  actions.appendChild(createCopyButton(() => node.userText, "light"));
+
+  const editBtn = document.createElement("button");
+  editBtn.type = "button";
+  editBtn.className = "edit-msg-btn";
+  editBtn.title = "Edit this message";
+  editBtn.innerHTML = "✎";
+  editBtn.addEventListener("click", () => startEditingNode(node));
+  actions.appendChild(editBtn);
+
+  footer.appendChild(actions);
+  div.appendChild(footer);
 
   logEl.appendChild(div);
 }
 
 async function switchBranch(node, direction) {
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const raw = sessions.find((s) => s.id === currentSessionId);
-  if (!raw) return;
-  const session = migrateSessionIfNeeded(raw);
+  if (!currentSession) return;
+  const session = currentSession;
 
   const siblings = node.parentId ? session.nodes[node.parentId]?.childIds || [] : session.rootChildIds || [];
   const idx = siblings.indexOf(node.id);
@@ -994,8 +1446,20 @@ async function switchBranch(node, direction) {
   else session.rootSelectedChildId = newSelectedId;
   session.updatedAt = Date.now();
 
-  await chrome.storage.local.set({ sessions: sessions.map((s) => (s.id === session.id ? session : s)) });
+  await persistCurrentSession();
   renderSessionPath(session);
+}
+
+// Persist currentSession to chrome.storage.local — debounced via one
+// microtask per call, but the read/write round trip itself is async.
+async function persistCurrentSession() {
+  if (!currentSession) return;
+  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
+  const idx = sessions.findIndex((s) => s.id === currentSession.id);
+  if (idx !== -1) {
+    sessions[idx] = currentSession;
+    await chrome.storage.local.set({ sessions });
+  }
 }
 
 function startEditingNode(node) {
@@ -1033,16 +1497,21 @@ async function refreshCurrentSessionView() {
   const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
   const raw = sessions.find((s) => s.id === currentSessionId);
   if (!raw) return;
-  renderSessionPath(migrateSessionIfNeeded(raw));
+  const session = migrateSessionIfNeeded(raw);
+  currentSession = session;
+  rebuildInvestigateResults(session);
+  renderSessionPath(session);
 }
 
 function loadSessionIntoView(rawSession) {
   const session = migrateSessionIfNeeded(rawSession);
   currentSessionId = session.id;
+  currentSession = session;
   activeRunNodeId = null;
   editingNodeId = null;
   editBanner.classList.add("hidden");
   setActiveAgent(session.agentId ? agents.find((a) => a.id === session.agentId) || null : null);
+  rebuildInvestigateResults(session);
   renderSessionPath(session);
   closeHistory();
 }
@@ -1080,9 +1549,9 @@ function addCopyButtonsToLinks(body) {
 function createCopyButton(getText, variant = "muted") {
   const btn = document.createElement("button");
   btn.type = "button";
-  btn.className = variant === "light" ? "copy-msg-btn light" : "copy-msg-btn";
+  btn.className = variant === "light" ? "msg-copy-btn light" : "msg-copy-btn";
   btn.title = "Copy to clipboard";
-  btn.innerHTML = "⧉";
+  btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
   btn.addEventListener("click", async () => {
     const text = getText();
     if (!text) return;
@@ -1106,13 +1575,53 @@ function createCopyButton(getText, variant = "muted") {
       document.body.removeChild(ta);
     }
     btn.classList.add("copied");
-    btn.innerHTML = "✓";
+    btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
     setTimeout(() => {
       btn.classList.remove("copied");
-      btn.innerHTML = "⧉";
+      btn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
     }, 1200);
   });
   return btn;
+}
+
+function formatTime(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  const now = new Date();
+  const opts = { hour: "2-digit", minute: "2-digit" };
+  if (d.toDateString() !== now.toDateString()) {
+    opts.month = "short";
+    opts.day = "numeric";
+  }
+  return d.toLocaleTimeString([], opts);
+}
+
+function addPendingTool(id, name, input) {
+  hideEmptyState();
+  const div = document.createElement("div");
+  div.className = "entry tool pending";
+  if (id) div.id = `tool-${id}`;
+
+  const inner = document.createElement("div");
+  inner.className = "tool-card";
+
+  const headerEl = document.createElement("div");
+  headerEl.className = "tool-card-header";
+  headerEl.innerHTML = toolIcon(name) + '<span class="tool-card-name">' + toolLabel(name) + '</span>';
+  inner.appendChild(headerEl);
+
+  const body = document.createElement("div");
+  body.className = "tool-card-body tool-body";
+  const summary = summarizeInput(name, input);
+  const spinner = document.createElement("span");
+  spinner.className = "spinner-inline";
+  body.appendChild(spinner);
+  body.appendChild(buildToolTextSpan(name, input, summary, summary ? " — running…" : "running…"));
+  inner.appendChild(body);
+
+  div.appendChild(inner);
+  logEl.appendChild(div);
+  scrollToBottomIfNeeded();
 }
 
 function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) {
@@ -1120,28 +1629,48 @@ function addEntry(kind, label, text, markdown = false, attachmentPreviews = []) 
   const div = document.createElement("div");
   div.className = `entry ${kind}`;
 
-  // Copy button only on the user's own message and the actual final answer —
-  // not on intermediate assistant narration bubbles, which are transient
-  // "thinking out loud" text rather than something worth copying on its own.
-  const copyableKind = kind === "user" || kind === "final";
-  if (copyableKind) {
-    const toolbar = document.createElement("div");
-    toolbar.className = kind === "user" ? "user-entry-toolbar" : "entry-toolbar";
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "label";
-    labelSpan.textContent = label;
-    toolbar.appendChild(labelSpan);
-    toolbar.appendChild(createCopyButton(() => text, kind === "user" ? "light" : "muted"));
-    div.appendChild(toolbar);
+  // Avatar + header row
+  const headerRow = document.createElement("div");
+  headerRow.className = "msg-header";
+
+  const avatar = document.createElement("span");
+  if (kind === "user") {
+    avatar.className = "msg-avatar user-avatar";
+    avatar.title = "You";
+    avatar.innerHTML = `
+      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+        <circle cx="12" cy="7" r="4"/>
+      </svg>`;
   } else {
-    const labelSpan = document.createElement("span");
-    labelSpan.className = "label";
-    labelSpan.textContent = label;
-    div.appendChild(labelSpan);
+    avatar.className = "msg-avatar agent-avatar";
+    avatar.textContent = "T";
+  }
+  headerRow.appendChild(avatar);
+
+  const labelSpan = document.createElement("span");
+  labelSpan.className = "msg-label";
+  if (label) labelSpan.textContent = label;
+  headerRow.appendChild(labelSpan);
+
+  const time = document.createElement("span");
+  time.className = "msg-time";
+  time.textContent = formatTime(Date.now());
+  headerRow.appendChild(time);
+
+  // Copy button on user messages (light variant)
+  if (kind === "user") {
+    headerRow.appendChild(createCopyButton(() => text, "light"));
+  }
+  // Copy button on all other text entries (assistant/final/error/info)
+  if (kind === "assistant" || kind === "final" || kind === "error" || kind === "info") {
+    headerRow.appendChild(createCopyButton(() => text, "muted"));
   }
 
+  div.appendChild(headerRow);
+
   const body = document.createElement("div");
-  body.className = "body";
+  body.className = kind === "user" ? "body user-body" : "body";
   if (markdown) {
     body.innerHTML = renderMarkdown(text);
     addCopyButtonsToLinks(body);
@@ -1216,56 +1745,35 @@ function buildToolTextSpan(name, input, summaryText, suffix = "") {
   return span;
 }
 
-function addPendingTool(id, name, input) {
-  hideEmptyState();
-  const div = document.createElement("div");
-  div.className = "entry tool pending";
-  if (id) div.id = `tool-${id}`;
-
-  const labelSpan = document.createElement("span");
-  labelSpan.className = "label";
-  labelSpan.textContent = toolIcon(name) + " " + toolLabel(name);
-  div.appendChild(labelSpan);
-
-  const body = document.createElement("div");
-  body.className = "tool-body";
-  const summary = summarizeInput(name, input);
-  const spinner = document.createElement("span");
-  spinner.className = "spinner-inline";
-  body.appendChild(spinner);
-  body.appendChild(buildToolTextSpan(name, input, summary, summary ? " - running…" : "running…"));
-  div.appendChild(body);
-
-  logEl.appendChild(div);
-  scrollToBottomIfNeeded();
-}
-
 function toolIcon(name) {
-  const icons = {
-    read_page: "🔍",
-    click: "🖱️",
-    type_text: "⌨️",
-    select_option: "🔽",
-    fill_form: "📝",
-    press_key: "🎹",
-    hover: "🖐️",
-    wait_for: "⏳",
-    find_in_page: "🔎",
-    drag: "🫳",
-    upload_file: "📎",
-    scroll: "↕️",
-    navigate: "🔗",
-    list_tabs: "🗂️",
-    switch_tab: "↪️",
-    open_tab: "➕",
-    close_tab: "✖️",
-    view_image: "👁️",
-    filter_images: "🖼️",
-    screenshot: "📸",
-    read_tabs: "🗂️",
-    extract_table: "📋",
+  const SVG_ICONS = {
+    read_page: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>',
+    click: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10 2v8l-4-2-2 4 6 3 2 6 4-2 1-7z"/></svg>',
+    type_text: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h4M6 14h8"/></svg>',
+    select_option: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>',
+    fill_form: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 12h8M8 16h5"/></svg>',
+    press_key: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="2 12 7 17 13 7"/></svg>',
+    hover: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/></svg>',
+    wait_for: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+    find_in_page: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>',
+    scroll: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="8 15 12 19 16 15"/><polyline points="8 9 12 5 16 9"/></svg>',
+    navigate: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    open_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    switch_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>',
+    list_tabs: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>',
+    close_tab: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9l6 6M15 9l-6 6"/></svg>',
+    read_tabs: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/></svg>',
+    view_image: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+    screenshot: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="12" cy="12" r="3"/></svg>',
+    copy_to_clipboard: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+    read_clipboard: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/><path d="M12 15l2 2 4-4"/></svg>',
+    create_file: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>',
+    extract_table: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="3" x2="9" y2="21"/></svg>',
+    upload_file: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>',
+    parallel_investigate: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M5 12h.01M19 12h.01M12 5h.01M12 19h.01"/></svg>',
+    run_batch: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>',
   };
-  return icons[name] || "⚙️";
+  return SVG_ICONS[name] || '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/></svg>';
 }
 
 // User-facing phrasing for each tool name — shown in the status bar and on
@@ -1298,6 +1806,9 @@ const TOOL_LABELS = {
   screenshot: "Taking a screenshot",
   parallel_investigate: "Investigating sources",
   run_batch: "Running batch task",
+  copy_to_clipboard: "Copying to clipboard",
+  read_clipboard: "Reading the clipboard",
+  create_file: "Creating a file",
 };
 function toolLabel(name) {
   return TOOL_LABELS[name] || name.replace(/_/g, " ");
@@ -1322,19 +1833,37 @@ function updateToolEntry(id, name, result, input) {
     return;
   }
 
+  if (name === "create_file" && ok) {
+    renderCreateFileEntry(div, result, input);
+    return;
+  }
+
   const text = ok ? summarizeResult(name, result, input) : `Error: ${result?.error || "unknown error"}`;
 
   if (!div) {
-    addEntry(`tool ${ok ? "ok" : "error"}`, `${toolIcon(name)} ${toolLabel(name)}`, text);
+    addEntry(`tool ${ok ? "ok" : "error"}`, "Tab Agent", text);
     return;
   }
 
   div.classList.remove("pending");
   div.classList.add(ok ? "ok" : "error");
-  const body = div.querySelector(".tool-body");
-  if (body) {
-    body.innerHTML = "";
-    body.appendChild(buildToolTextSpan(name, input, text));
+  const inner = div.querySelector(".tool-card");
+  if (inner) {
+    // Replace header with done/error state
+    const header = inner.querySelector(".tool-card-header");
+    if (header) {
+      if (!ok) {
+        header.style.color = "var(--error-text)";
+      }
+    }
+    const body = inner.querySelector(".tool-body");
+    if (body) {
+      body.innerHTML = "";
+      body.appendChild(buildToolTextSpan(name, input, text));
+      if (!ok) {
+        body.style.color = "var(--error-text)";
+      }
+    }
   }
   scrollToBottomIfNeeded();
 }
@@ -1454,6 +1983,76 @@ function renderFilterImagesEntry(div, result) {
   uncertain.forEach((e) => addCell(e, "uncertain"));
   body.appendChild(grid);
 
+  scrollToBottomIfNeeded();
+}
+
+function formatFileSize(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// The file's actual text lives only in the tool CALL's own input (see
+// lib/agentLoop.js's create_file case) — result carries just filename/
+// mime_type/size, so this is the one render function that reads `input`
+// instead of `result` for its main content. Blob + a synthetic <a download>
+// click needs no chrome.downloads permission at all; it's the same
+// mechanism any web page uses to offer a generated file.
+function renderCreateFileEntry(div, result, input) {
+  const filename = result.filename || input?.filename || "file.txt";
+  const mimeType = result.mime_type || "text/plain";
+  const content = input?.content ?? "";
+  const sizeLabel = formatFileSize(typeof result.size === "number" ? result.size : content.length);
+
+  const fillBody = (body) => {
+    body.classList.add("create-file-result");
+    body.innerHTML = "";
+
+    const info = document.createElement("div");
+    info.className = "tool-text";
+    info.textContent = `${filename} · ${sizeLabel}`;
+    body.appendChild(info);
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "download-file-btn";
+    btn.textContent = "⬇ Download";
+    btn.addEventListener("click", () => {
+      const blob = new Blob([content], { type: mimeType });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+    body.appendChild(btn);
+  };
+
+  if (!div) {
+    // Same defensive fallback as renderViewImageEntry/renderFilterImagesEntry
+    // above — shouldn't normally happen since the assistant event that
+    // preceded this always creates the pending card first via addPendingTool.
+    const wrapper = document.createElement("div");
+    wrapper.className = "entry tool ok";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = `${toolIcon("create_file")} ${toolLabel("create_file")}`;
+    wrapper.appendChild(label);
+    const body = document.createElement("div");
+    body.className = "tool-body";
+    fillBody(body);
+    wrapper.appendChild(body);
+    logEl.appendChild(wrapper);
+    scrollToBottomIfNeeded();
+    return;
+  }
+
+  div.classList.remove("pending");
+  div.classList.add("ok");
+  const body = div.querySelector(".tool-body");
+  if (!body) return;
+  fillBody(body);
   scrollToBottomIfNeeded();
 }
 
@@ -2013,6 +2612,8 @@ function summarizeInput(name, input) {
   if (name === "extract_table") return input.table_id || "";
   if (name === "view_image") return input.image_id || "";
   if (name === "filter_images") return `${(input.image_ids || []).length} image${(input.image_ids || []).length === 1 ? "" : "s"} - "${input.criteria || ""}"`;
+  if (name === "copy_to_clipboard") return `"${(input.text || "").slice(0, 60)}"`;
+  if (name === "create_file") return input.filename || "";
   return JSON.stringify(input);
 }
 
@@ -2051,6 +2652,9 @@ function summarizeResult(name, result, input) {
   if (name === "wait_for") {
     return result.found ? "Condition met." : "Timed out waiting.";
   }
+  if (name === "read_clipboard" && result.ok) {
+    return `Clipboard: "${(result.text || "").slice(0, 60)}"`;
+  }
   if ((name === "view_image" || name === "screenshot") && result.description) {
     return result.description;
   }
@@ -2080,31 +2684,60 @@ function showTypingBubble() {
   scrollToBottomIfNeeded();
 }
 
+// Pending markdown re-render, coalesced to one paint per animation frame —
+// deltas can arrive many times faster than the screen refreshes, and without
+// this each one triggers its own renderMarkdown() pass + reflow, letting the
+// total re-parse cost grow with delta *count* instead of just answer length.
+let pendingStreamText = null;
+let streamRafId = null;
+
 function removeTypingBubble() {
+  if (streamRafId) {
+    cancelAnimationFrame(streamRafId);
+    streamRafId = null;
+  }
+  pendingStreamText = null;
   document.getElementById("typingBubble")?.remove();
 }
 
-// Live token-by-token preview while a step is streaming in. Shown as plain
-// text (not markdown-rendered) since partial markdown mid-stream can render
-// oddly — the final 'assistant' event replaces this bubble with the fully
-// rendered version once the step completes.
+// Live token-by-token preview while a step is streaming in. Re-renders the
+// whole accumulated text as markdown (renderMarkdown() is cheap line-based
+// parsing, not worth diffing) — an unclosed construct (a dangling ``` fence,
+// a lone leading -) just renders literally until the next delta completes
+// it, since renderMarkdown()'s inline regexes require a matching closing
+// delimiter before converting anything. The final 'assistant' event replaces
+// this bubble outright once the step completes.
 function updateStreamingText(text) {
+  if (!text) return;
+  pendingStreamText = text;
+  if (streamRafId) return;
+  streamRafId = requestAnimationFrame(() => {
+    streamRafId = null;
+    const bubble = document.getElementById("typingBubble");
+    const body = bubble?.querySelector(".body");
+    if (!body || pendingStreamText == null) return;
+    body.innerHTML = renderMarkdown(pendingStreamText);
+    body.classList.add("streaming-text");
+    scrollToBottomIfNeeded();
+  });
+}
+
+// A tool call (e.g. 'finish') is about to start streaming its own text into
+// this same bubble — snap back to the thinking-dots placeholder first rather
+// than jump-cutting straight from an unrelated block of prose to a single
+// character of the new content, which reads as a glitch rather than a new
+// message starting.
+function resetStreamingText() {
+  if (streamRafId) {
+    cancelAnimationFrame(streamRafId);
+    streamRafId = null;
+  }
+  pendingStreamText = null;
   const bubble = document.getElementById("typingBubble");
-  if (!bubble || !text) return;
-  const body = bubble.querySelector(".body");
+  const body = bubble?.querySelector(".body");
   if (!body) return;
-  body.textContent = text;
-  body.classList.add("streaming-text");
-  scrollToBottomIfNeeded();
-}
-
-function showStatus(text, animated = false) {
-  statusText.innerHTML = animated ? `${escapeHtml(text)} ${typingDotsHtml()}` : escapeHtml(text);
-  statusBar.classList.remove("hidden");
-}
-
-function hideStatus() {
-  statusBar.classList.add("hidden");
+  body.innerHTML = typingDotsHtml();
+  body.classList.remove("streaming-text");
 }
 
 function setProgressActive(state) {
@@ -2134,7 +2767,12 @@ taskInput.addEventListener("input", () => {
   autoResize();
   checkForSlashCommand();
 });
-autoResize();
+// Deferred a frame — called this synchronously at parse time, the side
+// panel's own layout isn't always settled yet, so scrollHeight can measure
+// against a not-yet-final width and stick the box near its 140px cap with
+// nothing to ever re-measure it afterward (no input event fires on an
+// untouched box). Waiting for the next paint gives an accurate reading.
+requestAnimationFrame(autoResize);
 
 taskInput.addEventListener("keydown", (e) => {
   if (!agentPopover.classList.contains("hidden") && popoverMatches.length) {
@@ -2485,12 +3123,88 @@ function makeAskUserSubmitBtn(onClick) {
 }
 
 function markAskUserAnswered(id, answer) {
-  const div = document.getElementById(`ask-${id}`);
+  const div = document.getElementById(`ask-${id}`) || document.getElementById(`step-${id}`);
   if (!div) return;
-  const formEl = div.querySelector(".ask-user-form");
+  const formEl = div.querySelector(".ask-user-form") || div.querySelector(".step-confirm-buttons");
   if (!formEl) return;
   const answerText = Array.isArray(answer) ? (answer.length ? answer.join(", ") : "(none selected)") : answer || "(no answer)";
   formEl.innerHTML = `<div class="ask-user-answered">You answered: <strong>${escapeHtml(answerText)}</strong></div>`;
+}
+
+// --- step-through confirmation card (Visual Debugger) ----------------------
+// Rendered when stepThrough mode is enabled and the agent is about to execute
+// a tool call. Shows the intended tool + input and lets the user Execute,
+// Skip, or Stop.
+
+function renderStepConfirmCard(event) {
+  hideEmptyState();
+  const div = document.createElement("div");
+  div.className = "entry assistant ask-user step-confirm";
+  div.id = `step-${event.id}`;
+
+  const label = document.createElement("span");
+  label.className = "label";
+  label.textContent = "🐞 Step-Through";
+  div.appendChild(label);
+
+  const body = document.createElement("div");
+  body.className = "body step-confirm-body";
+
+  const toolName = document.createElement("div");
+  toolName.className = "step-confirm-tool";
+  toolName.textContent = `Tool: ${event.name}`;
+  body.appendChild(toolName);
+
+  const inputPreview = document.createElement("pre");
+  inputPreview.className = "step-confirm-input";
+  inputPreview.textContent = JSON.stringify(event.input, null, 2);
+  body.appendChild(inputPreview);
+
+  const btnRow = document.createElement("div");
+  btnRow.className = "step-confirm-buttons";
+
+  const executeBtn = document.createElement("button");
+  executeBtn.type = "button";
+  executeBtn.className = "step-confirm-execute";
+  executeBtn.textContent = "▶ Execute";
+  executeBtn.addEventListener("click", () => submitStepThrough(event.id, "execute"));
+
+  const skipBtn = document.createElement("button");
+  skipBtn.type = "button";
+  skipBtn.className = "step-confirm-skip";
+  skipBtn.textContent = "⏭ Skip";
+  skipBtn.addEventListener("click", () => submitStepThrough(event.id, "skip"));
+
+  const stopBtn = document.createElement("button");
+  stopBtn.type = "button";
+  stopBtn.className = "step-confirm-stop";
+  stopBtn.textContent = "⏹ Stop";
+  stopBtn.addEventListener("click", () => submitStepThrough(event.id, "stop"));
+
+  btnRow.appendChild(executeBtn);
+  btnRow.appendChild(skipBtn);
+  btnRow.appendChild(stopBtn);
+  body.appendChild(btnRow);
+  div.appendChild(body);
+  logEl.appendChild(div);
+  scrollToBottomIfNeeded();
+
+  // Auto-highlight the Execute button as the safe default
+  executeBtn.focus();
+}
+
+function submitStepThrough(toolUseId, action) {
+  const div = document.getElementById(`step-${toolUseId}`);
+  if (div) {
+    const btnRow = div.querySelector(".step-confirm-buttons");
+    if (btnRow) {
+      btnRow.innerHTML = `<div class="ask-user-answered">You chose: <strong>${action}</strong></div>`;
+    }
+  }
+  // Reuses the ANSWER_QUESTION flow in background.js — the step-through
+  // pause stores the action as the "answer" and background.js's ANSWER_QUESTION
+  // handler picks it up from pendingQuestion.
+  submitAnswer(toolUseId, action);
 }
 
 // --- step-limit "still working?" pause: Continue / Stop here -------------
@@ -2559,7 +3273,6 @@ async function respondToStepLimit(nodeId, doContinue) {
     autoScroll = true;
     activeRunNodeId = nodeId;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
   }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -2645,7 +3358,6 @@ async function respondToSiteGate(nodeId, approve) {
     autoScroll = true;
     activeRunNodeId = nodeId;
     setRunning(true);
-    showStatus("Thinking", true);
     showTypingBubble();
   }
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -2670,7 +3382,6 @@ async function submitAnswer(toolUseId, answer) {
   // node the very next event for this session belongs to.
   activeRunNodeId = null;
   setRunning(true);
-  showStatus("Thinking", true);
   showTypingBubble();
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -2684,6 +3395,7 @@ async function submitAnswer(toolUseId, answer) {
     providerId: providerId || undefined,
     modelId: modelId || undefined,
     agentId: activeAgent?.id || undefined,
+    stepThrough: stepThroughEnabled,
   });
 }
 
@@ -2701,7 +3413,6 @@ function setRunning(state) {
   if (state) {
     lastRunEventAt = Date.now();
   } else {
-    hideStatus();
     removeTypingBubble();
   }
 }
@@ -2740,7 +3451,6 @@ function declareRunStalled(nodeId, reason) {
 // instantly) before deciding it's actually case (2) and forcing the UI back
 // to normal with an explanation instead of hanging silently.
 function stopCurrentRun() {
-  showStatus("Stopping…");
   const stoppedNodeId = activeRunNodeId;
   chrome.runtime.sendMessage({ type: "STOP_TASK", sessionId: currentSessionId }, (res) => {
     if (chrome.runtime.lastError) return; // panel closed/reloaded mid-call — nothing to update
@@ -2811,13 +3521,11 @@ async function retryLastMessage() {
     addEntry("info", "Info", "No conversation to retry yet.");
     return;
   }
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const raw = sessions.find((s) => s.id === currentSessionId);
-  if (!raw) {
+  const session = currentSession;
+  if (!session) {
     addEntry("info", "Info", "No conversation to retry yet.");
     return;
   }
-  const session = migrateSessionIfNeeded(raw);
   const path = computeActivePath(session);
   const lastNode = path[path.length - 1];
   if (!lastNode) {
@@ -2867,16 +3575,15 @@ async function compactCurrentSession() {
     addEntry("info", "Info", "No conversation to compact yet.");
     return;
   }
-  const [providerId, modelId] = (modelSelect.value || "").split("::");
-  showStatus("Compacting…", true);
+  const sessionIdAtStart = currentSessionId;
   chrome.runtime.sendMessage({
     type: "COMPACT_SESSION",
-    sessionId: currentSessionId,
-    providerId: providerId || undefined,
-    modelId: modelId || undefined,
+    sessionId: sessionIdAtStart,
   });
-  await waitForCompaction(currentSessionId);
-  hideStatus();
+  await waitForCompaction(sessionIdAtStart);
+  if (currentSessionId !== sessionIdAtStart) {
+    return;
+  }
 }
 
 // Checked at the top of every send — keeps a long-running chat's per-message
@@ -2885,22 +3592,12 @@ async function compactCurrentSession() {
 // below triggering a storage refresh.
 async function maybeAutoCompact() {
   if (!currentSessionId) return;
-  const { sessions = [] } = await chrome.storage.local.get(["sessions"]);
-  const raw = sessions.find((s) => s.id === currentSessionId);
-  if (!raw) return;
-  const session = migrateSessionIfNeeded(raw);
-  // The active leaf's own usage IS the active context size — each request is
-  // stateless and resends the full history, so its inputTokens already
-  // reflects everything accumulated so far on this path. Summing node.usage
-  // across every node in session.nodes (the old behavior) instead added up
-  // lifetime billed tokens across the whole tree, including dead retry/edit
-  // branches never even sent again - a number that only ever grows and has
-  // nothing to do with how large the next request's context actually is.
+  const session = currentSession;
+  if (!session) return;
   const path = computeActivePath(session);
   const lastNode = path[path.length - 1];
   const active = lastNode?.usage ? (lastNode.usage.inputTokens || 0) + (lastNode.usage.outputTokens || 0) : 0;
   if (active <= AUTO_COMPACT_TOKEN_THRESHOLD) return;
-  addEntry("info", "Info", `This chat has grown large (~${Math.round(active / 1000)}k tokens) - compacting automatically before sending to keep costs down.`);
   await compactCurrentSession();
 }
 
@@ -2943,7 +3640,8 @@ function showHelp() {
 // --- send / stop -----------------------------------------------------
 
 async function sendTask() {
-  if (running) return;
+  if (running || sending) return;
+  sending = true;
   hidePopover();
 
   // Sending stops any in-progress dictation right away — abort() (not
@@ -2954,7 +3652,10 @@ async function sendTask() {
   if (listening) recognizer?.abort();
 
   let task = taskInput.value.trim();
-  if (!task && attachments.length === 0) return;
+  if (!task && attachments.length === 0) {
+    sending = false;
+    return;
+  }
 
   // Built-in commands (/clear, /stop, /retry, /compact, /model, /help) never
   // get sent to the model — intercept them here whether typed via the
@@ -2965,6 +3666,7 @@ async function sendTask() {
     const arg = (builtinMatch[2] || "").trim();
     taskInput.value = "";
     autoResize();
+    sending = false;
     runBuiltinCommand(slug, arg);
     return;
   }
@@ -2979,93 +3681,213 @@ async function sendTask() {
     }
   }
 
-  await maybeAutoCompact();
+  try {
+    await maybeAutoCompact();
 
-  const imageAttachments = attachments.filter((a) => a.kind !== "pdf" && a.kind !== "doc");
-  const docAttachments = attachments.filter((a) => a.kind === "pdf" || a.kind === "doc");
+    const imageAttachments = attachments.filter((a) => a.kind !== "pdf" && a.kind !== "doc");
+    const docAttachments = attachments.filter((a) => a.kind === "pdf" || a.kind === "doc");
 
-  // The user's chat bubble stays exactly what they typed — the extracted
-  // text rides separately to the background page, which appends it (chunked,
-  // see lib/attachmentCache.js — nothing is trimmed) to what the MODEL sees
-  // (same "shown to user" vs "sent to model" split already used for the
-  // tab-switch note and the vision-fallback image description).
-  const effectiveTask = task || "Describe / act on the attached file(s).";
-  const outgoingDocAttachments = docAttachments.map((a) => ({
-    id: a.id,
-    name: a.name,
-    format: a.format,
-    text: a.text,
-    pageCount: a.pageCount,
-  }));
+    // The user's chat bubble stays exactly what they typed — the extracted
+    // text rides separately to the background page, which appends it (chunked,
+    // see lib/attachmentCache.js — nothing is trimmed) to what the MODEL sees
+    // (same "shown to user" vs "sent to model" split already used for the
+    // tab-switch note and the vision-fallback image description).
+    const effectiveTask = task || "Describe / act on the attached file(s).";
+    const outgoingDocAttachments = docAttachments.map((a) => ({
+      id: a.id,
+      name: a.name,
+      format: a.format,
+      text: a.text,
+      pageCount: a.pageCount,
+    }));
 
-  const previewUrls = imageAttachments.map((a) => a.previewUrl);
-  const outgoingAttachments = imageAttachments.map((a) => ({ mediaType: a.mediaType, data: a.data, name: a.name }));
-  const docPreviews = docAttachments.map((a) => ({ kind: a.kind, format: a.format, name: a.name, pageCount: a.pageCount }));
+    const previewUrls = imageAttachments.map((a) => a.previewUrl);
+    const outgoingAttachments = imageAttachments.map((a) => ({ mediaType: a.mediaType, data: a.data, name: a.name }));
+    const docPreviews = docAttachments.map((a) => ({ kind: a.kind, format: a.format, name: a.name, pageCount: a.pageCount }));
 
-  const editNodeId = editingNodeId;
-  editingNodeId = null;
-  editBanner.classList.add("hidden");
+    const editNodeId = editingNodeId;
+    editingNodeId = null;
+    editBanner.classList.add("hidden");
 
-  addEntry("user", "You", effectiveTask, false, [...previewUrls, ...docPreviews]);
+    addEntry("user", "", effectiveTask, false, [...previewUrls, ...docPreviews]);
 
-  taskInput.value = "";
-  autoResize();
-  attachments = [];
-  renderAttachments();
+    taskInput.value = "";
+    autoResize();
+    attachments = [];
+    renderAttachments();
 
-  autoScroll = true; // resume auto-follow for this new run
-  // The new (or branched-to) node's id is generated server-side and not
-  // known yet here — null tells the AGENT_EVENT listener to lock onto
-  // whichever node the first event for this session belongs to, instead of
-  // still accepting stray events tagged with a PREVIOUS/abandoned node id
-  // (e.g. a sibling branch this edit just replaced, or an earlier run that
-  // hadn't fully finished stopping yet).
-  activeRunNodeId = null;
-  setRunning(true);
-  showStatus("Thinking", true);
-  showTypingBubble();
+    autoScroll = true; // resume auto-follow for this new run
+    // The new (or branched-to) node's id is generated server-side and not
+    // known yet here — null tells the AGENT_EVENT listener to lock onto
+    // whichever node the first event for this session belongs to, instead of
+    // still accepting stray events tagged with a PREVIOUS/abandoned node id
+    // (e.g. a sibling branch this edit just replaced, or an earlier run that
+    // hadn't fully finished stopping yet).
+    activeRunNodeId = null;
+    setRunning(true);
+    sending = false; // running guard takes over from here
+    showTypingBubble();
 
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  const [providerId, modelId] = (modelSelect.value || "").split("::");
-  chrome.runtime.sendMessage({
-    type: "RUN_TASK",
-    task: effectiveTask,
-    tabId: tab?.id,
-    sessionId: currentSessionId || undefined,
-    editNodeId: editNodeId || undefined,
-    providerId: providerId || undefined,
-    modelId: modelId || undefined,
-    agentId: activeAgent?.id || undefined,
-    attachments: outgoingAttachments,
-    docAttachments: outgoingDocAttachments,
-  });
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [providerId, modelId] = (modelSelect.value || "").split("::");
+    chrome.runtime.sendMessage({
+      type: "RUN_TASK",
+      task: effectiveTask,
+      tabId: tab?.id,
+      sessionId: currentSessionId || undefined,
+      editNodeId: editNodeId || undefined,
+      providerId: providerId || undefined,
+      modelId: modelId || undefined,
+      agentId: activeAgent?.id || undefined,
+      stepThrough: stepThroughEnabled,
+      attachments: outgoingAttachments,
+      docAttachments: outgoingDocAttachments,
+      customInstructions: perChatInstructionsValue || undefined,
+    });
+  } finally {
+    if (sending) sending = false; // safety net — shouldn't normally reach here
+  }
+}
+
+// --- replay overlay -----------------------------------------------------
+const replayOverlay = document.getElementById("replayOverlay");
+const replayTitle = document.getElementById("replayTitle");
+const replayClose = document.getElementById("replayClose");
+const replayStrip = document.getElementById("replayStrip");
+const replayScreenshot = document.createElement("div");
+replayScreenshot.id = "replayScreenshot";
+
+async function openReplay(sessionId) {
+  // Fetch the recording frames from the background
+  let frames;
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: "GET_RECORDING", sessionId });
+    if (!resp?.ok || !resp.frames?.length) {
+      addEntry("error", "Replay", "No recording found for this session.");
+      return;
+    }
+    frames = resp.frames;
+  } catch {
+    addEntry("error", "Replay", "Could not load recording.");
+    return;
+  }
+
+  replayStrip.innerHTML = "";
+
+  function renderFrame(idx) {
+    const frame = frames[idx];
+    if (!frame) return;
+    replayScreenshot.innerHTML = "";
+    if (frame.screenshot) {
+      const img = document.createElement("img");
+      img.src = frame.screenshot;
+      img.alt = `${frame.toolName} step ${frame.step}`;
+      replayScreenshot.appendChild(img);
+    } else {
+      replayScreenshot.innerHTML = "<p class='replay-no-capture'>(This step ran in a background tab — no screenshot available.)</p>";
+    }
+    // Highlight the active thumbnail
+    Array.from(replayStrip.children).forEach((el, i) => el.classList.toggle("active", i === idx));
+    // Scroll it into view
+    const active = replayStrip.children[idx];
+    if (active) active.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
+
+    // Step detail panel
+    const infoEl = document.getElementById("replayInfo");
+    if (infoEl) infoEl.innerHTML = formatReplayInfo(frame);
+  }
+
+  for (let i = 0; i < frames.length; i++) {
+    const f = frames[i];
+    const thumb = document.createElement("button");
+    thumb.className = "replay-thumb";
+    if (f.screenshot) {
+      const img = document.createElement("img");
+      img.src = f.screenshot;
+      img.alt = `Step ${f.step}`;
+      thumb.appendChild(img);
+    } else {
+      thumb.innerHTML =
+        `<span class="replay-thumb-placeholder">${toolIcon(f.toolName)}</span>`;
+    }
+    const label = document.createElement("span");
+    label.className = "replay-thumb-label";
+    label.textContent = toolLabel(f.toolName).slice(0, 16);
+    thumb.appendChild(label);
+    thumb.addEventListener("click", () => renderFrame(i));
+    replayStrip.appendChild(thumb);
+  }
+
+  const infoHtml = document.getElementById("replayInfo");
+  if (!infoHtml) {
+    // First time — build the info panel
+    const info = document.createElement("div");
+    info.id = "replayInfo";
+    info.className = "replay-info";
+    replayScreenshot.after(info);
+  }
+  replayTitle.textContent = `${frames.length} step${frames.length !== 1 ? "s" : ""}`;
+  replayOverlay.classList.remove("hidden");
+  renderFrame(0);
+}
+
+replayClose.addEventListener("click", () => replayOverlay.classList.add("hidden"));
+
+function formatReplayInfo(frame) {
+  const lines = [
+    `<div class="replay-info-row"><strong>Tool:</strong> ${toolLabel(frame.toolName)}</div>`,
+  ];
+  if (frame.url) {
+    const short = frame.url.length > 60 ? frame.url.slice(0, 57) + "…" : frame.url;
+    lines.push(`<div class="replay-info-row"><strong>URL:</strong> ${escapeHtml(short)}</div>`);
+  }
+  if (frame.callId) {
+    lines.push(`<div class="replay-info-row"><strong>Call ID:</strong> <code>${escapeHtml(frame.callId)}</code></div>`);
+  }
+  if (frame.toolInput && Object.keys(frame.toolInput).length) {
+    const inp = JSON.stringify(frame.toolInput, null, 2);
+    lines.push(`<div class="replay-info-row"><strong>Input:</strong></div><pre class="replay-info-pre">${escapeHtml(inp)}</pre>`);
+  }
+  if (frame.toolResult) {
+    const label = frame.toolResult.ok ? "✅ Success" : `❌ Error: ${escapeHtml(frame.toolResult.error || "unknown")}`;
+    lines.push(`<div class="replay-info-row">${label}</div>`);
+  }
+  return lines.join("\n");
 }
 
 runBtn.addEventListener("click", sendTask);
 
 stopBtn.addEventListener("click", stopCurrentRun);
 
+const stepThroughToggle = document.getElementById("stepThroughToggle");
+stepThroughToggle.addEventListener("click", () => {
+  stepThroughEnabled = !stepThroughEnabled;
+  stepThroughToggle.classList.toggle("active", stepThroughEnabled);
+  stepThroughToggle.title = stepThroughEnabled
+    ? "Step-through mode ON — the agent will pause before each tool call"
+    : "Step-through mode: pause before each tool call";
+});
+
 // --- agent events (shared between live updates and history replay) ------
 
 function applyAgentEvent(event, isReplay = false, nodeId = null) {
   switch (event.type) {
     case "user_message":
-      addEntry("user", "You", event.text, false, event.attachmentPreviews || []);
+      addEntry("user", "", event.text, false, event.attachmentPreviews || []);
       break;
 
     case "thinking":
       removeTypingBubble();
       showTypingBubble();
-      if (!isReplay) showStatus("Thinking", true);
       break;
 
     case "assistant_delta":
-      updateStreamingText(event.text);
+      if (event.reset) resetStreamingText();
+      else updateStreamingText(event.text);
       break;
 
     case "assistant": {
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       // If this same turn also calls finish, its answer is the authoritative
       // final message and is about to render its own bubble right after this
       // one — showing the model's prose here too would just duplicate it
@@ -3087,7 +3909,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
     }
 
     case "tool_start":
-      if (!isReplay) showStatus(toolLabel(event.name), true);
       break;
 
     case "tool_result":
@@ -3105,6 +3926,12 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "investigate_start":
       addInvestigateCard(event.callId, event.branches, event.remainingCount || 0, nodeId);
+      if (!investigateResults.has(event.callId)) {
+        investigateResults.set(event.callId, {
+          groupHeader: `🔀 ${event.branches.length} source${event.branches.length === 1 ? "" : "s"}${event.remainingCount ? ` (${event.remainingCount} more queued)` : ""}`,
+          tiles: new Map(),
+        });
+      }
       break;
 
     case "branch_active":
@@ -3117,6 +3944,22 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "branch_done":
       handleBranchDone(event, isReplay);
+      // Update investigate panel data store with this result
+      if (investigateResults.has(event.callId)) {
+        const group = investigateResults.get(event.callId);
+        const existing = group.tiles.get(event.label) || {};
+        group.tiles.set(event.label, {
+          ...existing,
+          callId: event.callId,
+          label: event.label,
+          url: event.url || existing.url,
+          tabId: typeof event.tabId === "number" ? event.tabId : existing.tabId,
+          objective: event.objective || existing.objective,
+          findings: event.findings || existing.findings,
+          steps: event.steps || existing.steps || [],
+          status: event.skipped ? "skipped" : event.incomplete ? "incomplete" : event.ok !== false ? "ok" : "error",
+        });
+      }
       break;
 
     case "branch_closed":
@@ -3137,26 +3980,27 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "error":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("error", "Error", event.message);
       break;
 
     case "stopped":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("stopped", "Stopped", "Run stopped by user.");
       break;
 
     case "finish":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       addEntry("final", event.success ? "Done" : "Ended", event.answer, true);
       break;
 
     case "ask_user":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderAskUserCard(event);
+      break;
+
+    case "step_confirm":
+      removeTypingBubble();
+      renderStepConfirmCard(event);
       break;
 
     case "answered":
@@ -3165,7 +4009,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "confirm_continue":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderConfirmContinueCard(event, nodeId);
       break;
 
@@ -3175,7 +4018,6 @@ function applyAgentEvent(event, isReplay = false, nodeId = null) {
 
     case "confirm_site_category":
       removeTypingBubble();
-      if (!isReplay) hideStatus();
       renderConfirmSiteCategoryCard(event, nodeId);
       break;
 
@@ -3237,7 +4079,8 @@ chrome.runtime.onMessage.addListener((msg) => {
     // since navigated away from would silently overwrite currentSessionId
     // to match it, which then makes that type's OWN "is this my chat?"
     // check further down trivially true and yanks the view back to it.
-    if (msg.sessionId) currentSessionId = msg.sessionId;
+    // Similarly, SESSION_COMPACTED is not a run message and must not adopt.
+    if (msg.sessionId && msg.type !== "SESSION_COMPACTED") currentSessionId = msg.sessionId;
   }
 
   if (msg.type === "AGENT_EVENT") {
@@ -3273,8 +4116,159 @@ chrome.runtime.onMessage.addListener((msg) => {
   // it opens this panel — see applyScheduledTaskPrefill above. Clear the
   // storage fallback now that the live message actually landed, so a later
   // panel reload doesn't re-apply the same stale prefill.
+  if (msg.type === "QUEUE_BROADCAST") {
+    if (msg.depth > 0) {
+      queueBadge.textContent = msg.depth;
+      queueBadge.classList.remove("hidden");
+    } else {
+      queueBadge.classList.add("hidden");
+    }
+  }
+
   if (msg.type === "PREFILL_SCHEDULED_TASK") {
     applyScheduledTaskPrefill(msg);
     chrome.storage.local.remove("pendingScheduledTaskPrefill").catch(() => {});
+  }
+
+  // --- MCP message handlers -------------------------------------------
+
+  if (msg.type === "MCP_STATUS_CHANGE") {
+    // Only respond to status changes when MCP is explicitly enabled.
+    // Prevents showing a stale "MCP connected" banner from a prior SW.
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (mcpEnabled) {
+        mcpSetConnected(msg.connected);
+      } else {
+        mcpSetConnected(false);
+      }
+    }).catch(() => {
+      mcpSetConnected(false);
+    });
+  }
+
+  if (msg.type === "MCP_TOOL_START") {
+    // Ignore tool events if MCP isn't enabled — handles stale messages from
+    // a prior service worker that may have been connected to a bridge.
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (!mcpEnabled) return;
+      mcpAddActivity(msg.callId, msg.tool, msg.args, "running");
+    }).catch(() => {});
+  }
+
+  if (msg.type === "MCP_TOOL_END") {
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (!mcpEnabled) return;
+      mcpUpdateActivity(msg.callId, msg.result?.error ? "error" : "done");
+    }).catch(() => {});
+  }
+
+  if (msg.type === "MCP_SHOW_CONFIRM") {
+    // Only show the confirmation overlay when MCP is explicitly enabled.
+    chrome.storage.local.get("mcpEnabled").then(({ mcpEnabled }) => {
+      if (mcpEnabled) mcpShowConfirm(msg.tool, msg.args);
+    }).catch(() => {});
+  }
+});
+
+// === MCP Client UI ====================================================
+// Manages the connection banner, activity log, and confirmation dialog.
+
+function mcpSetConnected(connected) {
+  mcpBanner.classList.toggle("hidden", !connected);
+  if (!connected) {
+    mcpActivityLog.classList.add("hidden");
+  }
+}
+
+function mcpAddActivity(callId, tool, args, status) {
+  mcpActivityLog.classList.remove("hidden");
+  const entry = document.createElement("div");
+  entry.className = `mcp-activity-entry mcp-entry-${status}`;
+  entry.dataset.callId = callId;
+  entry.innerHTML = `
+    <span class="mcp-entry-tool">${escapeHtml(tool)}</span>
+    <span class="mcp-entry-args">${escapeHtml(JSON.stringify(args || {}).slice(0, 80))}</span>
+  `;
+  mcpActivityList.prepend(entry);
+
+  // Keep max 30 entries
+  while (mcpActivityList.children.length > 30) {
+    mcpActivityList.lastChild.remove();
+  }
+}
+
+function mcpUpdateActivity(callId, status) {
+  const entry = mcpActivityList.querySelector(`[data-call-id="${callId}"]`);
+  if (entry) {
+    entry.className = `mcp-activity-entry mcp-entry-${status}`;
+  }
+}
+
+function mcpShowConfirm(tool, args) {
+  mcpConfirmToolName.textContent = tool;
+  mcpConfirmArgs.textContent = JSON.stringify(args, null, 2);
+
+  const onAllow = () => {
+    cleanup();
+    chrome.runtime.sendMessage({ type: "MCP_CONFIRM_REPLY", allowed: true });
+  };
+  const onDeny = () => {
+    cleanup();
+    chrome.runtime.sendMessage({ type: "MCP_CONFIRM_REPLY", allowed: false });
+  };
+
+  const cleanup = () => {
+    mcpConfirmAllowBtn.removeEventListener("click", onAllow);
+    mcpConfirmDenyBtn.removeEventListener("click", onDeny);
+    mcpConfirmOverlay.classList.add("hidden");
+  };
+
+  mcpConfirmAllowBtn.addEventListener("click", onAllow);
+  mcpConfirmDenyBtn.addEventListener("click", onDeny);
+  mcpConfirmOverlay.classList.remove("hidden");
+}
+
+// --- MCP Stop button and log toggle -----------------------------------
+
+mcpStopBtn.addEventListener("click", () => {
+  const confirmed = confirm("Stop the MCP client and disconnect it?");
+  if (confirmed) {
+    chrome.runtime.sendMessage({ type: "MCP_DISCONNECT" });
+    mcpSetConnected(false);
+  }
+});
+
+mcpLogToggleBtn.addEventListener("click", () => {
+  mcpActivityLog.classList.toggle("hidden");
+});
+
+// Auto-connect to MCP bridge if the user has explicitly enabled it.
+async function mcpAutoConnect() {
+  try {
+    const { mcpEnabled, mcpPort, mcpToken } = await chrome.storage.local.get(["mcpEnabled", "mcpPort", "mcpToken"]);
+    if (mcpEnabled && mcpPort && mcpToken) {
+      chrome.runtime.sendMessage({ type: "MCP_CONNECT", port: mcpPort, token: mcpToken });
+    } else {
+      // If MCP is not enabled, disconnect any lingering connection
+      chrome.runtime.sendMessage({ type: "MCP_DISCONNECT" }).catch(() => {});
+    }
+  } catch {
+    // storage access may fail — ignore
+  }
+}
+
+// Attempt auto-connect after a short delay to let the service worker settle.
+setTimeout(mcpAutoConnect, 500);
+
+// Force-hide MCP overlay on startup — in case the DOM somehow persisted
+// the overlay from a prior session or a stale service worker pushed a
+// MCP_SHOW_CONFIRM during panel load before the handler was registered.
+mcpConfirmOverlay.classList.add("hidden");
+
+// Reconnect if MCP config changes in storage while side panel is open.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes.mcpEnabled || changes.mcpPort || changes.mcpToken) {
+    mcpAutoConnect();
   }
 });

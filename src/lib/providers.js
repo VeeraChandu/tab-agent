@@ -13,7 +13,7 @@
 // This mirrors Anthropic's native shape, and gets converted to OpenAI's
 // message/tool_calls shape when needed.
 
-import { TOOLS } from "./tools.js";
+import { TOOLS, filterTools } from "./tools.js";
 
 const ANTHROPIC_VERSION = "2023-06-01";
 
@@ -89,16 +89,16 @@ function openaiApiUrl(baseUrl, path) {
   return alreadyVersioned ? `${trimmed}${path}` : `${trimmed}/v1${path}`;
 }
 
-function anthropicTools() {
-  return TOOLS.map((t) => ({
+function anthropicTools(filterCtx) {
+  return (filterCtx ? filterTools(filterCtx) : TOOLS).map((t) => ({
     name: t.name,
     description: t.description,
     input_schema: t.input_schema,
   }));
 }
 
-function openaiTools() {
-  return TOOLS.map((t) => ({
+function openaiTools(filterCtx) {
+  return (filterCtx ? filterTools(filterCtx) : TOOLS).map((t) => ({
     type: "function",
     function: {
       name: t.name,
@@ -108,7 +108,7 @@ function openaiTools() {
   }));
 }
 
-export async function callAnthropic(config, history, system, shouldStop) {
+export async function callAnthropic(config, history, system, shouldStop, toolFilterCtx) {
   const baseUrl = (config.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
   const res = await fetchWithRetry(`${baseUrl}/v1/messages`, {
     method: "POST",
@@ -129,7 +129,7 @@ export async function callAnthropic(config, history, system, shouldStop) {
       max_tokens: 8192,
       system,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
-      tools: anthropicTools(),
+      tools: anthropicTools(toolFilterCtx),
     }),
   }, { shouldStop });
 
@@ -249,7 +249,7 @@ function toOpenAIMessages(history, system) {
   return messages;
 }
 
-export async function callOpenAI(config, history, system, shouldStop) {
+export async function callOpenAI(config, history, system, shouldStop, toolFilterCtx) {
   const requestMessages = toOpenAIMessages(history, system);
   const res = await fetchWithRetry(openaiApiUrl(config.baseUrl, "/chat/completions"), {
     method: "POST",
@@ -260,7 +260,7 @@ export async function callOpenAI(config, history, system, shouldStop) {
     body: JSON.stringify({
       model: config.model || "gpt-4.1",
       messages: requestMessages,
-      tools: openaiTools(),
+      tools: openaiTools(toolFilterCtx),
       tool_choice: "auto",
     }),
   }, { shouldStop });
@@ -378,7 +378,46 @@ async function readSSE(res, onEvent, shouldStop) {
   }
 }
 
-async function callAnthropicStream(config, history, system, onDelta, shouldStop) {
+// Pulls the in-progress value of a string field out of a JSON object that
+// isn't complete yet, e.g. `{"answer": "The capital of Fra` mid-stream from
+// a tool call's `input_json_delta`/`arguments` chunks. Returns null until
+// the field's opening quote has arrived. Used to stream the `finish` tool's
+// `answer` live instead of waiting for its JSON to close.
+export function extractPartialJsonString(jsonText, field) {
+  const keyIdx = jsonText.indexOf(`"${field}"`);
+  if (keyIdx === -1) return null;
+  const colonIdx = jsonText.indexOf(":", keyIdx + field.length + 2);
+  if (colonIdx === -1) return null;
+  let start = colonIdx + 1;
+  while (start < jsonText.length && /\s/.test(jsonText[start])) start += 1;
+  if (jsonText[start] !== '"') return null;
+  start += 1;
+  const ESCAPES = { '"': '"', "\\": "\\", "/": "/", n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" };
+  let out = "";
+  let i = start;
+  while (i < jsonText.length) {
+    const ch = jsonText[i];
+    if (ch === "\\") {
+      const next = jsonText[i + 1];
+      if (next === undefined) break; // incomplete escape - stop, wait for more
+      if (next === "u") {
+        if (i + 6 > jsonText.length) break; // incomplete \uXXXX
+        out += String.fromCharCode(parseInt(jsonText.slice(i + 2, i + 6), 16));
+        i += 6;
+        continue;
+      }
+      out += ESCAPES[next] ?? next;
+      i += 2;
+      continue;
+    }
+    if (ch === '"') break; // unescaped closing quote - value complete
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+async function callAnthropicStream(config, history, system, onDelta, shouldStop, toolFilterCtx) {
   const baseUrl = (config.baseUrl || "https://api.anthropic.com").replace(/\/+$/, "");
   const res = await fetchWithRetry(`${baseUrl}/v1/messages`, {
     method: "POST",
@@ -399,7 +438,7 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
       max_tokens: 8192,
       system,
       messages: history.map((m) => ({ role: m.role, content: m.content })),
-      tools: anthropicTools(),
+      tools: anthropicTools(toolFilterCtx),
       stream: true,
     }),
   }, { shouldStop });
@@ -423,6 +462,11 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
         evt.index,
         block.type === "tool_use" ? { type: "tool_use", id: block.id, name: block.name, jsonText: "" } : { type: "text", text: "" }
       );
+      // null tells onDelta's caller to reset its live preview: any prose
+      // narration streamed so far belongs to a different message than the
+      // finish answer about to start, so jump-cutting text straight from one
+      // to the other reads as a glitch rather than a new message starting.
+      if (onDelta && block.type === "tool_use" && block.name === "finish") onDelta(null);
     } else if (evt.type === "content_block_delta") {
       const block = blocksByIndex.get(evt.index);
       if (!block) return;
@@ -432,6 +476,10 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
         if (onDelta) onDelta(text);
       } else if (evt.delta?.type === "input_json_delta") {
         block.jsonText += evt.delta.partial_json || "";
+        if (onDelta && block.name === "finish") {
+          const partialAnswer = extractPartialJsonString(block.jsonText, "answer");
+          if (partialAnswer !== null) onDelta(partialAnswer);
+        }
       }
     } else if (evt.type === "message_delta") {
       if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
@@ -460,7 +508,7 @@ async function callAnthropicStream(config, history, system, onDelta, shouldStop)
   return { assistantBlocks: blocks, toolCalls, text, stopReason, usage };
 }
 
-async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
+async function callOpenAIStream(config, history, system, onDelta, shouldStop, toolFilterCtx) {
   const requestMessages = toOpenAIMessages(history, system);
   const res = await fetchWithRetry(openaiApiUrl(config.baseUrl, "/chat/completions"), {
     method: "POST",
@@ -471,7 +519,7 @@ async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
     body: JSON.stringify({
       model: config.model || "gpt-4.1",
       messages: requestMessages,
-      tools: openaiTools(),
+      tools: openaiTools(toolFilterCtx),
       tool_choice: "auto",
       stream: true,
       stream_options: { include_usage: true },
@@ -505,8 +553,19 @@ async function callOpenAIStream(config, history, system, onDelta, shouldStop) {
       if (!toolCallsByIndex.has(idx)) toolCallsByIndex.set(idx, { id: tc.id, name: tc.function?.name || "", argsText: "" });
       const entry = toolCallsByIndex.get(idx);
       if (tc.id) entry.id = tc.id;
-      if (tc.function?.name) entry.name = tc.function.name;
+      // No separate block-start event here (unlike Anthropic's
+      // content_block_start) - the name arrives on this same tool_calls
+      // delta, so this is the one point where "a finish call just started"
+      // can be detected, to fire the same live-preview reset.
+      if (tc.function?.name) {
+        entry.name = tc.function.name;
+        if (onDelta && entry.name === "finish") onDelta(null);
+      }
       if (tc.function?.arguments) entry.argsText += tc.function.arguments;
+      if (onDelta && entry.name === "finish") {
+        const partialAnswer = extractPartialJsonString(entry.argsText, "answer");
+        if (partialAnswer !== null) onDelta(partialAnswer);
+      }
     }
   }, shouldStop);
 
@@ -544,28 +603,28 @@ function isStoppedError(err) {
   return err?.message === "Stopped by user.";
 }
 
-export async function callProvider(config, history, system, onDelta, shouldStop) {
+export async function callProvider(config, history, system, onDelta, shouldStop, toolFilterCtx) {
   if (config.provider === "anthropic") {
     if (onDelta) {
       try {
-        return await callAnthropicStream(config, history, system, onDelta, shouldStop);
+        return await callAnthropicStream(config, history, system, onDelta, shouldStop, toolFilterCtx);
       } catch (err) {
         if (isStoppedError(err) || isRealApiError(err)) throw err;
-        return callAnthropic(config, history, system, shouldStop);
+        return callAnthropic(config, history, system, shouldStop, toolFilterCtx);
       }
     }
-    return callAnthropic(config, history, system, shouldStop);
+    return callAnthropic(config, history, system, shouldStop, toolFilterCtx);
   }
   if (config.provider === "openai") {
     if (onDelta) {
       try {
-        return await callOpenAIStream(config, history, system, onDelta, shouldStop);
+        return await callOpenAIStream(config, history, system, onDelta, shouldStop, toolFilterCtx);
       } catch (err) {
         if (isStoppedError(err) || isRealApiError(err)) throw err;
-        return callOpenAI(config, history, system, shouldStop);
+        return callOpenAI(config, history, system, shouldStop, toolFilterCtx);
       }
     }
-    return callOpenAI(config, history, system, shouldStop);
+    return callOpenAI(config, history, system, shouldStop, toolFilterCtx);
   }
   throw new Error(`Unknown provider: ${config.provider}`);
 }

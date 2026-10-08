@@ -112,6 +112,7 @@
     let codeBuffer = [];
     let listBuffer = [];
     let listType = null;
+    let quoteBuffer = [];
 
     function flushList() {
       if (listBuffer.length) {
@@ -120,6 +121,13 @@
         listBuffer = [];
       }
       listType = null;
+    }
+
+    function flushQuote() {
+      if (quoteBuffer.length) {
+        html += `<blockquote>${quoteBuffer.map((l) => `<p>${renderInline(l)}</p>`).join("")}</blockquote>`;
+        quoteBuffer = [];
+      }
     }
 
     let i = 0;
@@ -133,6 +141,7 @@
           inCode = false;
         } else {
           flushList();
+          flushQuote();
           inCode = true;
         }
         i += 1;
@@ -148,6 +157,7 @@
       // "***" would otherwise be misread as a (nonsensical) bullet item.
       if (HR_RE.test(line.trim())) {
         flushList();
+        flushQuote();
         html += "<hr>";
         i += 1;
         continue;
@@ -156,6 +166,7 @@
       // Table: a row containing '|' immediately followed by a separator row.
       if (line.includes("|") && i + 1 < lines.length && isTableSeparatorRow(lines[i + 1])) {
         flushList();
+        flushQuote();
         const headerCells = splitRow(line);
         const bodyRows = [];
         i += 2; // skip header + separator row
@@ -170,8 +181,17 @@
       const heading = line.match(/^(#{1,3})\s+(.*)$/);
       if (heading) {
         flushList();
+        flushQuote();
         const level = heading[1].length;
         html += `<h${level}>${renderInline(heading[2])}</h${level}>`;
+        i += 1;
+        continue;
+      }
+
+      const quote = line.match(/^>\s*(.*)$/);
+      if (quote) {
+        flushList();
+        quoteBuffer.push(quote[1]);
         i += 1;
         continue;
       }
@@ -179,6 +199,7 @@
       const ordered = line.match(/^\s*\d+\.\s+(.*)$/);
       const unordered = line.match(/^\s*[-*]\s+(.*)$/);
       if (ordered) {
+        flushQuote();
         if (listType && listType !== "ol") flushList();
         listType = "ol";
         listBuffer.push(ordered[1]);
@@ -186,6 +207,7 @@
         continue;
       }
       if (unordered) {
+        flushQuote();
         if (listType && listType !== "ul") flushList();
         listType = "ul";
         listBuffer.push(unordered[1]);
@@ -194,6 +216,7 @@
       }
 
       flushList();
+      flushQuote();
       if (line.trim() !== "") {
         html += `<p>${renderInline(line)}</p>`;
       }
@@ -201,6 +224,7 @@
     }
 
     flushList();
+    flushQuote();
     if (inCode && codeBuffer.length) {
       html += `<pre><code>${autolinkCode(escapeHtml(codeBuffer.join("\n")))}</code></pre>`;
     }

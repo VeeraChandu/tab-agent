@@ -15,10 +15,11 @@
     "notifications",
     "webRequest",
     "webNavigation",
-    "power"
-  ],
-  "optional_permissions": [
-    "debugger"
+    "power",
+    "clipboardRead",
+    "clipboardWrite",
+    "debugger",
+    "downloads"
   ],
   "host_permissions": [
     "<all_urls>"

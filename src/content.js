@@ -117,10 +117,10 @@
   // pathological page (e.g. a broken infinite-scroll dumping thousands of
   // nodes) from making one scan unworkably large.
   const MAX_IMAGES = 300;
-  // The prompt allows navigating only via hrefs from read_page, so a cut href
-  // corrupts the one mechanism it has. Real URLs routinely pass 300 chars
-  // (signed/tokenized links); this is a pathological ceiling, not a budget.
-  const MAX_HREF_CHARS = 4096;
+  // Truncate tracking/redirect URLs to reduce token bloat. 200 chars is
+  // enough to identify the destination domain + path; the model doesn't
+  // need the full googleadservices.com ad click chain.
+  const MAX_HREF_CHARS = 200;
 
   // querySelectorAll never descends into shadow roots - a site built on web
   // components (Salesforce Lightning, many design systems, parts of YouTube/
@@ -706,6 +706,28 @@
       result.note = "Nothing appeared. If that menu/tooltip is pure CSS :hover, synthetic events can't open it — try clicking the element instead.";
     }
     return result;
+  }
+
+  // navigator.clipboard requires the document to actually have focus - a
+  // background tab (e.g. a parallel_investigate branch) throws here rather
+  // than silently no-oping, which is exactly what the tool result should
+  // surface to the model instead of a generic failure.
+  async function doClipboardWrite(text) {
+    try {
+      await navigator.clipboard.writeText(text ?? "");
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: `Couldn't write to the clipboard (${err.message || err}) - this tab may not be focused.` };
+    }
+  }
+
+  async function doClipboardRead() {
+    try {
+      const text = await navigator.clipboard.readText();
+      return { ok: true, text };
+    } catch (err) {
+      return { ok: false, error: `Couldn't read the clipboard (${err.message || err}) - this tab may not be focused, or clipboard access was denied.` };
+    }
   }
 
   // Shared alias table for modifier names - used by both click's `modifiers`
@@ -1415,6 +1437,8 @@
     WAIT_FOR: (m) => doWaitFor(m.text, m.textGone, m.seconds),
     DRAG: (m) => doDrag(m.fromId, m.toId),
     SET_FILES: (m) => doSetFiles(m.id, m.name, m.text),
+    CLIPBOARD_WRITE: (m) => doClipboardWrite(m.text),
+    CLIPBOARD_READ: () => doClipboardRead(),
     // Used only by retryClickTrusted (agentLoop.js) - see its own comment
     // for why a flat sleep isn't good enough here.
     WAIT_FOR_SETTLE: async (m) => ({ ok: true, signature: await waitForSettled(CLICK_SETTLE_CEILING_MS, m.baseline) }),
@@ -1454,6 +1478,44 @@
           }
           break;
         }
+        case "FIND_ELEMENT": {
+          // Search for interactive elements by text or CSS selector.
+          // Tags matching elements on the fly so they can be used with
+          // click/type_text/etc. without a prior full-page read_page.
+          const nodes = allDescendants(document.body);
+          const results = [];
+          for (const el of nodes) {
+            if (!isInteractive(el)) continue;
+            if (!isVisible(el)) continue;
+
+            const matches =
+              (msg.text && el.textContent && el.textContent.toLowerCase().includes(msg.text.toLowerCase())) ||
+              (msg.selector && el.matches && el.matches(msg.selector));
+
+            if (!matches) continue;
+            if (msg.tag && el.tagName.toLowerCase() !== msg.tag.toLowerCase()) continue;
+
+            // Tag the element for later use in click/type/etc.
+            counter += 1;
+            const id = `e${counter}`;
+            el.setAttribute(AGENT_ATTR, id);
+
+            const tag = el.tagName.toLowerCase();
+            const rect = el.getBoundingClientRect();
+            const entry = {
+              id,
+              tag,
+              text: shortText(el),
+              box: [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)],
+            };
+            const role = el.getAttribute("role");
+            if (role) entry.role = role;
+            if (tag === "a" && el.href) entry.href = el.href.slice(0, MAX_HREF_CHARS);
+            results.push(entry);
+          }
+          sendResponse({ ok: true, data: results });
+          break;
+        }
         case "GET_SUBMIT_CONTEXT": {
           const el = resolveForLookup(msg.id, msg.targetText, msg.targetTag, msg.x, msg.y);
           if (!el) {
@@ -1480,6 +1542,30 @@
         case "PAGE_SIGNATURE":
           sendResponse({ ok: true, signature: pageSignature() });
           break;
+        case "GET_LOCAL_STORAGE":
+          sendResponse({ ok: true, data: { ...localStorage } });
+          break;
+        case "SET_LOCAL_STORAGE":
+          if (msg.data && typeof msg.data === "object") {
+            for (const [k, v] of Object.entries(msg.data)) {
+              try { localStorage.setItem(k, String(v)); } catch { /* quota exceeded or private mode */ }
+            }
+          }
+          sendResponse({ ok: true });
+          break;
+
+        // --- macro recording (user action capture) -------------------------
+        case "START_MACRO_RECORDING":
+          startMacroRecording();
+          sendResponse({ ok: true });
+          break;
+
+        case "STOP_MACRO_RECORDING": {
+          const steps = stopMacroRecording();
+          sendResponse({ ok: true, steps });
+          break;
+        }
+
         default:
           sendResponse({ ok: false, error: "Unknown message type" });
       }
@@ -1488,4 +1574,101 @@
     }
     return true;
   });
+
+  // --- macro recording helpers ------------------------------------------
+
+  /** True while event listeners are attached to the document. */
+  let _macroActive = false;
+
+  /** Buffer of recorded actions for this recording session. */
+  let _macroSteps = [];
+
+  /** Capture a click event. */
+  function _onMacroClick(e) {
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    const id = el.getAttribute(AGENT_ATTR);
+    _macroSteps.push({
+      action: "click",
+      target: id || undefined,
+      text: id ? undefined : (el.textContent || "").trim().slice(0, 120) || undefined,
+      tag: el.tagName?.toLowerCase(),
+      selector: cssSelector(el),
+    });
+  }
+
+  /** Capture a text input event (debounced via 'change' for selects). */
+  function _onMacroInput(e) {
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    if (el.tagName === "SELECT") return; // handled by _onMacroChange
+    const id = el.getAttribute(AGENT_ATTR);
+    _macroSteps.push({
+      action: "type",
+      target: id || undefined,
+      value: el.value || "",
+      tag: el.tagName?.toLowerCase(),
+      selector: cssSelector(el),
+    });
+  }
+
+  /** Capture a select/checkbox change. */
+  function _onMacroChange(e) {
+    const el = e.target;
+    if (!(el instanceof Element)) return;
+    const id = el.getAttribute(AGENT_ATTR);
+    if (el.tagName === "SELECT") {
+      _macroSteps.push({
+        action: "select",
+        target: id || undefined,
+        value: el.value,
+        tag: "select",
+        selector: cssSelector(el),
+      });
+    } else if (el.type === "checkbox" || el.type === "radio") {
+      _macroSteps.push({
+        action: "click",
+        target: id || undefined,
+        text: el.checked ? "checked" : "unchecked",
+        tag: "input",
+        selector: cssSelector(el),
+      });
+    }
+  }
+
+  /** Build a simple CSS selector for an element (used as fallback when
+   *  no data-agent-id is available). */
+  function cssSelector(el) {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    const tag = el.tagName?.toLowerCase() || "";
+    const cls = Array.from(el.classList).slice(0, 2).map((c) => `.${CSS.escape(c)}`).join("");
+    if (cls) return `${tag}${cls}`;
+    const parent = el.parentElement;
+    if (parent) {
+      const idx = Array.from(parent.children).indexOf(el) + 1;
+      return `${cssSelector(parent)} > ${tag}:nth-child(${idx})`;
+    }
+    return tag;
+  }
+
+  function startMacroRecording() {
+    if (_macroActive) return;
+    _macroActive = true;
+    _macroSteps = [];
+    document.addEventListener("click", _onMacroClick, { capture: true });
+    document.addEventListener("input", _onMacroInput, { capture: true });
+    document.addEventListener("change", _onMacroChange, { capture: true });
+  }
+
+  function stopMacroRecording() {
+    if (!_macroActive) return [];
+    _macroActive = false;
+    document.removeEventListener("click", _onMacroClick, { capture: true });
+    document.removeEventListener("input", _onMacroInput, { capture: true });
+    document.removeEventListener("change", _onMacroChange, { capture: true });
+    const steps = _macroSteps;
+    _macroSteps = [];
+    return steps;
+  }
+
 })();
