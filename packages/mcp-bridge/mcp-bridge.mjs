@@ -25,7 +25,7 @@ import { randomBytes } from "node:crypto";
 // --- Config ------------------------------------------------------------
 
 const MCP_VERSION = "2025-03-26";
-const BRIDGE_VERSION = "1.0.0";
+const BRIDGE_VERSION = "1.1.0";
 const TOOL_TIMEOUT_MS = 300_000; // 5 minutes
 const HEARTBEAT_MS = 30_000;
 
